@@ -16,7 +16,6 @@ Education
 
 - M.S. in Computer Science, Yale University, Sep 2026 - May 2028
   - Thesis Track with Full Scholarship
-  - Incoming student
 
 - B.S. in Computer Science and Mathematics, University of Illinois Urbana-Champaign, Aug 2022 - May 2026
   - GPA: 3.7/4.0

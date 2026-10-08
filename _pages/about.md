@@ -16,11 +16,11 @@ redirect_from:
 
 <div class="home-intro-card" markdown="1">
 
-I am an incoming M.S. student in Computer Science at [Yale University](https://www.yale.edu/) (2026 - 2028), admitted to the **(Thesis Track) M.S. in Computer Science with Full Scholarship**.
+I am a thesis-track M.S. student in Computer Science at [Yale University](https://www.yale.edu/) (2026 - 2028) with a full scholarship.
 
-I graduated from [UIUC](https://illinois.edu/) in Math + Computer Science, where I was a research assistant in U Lab working on LLM agents, multimodal agents, and agentic RL, advised by [Prof. Jiaxuan You](https://cs.stanford.edu/people/jiaxuan/). I received the [2026 C.W. Gear Outstanding Undergraduate Student](https://siebelschool.illinois.edu/about/awards/undergraduate-scholarships-awards/cw-gear-outstanding-undergraduate-student) award as one of two annual recipients.
+I graduated from [UIUC](https://illinois.edu/) in Math + Computer Science, where I was a research assistant in U Lab working on LLM agents, advised by [Prof. Jiaxuan You](https://cs.stanford.edu/people/jiaxuan/). I received the [2026 C.W. Gear Outstanding Undergraduate Student](https://siebelschool.illinois.edu/about/awards/undergraduate-scholarships-awards/cw-gear-outstanding-undergraduate-student) award as one of two annual recipients.
 
-Currently, I am a Machine Learning Engineer Intern at [TikTok](https://www.tiktok.com/) working on self-evolving agents.
+Previously, I was a Machine Learning Engineer Intern at [TikTok](https://www.tiktok.com/) and a Research Intern at Microsoft Research Asia (MSRA).
 
 
 </div>
@@ -39,7 +39,7 @@ My research studies reliable self-improving agents for long-horizon interactive 
 
 ## Gamedev
 
-Beyond research, I am a passoinate indie game developer, feel free to check my game work on the [game page](/game/). I am also willing to discuss the future of AI X Game.
+Beyond research, I am a passionate indie game developer. Feel free to check out my work on the [game page](/game/). I am also happy to discuss the future of AI and games.
 
 {% if site.space_journey.enabled %}
 <aside class="home-easter-egg-hint" aria-label="Easter egg hint">
