@@ -165,6 +165,94 @@
     color: var(--global-text-color);
   }
 
+  .home-publication-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .home-publication {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    align-items: start;
+    gap: 0 1.1rem;
+    padding: 0.95rem 0;
+    border-bottom: 1px solid var(--global-border-color);
+
+    &:last-child {
+      border-bottom: 0;
+    }
+  }
+
+  .home-publication__media {
+    display: block;
+    aspect-ratio: 16 / 10;
+    overflow: hidden;
+    border: 1px solid var(--global-border-color);
+    border-radius: 6px;
+    background: #fff;
+
+    img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+  }
+
+  .home-publication__body {
+    grid-column: 2;
+  }
+
+  .home-publication__title {
+    margin: 0;
+    font-weight: bold;
+    line-height: 1.38;
+
+    a {
+      color: var(--global-text-color);
+      text-decoration: none;
+
+      &:hover {
+        color: var(--global-link-color);
+        text-decoration: underline;
+      }
+    }
+  }
+
+  .home-publication__authors {
+    margin: 0.3rem 0 0;
+    color: var(--global-text-color-light);
+    font-size: 0.82rem;
+    line-height: 1.5;
+
+    strong {
+      color: var(--global-text-color);
+    }
+  }
+
+  .home-publication__venue {
+    margin: 0.2rem 0 0;
+    font-size: 0.82rem;
+    font-style: italic;
+  }
+
+  .home-publication__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.9rem;
+    margin: 0.4rem 0 0;
+    font-family: $sans-serif;
+    font-size: 0.75rem;
+    font-weight: bold;
+  }
+
+  .home-publication-note {
+    margin: 0.6rem 0 0;
+    color: var(--global-text-color-light);
+    font-size: 0.78rem;
+  }
+
   .home-easter-egg-hint {
     visibility: hidden;
     display: inline-flex;
@@ -507,6 +595,19 @@
     .experience-entry {
       grid-template-columns: 4.4rem 2rem 1fr;
       gap: 0 0.6rem;
+    }
+
+    .home-publication {
+      grid-template-columns: 1fr;
+    }
+
+    .home-publication__media {
+      max-width: 18rem;
+      margin-bottom: 0.7rem;
+    }
+
+    .home-publication__body {
+      grid-column: 1;
     }
 
     .experience-entry__mark {

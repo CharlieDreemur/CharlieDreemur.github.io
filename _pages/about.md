@@ -37,6 +37,10 @@ My research studies reliable self-improving agents for long-horizon interactive 
 
 {% include news-list.html %}
 
+## Publications
+
+{% include home-publications.html %}
+
 ## Gamedev
 
 Beyond research, I am a passionate indie game developer. Feel free to check out my work on the [game page](/game/). I am also happy to discuss the future of AI and games.

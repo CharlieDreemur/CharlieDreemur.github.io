@@ -1,0 +1,37 @@
+{% include base_path %}
+
+{% assign highlight_author = include.highlight_author | default: "Weijia Zhang" %}
+{% capture highlighted_author %}<strong>{{ highlight_author }}</strong>{% endcapture %}
+{% assign publication_groups = site.publications | map: "showcase_group" | uniq | sort | reverse %}
+
+<ul class="home-publication-list">
+  {% for group in publication_groups %}
+    {% assign group_items = site.publications | where: "showcase_group", group | sort: "same_year_order" %}
+    {% for item in group_items %}
+      {% assign item_link = item.paperurl | default: item.website | default: item.url %}
+      {% unless item_link contains "://" %}{% assign item_link = base_path | append: item_link %}{% endunless %}
+      <li class="home-publication">
+        {% if item.image %}
+          <a class="home-publication__media" href="{{ item_link }}" tabindex="-1" aria-hidden="true">
+            <img src="{{ base_path }}{{ item.image }}" alt="" loading="lazy">
+          </a>
+        {% endif %}
+        <div class="home-publication__body">
+          <p class="home-publication__title"><a href="{{ item_link }}">{{ item.title }}</a></p>
+          <p class="home-publication__authors">{{ item.authors | replace: highlight_author, highlighted_author }}</p>
+          <p class="home-publication__venue">{{ item.venue }}</p>
+          <p class="home-publication__links">
+            {% if item.paperurl %}<a href="{{ item.paperurl }}">Paper</a>{% endif %}
+            {% if item.github_repositories %}
+              {% for repository in item.github_repositories %}<a href="{{ repository.url }}">{{ repository.label }}</a>{% endfor %}
+            {% elsif item.github %}<a href="{{ item.github }}">Code</a>{% endif %}
+            {% if item.website %}<a href="{{ item.website }}">Website</a>{% endif %}
+            <a href="{{ base_path }}{{ item.url }}">Details</a>
+          </p>
+        </div>
+      </li>
+    {% endfor %}
+  {% endfor %}
+</ul>
+
+<p class="home-publication-note">* Equal contribution. See the <a href="{{ '/publications/' | relative_url }}">publications page</a> or <a href="{{ site.author.googlescholar }}">Google Scholar</a> for more.</p>
