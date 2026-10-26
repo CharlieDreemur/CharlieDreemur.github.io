@@ -172,9 +172,14 @@ social:
 
 # Analytics
 analytics:
-  provider               :  "false" # false (default), "google", "google-universal", "google-analytics-4", "custom"
+  provider               :  "umami" # false (default), "google", "google-universal", "google-analytics-4", "umami", "custom"
   google:
     tracking_id          :
+  # Umami Cloud dashboard: https://cloud.umami.is (pages, referrers, countries/cities, devices, realtime).
+  # Paste the Website ID from Settings -> Websites -> Edit. Tracking stays off while it is blank.
+  umami:
+    website_id           :
+    script_url           : "https://cloud.umami.is/script.js"
 
 
 # Reading Files

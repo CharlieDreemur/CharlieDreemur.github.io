@@ -1,0 +1,3 @@
+{% if site.analytics.umami.website_id and jekyll.environment == "production" %}
+<script defer src="{{ site.analytics.umami.script_url | default: 'https://cloud.umami.is/script.js' }}" data-website-id="{{ site.analytics.umami.website_id }}" data-domains="{{ site.url | split: '//' | last }}"></script>
+{% endif %}
