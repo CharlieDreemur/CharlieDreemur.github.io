@@ -178,7 +178,7 @@ analytics:
   # Umami Cloud dashboard: https://cloud.umami.is (pages, referrers, countries/cities, devices, realtime).
   # Paste the Website ID from Settings -> Websites -> Edit. Tracking stays off while it is blank.
   umami:
-    website_id           :
+    website_id           : "68dbe6d5-0ee5-439d-a7be-8adec3d9cf8f"
     script_url           : "https://cloud.umami.is/script.js"
 
 
