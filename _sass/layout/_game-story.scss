@@ -1,0 +1,122 @@
+/* ==========================================================================
+   GAME STORY (bilingual essay on /game/)
+   ========================================================================== */
+
+.game-story {
+  max-width: 40em;
+  margin: 0.5rem 0 3rem;
+}
+
+.game-story__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.game-story__switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--global-border-color);
+  border-radius: 999px;
+  background: var(--global-bg-color);
+
+  button {
+    margin: 0;
+    padding: 0.35rem 0.95rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--global-text-color);
+    font-family: $global-font-family;
+    font-size: $type-size-6;
+    line-height: 1.4;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--global-base-color);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--global-base-color);
+      outline-offset: 2px;
+    }
+
+    &[aria-pressed="true"] {
+      background: var(--global-base-color);
+      color: #fff;
+    }
+  }
+}
+
+.archive .game-story__skip {
+  font-size: $type-size-6;
+  color: var(--global-text-color);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--global-base-color);
+  }
+}
+
+.game-story__text {
+  h2 {
+    margin: 0;
+    font-size: $type-size-2;
+    letter-spacing: 0.01em;
+  }
+
+  p {
+    line-height: 1.85;
+    margin-bottom: 1.15em;
+  }
+
+  &[lang="zh-CN"] p {
+    line-height: 2;
+    letter-spacing: 0.03em;
+  }
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+.game-story__text .game-story__dek {
+  margin: 0.5em 0 0;
+  color: var(--global-text-color);
+  opacity: 0.68;
+  font-size: $type-size-6;
+  letter-spacing: 0.04em;
+}
+
+.game-story__mark {
+  margin: 2.6em 0 1.1em;
+  color: var(--global-text-color);
+  opacity: 0.6;
+  font-family: $serif;
+  font-size: $type-size-5;
+  font-weight: normal;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+/* Without JS both versions stay visible, one after the other */
+.game-story:not(.game-story--js) {
+  .game-story__switch {
+    display: none;
+  }
+
+  .game-story__text + .game-story__text {
+    margin-top: 3rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--global-border-color);
+  }
+}
+
+.game-archive__title {
+  margin-top: 0;
+  padding-top: 2rem;
+  border-top: 1px solid var(--global-border-color);
+}
