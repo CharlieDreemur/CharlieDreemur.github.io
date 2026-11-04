@@ -9,13 +9,18 @@ redirect_from:
 
 {% include base_path %}
 
+<p>I started developing games in primary school. Below are the games I developed during my undergraduate years.</p>
+
+<h2 id="game-archive" class="game-archive__title">Game Archive</h2>
+
+{% include game-list.html %}
+
 <section class="game-story" aria-label="Games and Me">
   <div class="game-story__toolbar">
     <div class="game-story__switch" role="group" aria-label="Language">
       <button type="button" data-lang-switch="zh" lang="zh-CN" aria-pressed="false">中文</button>
       <button type="button" data-lang-switch="en" lang="en" aria-pressed="false">English</button>
     </div>
-    <a class="game-story__skip" href="#game-archive">Game archive &darr;</a>
   </div>
 
   <article class="game-story__text" data-lang-text="zh" lang="zh-CN">
@@ -90,10 +95,6 @@ redirect_from:
     <p>Looking back, an orange cat on a screen opened that door for me when I was nine. I didn't know then how big the room behind it was. I still don't.</p>
   </article>
 </section>
-
-<h2 id="game-archive" class="game-archive__title">Game Archive</h2>
-
-{% include game-list.html %}
 
 <script>
   (function () {

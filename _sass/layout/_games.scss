@@ -3,8 +3,9 @@
    ========================================================================== */
 
 .game-list {
-  margin: 1.5rem 0 0;
-  padding: 0;
+  margin: 1.5rem 0 2.5rem;
+  padding: 0 0 1.25rem;
+  border-bottom: 1px solid var(--global-border-color);
   list-style: none;
 }
 
