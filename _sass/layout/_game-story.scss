@@ -92,6 +92,32 @@
   text-align: center;
 }
 
+.game-story__figure {
+  margin: 1.75em 0;
+
+  > a {
+    width: 100%;
+  }
+
+  &:not(.half) > a {
+    max-width: 480px;
+  }
+
+  img {
+    height: auto;
+    margin-bottom: 0.6em;
+  }
+
+  figcaption {
+    width: 100%;
+    margin: 0;
+    color: var(--global-text-color);
+    font-family: inherit;
+    line-height: 1.6;
+    opacity: 0.72;
+  }
+}
+
 /* Without JS both versions stay visible, one after the other */
 .game-story:not(.game-story--js) {
   .game-story__switch {

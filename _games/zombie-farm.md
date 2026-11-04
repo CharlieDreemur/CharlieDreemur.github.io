@@ -2,6 +2,7 @@
 title: "Zombie Farm"
 excerpt: "Zombie Farm is a turn-based, grid-based roguelike where strategic planting and precision harvesting turn a peaceful 3x3 plot into a factory of mutated zombie warriors."
 order: 0
+date_label: "2026"
 cover: "/images/games/zombie-farm/cover.webp"
 cover_still: "/images/games/zombie-farm/cover-still.webp"
 cover_fit: "contain"
