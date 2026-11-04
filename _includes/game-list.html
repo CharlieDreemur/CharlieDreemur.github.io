@@ -1,0 +1,23 @@
+{% include base_path %}
+{% assign games = site.games | sort: "order" %}
+
+<ul class="game-list">
+  {% for game in games %}
+    <li class="game-card">
+      <a class="game-card__media{% if game.cover_fit == 'contain' %} game-card__media--contain{% endif %}" href="{{ base_path }}{{ game.url }}">
+        <picture>
+          {% if game.cover_still %}<source media="(prefers-reduced-motion: reduce)" srcset="{{ base_path }}{{ game.cover_still }}">{% endif %}
+          <img src="{{ base_path }}{{ game.cover }}" alt="{{ game.cover_alt | escape_once }}" loading="lazy">
+        </picture>
+      </a>
+      <div class="game-card__body">
+        <h3 class="game-card__title"><a href="{{ base_path }}{{ game.url }}">{{ game.title | escape_once }}</a></h3>
+        <p class="game-card__summary">{{ game.excerpt | strip_html | escape_once }}</p>
+        <ul class="showcase-tags" aria-label="Year and tags">
+          <li>{{ game.date_label }}</li>
+          {% for tag in game.tags %}<li>{{ tag }}</li>{% endfor %}
+        </ul>
+      </div>
+    </li>
+  {% endfor %}
+</ul>

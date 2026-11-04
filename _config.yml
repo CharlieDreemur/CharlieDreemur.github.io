@@ -256,6 +256,9 @@ collections:
   portfolio:
     output: false
     permalink: /:collection/:path/
+  games:
+    output: true
+    permalink: /game/:path/
   talks:
     output: true
     permalink: /:collection/:path/
@@ -308,6 +311,13 @@ defaults:
       author_profile: true
       share: true
       comment: true
+  # _games
+  - scope:
+      path: ""
+      type: games
+    values:
+      layout: game
+      author_profile: true
   # _talks
   - scope:
       path: ""
