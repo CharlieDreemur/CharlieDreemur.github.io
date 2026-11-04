@@ -13,7 +13,7 @@ layout: default
         <p class="game-page__back"><a href="{{ base_path }}/game/#game-archive">&larr; All games</a></p>
         <h1 class="page__title" itemprop="name">{{ page.title | escape_once }}</h1>
         <ul class="showcase-tags" aria-label="Year and tags">
-          <li>{{ page.date_label }}</li>
+          {% if page.date_label %}<li>{{ page.date_label }}</li>{% endif %}
           {% for tag in page.tags %}<li>{{ tag }}</li>{% endfor %}
         </ul>
         {% if page.links %}

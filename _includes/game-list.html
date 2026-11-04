@@ -14,7 +14,7 @@
         <h3 class="game-card__title"><a href="{{ base_path }}{{ game.url }}">{{ game.title | escape_once }}</a></h3>
         <p class="game-card__summary">{{ game.excerpt | strip_html | escape_once }}</p>
         <ul class="showcase-tags" aria-label="Year and tags">
-          <li>{{ game.date_label }}</li>
+          {% if game.date_label %}<li>{{ game.date_label }}</li>{% endif %}
           {% for tag in game.tags %}<li>{{ tag }}</li>{% endfor %}
         </ul>
       </div>
