@@ -20,7 +20,7 @@ I am a thesis-track M.S. student in Computer Science at [Yale University](https:
 
 I graduated from [UIUC](https://illinois.edu/) in Math + Computer Science, where I was a research assistant in U Lab working on LLM agents, advised by [Prof. Jiaxuan You](https://cs.stanford.edu/people/jiaxuan/). I received the [2026 C.W. Gear Outstanding Undergraduate Student](https://siebelschool.illinois.edu/about/awards/undergraduate-scholarships-awards/cw-gear-outstanding-undergraduate-student) award as one of two annual recipients.
 
-Previously, I was a Machine Learning Engineer Intern at [TikTok](https://www.tiktok.com/) and a Research Intern at Microsoft Research Asia (MSRA).
+Previously, I was a Machine Learning Engineer Intern at [TikTok](https://www.tiktok.com/) and a Research Intern at Microsoft Research Asia (MSRA). I am a core member of [OpenEnvision](https://openenvision.org/).
 
 
 </div>
