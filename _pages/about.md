@@ -16,7 +16,7 @@ redirect_from:
 
 <div class="home-intro-card" markdown="1">
 
-I am a thesis-track M.S. student in Computer Science at [Yale University](https://www.yale.edu/) (2026 - 2028) with a full scholarship.
+I am a thesis-track M.S. student in Computer Science at [Yale University](https://www.yale.edu/) (2026 - 2028) with a full scholarship, co-advised by [Prof. Rex Ying](https://www.cs.yale.edu/homes/ying-rex/) and [Prof. Arman Cohan](https://armancohan.com/).
 
 I graduated from [UIUC](https://illinois.edu/) in Math + Computer Science, where I was a research assistant in U Lab working on LLM agents, advised by [Prof. Jiaxuan You](https://cs.stanford.edu/people/jiaxuan/). I received the [2026 C.W. Gear Outstanding Undergraduate Student](https://siebelschool.illinois.edu/about/awards/undergraduate-scholarships-awards/cw-gear-outstanding-undergraduate-student) award as one of two annual recipients.
 
