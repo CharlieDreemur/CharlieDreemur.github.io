@@ -18,18 +18,18 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Serving stack</dt>
-  <dd>一次广告请求要穿过的四层：feature processing、model server（Triton）、PyTorch graph、GPU kernel。瓶颈分散在各层，每层要不同的专业知识。</dd>
+  <dd>一次广告请求要穿过的四层，从 feature processing 到 GPU kernel。瓶颈分散在各层。</dd>
   <dt>Layer agent</dt>
-  <dd>每层一个 agent，四步的接口相同，工具和知识不同。<span class="eg">GPU kernel 层用 Nsight 做 profile，model server 层用 eBPF。</span></dd>
+  <dd>每层一个 agent，四步的接口相同，工具和知识不同。</dd>
   <dt>Verifier</dt>
-  <dd>决定一个改动留不留的固定代码，像阅卷人，考生改不了评分标准。<span class="eg">论文 Figure 2 的图中文字是 "fixed verifier the agent cannot edit"。</span></dd>
+  <dd>决定改动留不留的固定代码，agent 改不了它。</dd>
   <dt>Noise floor</dt>
-  <dd>baseline 一行不改重复跑，指标自己的波动。FlashVector 端到端是 ±6%。</dd>
+  <dd>baseline 一行不改重复跑时指标自己的波动，端到端是 ±6%。</dd>
   <dt>Shadow-traffic canary</dt>
   <dd>把真实请求复制一份给新版本，结果不返回用户。</dd>
 </dl>
 
-<h2 id="figs">看图：四层 stack，四步循环加 Refine</h2>
+<h2 id="figs">看图：四层 stack 和四步循环</h2>
 <figure class="fig">
 <svg viewBox="0 0 560 322" role="img" aria-label="FlashVector：serving stack 有四层，每轮随机抽一层跑 Profile、Diagnose、Optimize、Verify 四步，再过 full-stack load test，run 结束后 Refine 写回 knowledge base">
   <text class="hd" x="85" y="22" text-anchor="middle">serving stack 四层</text>
@@ -74,32 +74,32 @@
   <rect class="f2" x="10" y="284" width="540" height="30" rx="4"/>
   <text x="280" y="304" text-anchor="middle">Refine：run 结束后，把接受和拒绝的改动写回 knowledge base</text>
 </svg>
-<figcaption>图 1：每轮随机抽一层，被抽中的层跑四步，一轮一个改动。本层 Verify 通过后还要过 full-stack load test。蓝线表示 Diagnose 读 knowledge base，Refine 在 run 结束后写回一次。</figcaption>
+<figcaption>图 1：被抽中的层跑四步，再过 full-stack load test。蓝线表示 Diagnose 读 knowledge base，Refine 在 run 结束后写回一次。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>FlashVector takes the kernel-optimization agent idea and applies it to the whole serving stack of Unity's ads models: GPU kernels, the PyTorch graph, the Triton model server and feature processing. Each layer has its own agent running the same four steps: profile, diagnose, optimize, verify. Correctness is tiered by change type, from bit-exact outputs for a deterministic rewrite to a shadow-traffic canary for a config change. Every change is load-tested end to end on replayed production traffic at the latency SLO, and kept only if the gain beats the measurement noise, about six percent. Changes ship as reviewed pull requests. Across six production models, throughput rose 1.1 to 2 times.</p></div>
+<div class="answer"><p>FlashVector applies the kernel-optimization agent to the whole serving stack of Unity's ads models: GPU kernels, the PyTorch graph, the Triton model server and feature processing. Each layer has its own agent running the same four steps: profile, diagnose, optimize, verify. Correctness is tiered by change type, from bit-exact outputs for a deterministic rewrite to a shadow-traffic canary for a config change. Every change is load-tested end to end on replayed production traffic at the latency SLO, and kept only if the gain beats the noise, about six percent. Changes ship as reviewed pull requests. Across six production models, throughput rose 1.1 to 2 times.</p></div>
 
 <h2 id="loop">四步循环加 Refine</h2>
 <table>
-  <thead><tr><th>步骤</th><th>做什么</th><th>要记住的一点</th></tr></thead>
+  <thead><tr><th>步骤</th><th>做什么</th><th>要点</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Profile</td><td>按层用不同的工具，GPU kernel 用 Nsight，model server 用 eBPF</td><td>环境也按层分。GPU kernel 在 local simulated environment，model server 和 feature processing 在 production-like load test</td></tr>
-    <tr><td class="nw">Diagnose</td><td>对照 knowledge base 提假设，按“时间占比 × 预期收益”排序</td><td>预期收益低于 noise floor 的假设直接跳过</td></tr>
+    <tr><td class="nw">Profile</td><td>GPU kernel 用 Nsight，model server 用 eBPF</td><td>GPU kernel 在 local simulated environment 测，model server 和 feature processing 在 production-like load test 测</td></tr>
+    <tr><td class="nw">Diagnose</td><td>对照 knowledge base 提假设，按“时间占比 × 预期收益”排序</td><td>预期收益低于 noise floor 的直接跳过</td></tr>
     <tr><td class="nw">Optimize</td><td>改代码或配置</td><td>一轮只做一个改动</td></tr>
-    <tr><td class="nw">Verify</td><td>先过本层的正确性四档，再过 full-stack load test</td><td>提升超过 noise floor 才留</td></tr>
-    <tr><td class="nw">Refine</td><td>run 结束后跑一次，in-place 写回 knowledge base</td><td>接受和拒绝的改动都记</td></tr>
+    <tr><td class="nw">Verify</td><td>先过本层的正确性四档，再过 <a href="local-vs-e2e.html">full-stack load test</a></td><td>提升超过 noise floor 才留</td></tr>
+    <tr><td class="nw">Refine</td><td>run 结束后 in-place 写回 knowledge base</td><td>接受和拒绝的改动都记</td></tr>
   </tbody>
 </table>
 
-<h2 id="rules">要记的规则，细节在各页</h2>
+<h2 id="rules">要记的规则</h2>
 <ul>
-  <li><strong>正确性四档</strong>：deterministic rewrite 要逐元素相等；改变浮点顺序的按 dtype 的容差；有意的近似看 business metrics；配置改动走 shadow-traffic canary（<a href="kernel-correctness.html">kernel 正确性</a>）</li>
-  <li><strong>Noise floor</strong>：端到端 ±6%。落在 2–6% 的提升加样本重测，最多 8 倍，按 \(1/\sqrt{k}\) 收紧到 2.1%（<a href="noise-floor.html">noise floor</a>）</li>
-  <li><strong>Verify globally</strong>：本层通过后还要过 full-stack load test，因为 kernel 快了端到端不一定快（<a href="local-vs-e2e.html">局部和端到端</a>）</li>
-  <li><strong>Knowledge base</strong>：人写的六类文档，加 agent 写回的 per-model card（<a href="agent-knowledge-base.html">knowledge base</a>）</li>
-  <li><strong>进生产</strong>：agent 开 PR，人 review；配置改动的 canary 稳住就采纳，否则丢弃（<a href="agent-to-production.html">进生产</a>）</li>
-  <li><strong>自动触发</strong>：新 release 进 fleet，或者在线模型太久没被分析时，循环自己启动，不用人启动</li>
+  <li><strong><a href="kernel-correctness.html#tiers">正确性四档</a></strong>：按改动类型，分别要求逐元素相等、dtype 的容差、business metrics 和 shadow-traffic canary</li>
+  <li><strong><a href="noise-floor.html">Noise floor</a></strong>：2–6% 的提升加样本重测，最多 8 倍，按 \(1/\sqrt{k}\) 收紧到 2.1%</li>
+  <li><strong><a href="agent-knowledge-base.html">Knowledge base</a></strong>：人写的六类文档，加 agent 写回的 per-model card</li>
+  <li><strong><a href="agent-to-production.html">进生产</a></strong>：agent 开 PR，人 review。配置改动的 canary 稳住才采纳</li>
+  <li><strong>自动触发</strong>：新 release 进 fleet，或在线模型太久没被分析时</li>
+  <li><strong><a href="offline-pipeline-optimization.html">Offline</a></strong>：循环搬到 data 和 training pipeline 是推断</li>
 </ul>
 
 <h2 id="cases">四个 case 的数字</h2>
@@ -114,18 +114,16 @@
 </table>
 <p>6 个生产模型的 latency speedup 是 1.30–1.98×，throughput 提升 1.10–2.00×。</p>
 
-<h2 id="gaps">论文没写什么</h2>
+<h2 id="gaps">论文没写什么，适合当反问</h2>
 <ul>
-  <li>用哪个 LLM</li>
-  <li>用哪个 agent 框架</li>
-  <li>sandbox 用什么技术。"all candidates run sandboxed" 只出现在 Figure 2 的图里（见 <a href="agent-sandbox.html">sandbox</a>）</li>
-  <li>一次 run 的成本：token、耗时、并行度都没有数字</li>
+  <li>用哪个 LLM 和 agent 框架</li>
+  <li>sandbox 用什么技术（见 <a href="agent-sandbox.html">sandbox</a>）</li>
+  <li>一次 run 的 token、耗时和并行度</li>
 </ul>
-<p>这四项不要替论文补答案，适合留到最后当反问。</p>
 <h3 id="caveats">读论文要小心的两处</h3>
 <ul>
-  <li><strong>Case 1 的时间</strong>：论文引用的 Triton issue #8348 开于 2025-08，早于 2026 年暑期项目。不要说成实习生的 agent 在暑期发现的</li>
-  <li><strong>Table 4 的 Model B</strong>：p99 是 271 ms，超过它 250 ms 的 SLO，论文没有解释</li>
+  <li><strong>Case 1 的时间</strong>：论文引用的 Triton issue #8348 开于 2025-08，早于 2026 年暑期项目。不要说成 agent 在暑期发现的</li>
+  <li><strong>Table 4 的 Model B</strong>：p99 是 271 ms，超过 250 ms 的 SLO，论文没有解释</li>
 </ul>
 
 <h2>必答点</h2>
@@ -141,23 +139,15 @@
 <h2>追问</h2>
 <details>
   <summary>为什么不让 LLM 一次生成优化方案？</summary>
-  <p>论文说 LLM 会看错自己的 profile，所以要一个 harness 逐步检查。它还需要精确的 kernel trace（nsys、ncu）和准确的 tensor shape，roofline 分析时才少 hallucinate。</p>
+  <p>论文说 LLM 会看错自己的 profile，所以要 harness 逐步检查。它还需要精确的 kernel trace（nsys、ncu）和准确的 tensor shape，roofline 分析时才少 hallucinate。</p>
 </details>
 <details>
-  <summary>为什么每轮随机抽一层，不先做瓶颈最大的那层？</summary>
-  <p>论文没解释。Algorithm 1 是随机选，没有按各层的时间占比加权，这一点适合当反问。</p>
-</details>
-<details>
-  <summary>它用了什么 search？</summary>
-  <p>单链循环，没有 beam、evolution 或 MCTS。论文的精力放在验证和交付上（几种 search 的对比见 <a href="kernel-search-methods.html">search 方法</a>）。</p>
+  <summary>它用了什么 search，每轮怎么选层？</summary>
+  <p>单链循环，没有 beam、evolution 或 MCTS（对比见 <a href="kernel-search-methods.html">search 方法</a>）。Algorithm 1 每轮随机选一层，没有按时间占比加权，论文没解释，适合当反问。自己设计时可以按时间占比加权抽样，这是我的想法，不是论文的做法。</p>
 </details>
 <details>
   <summary>Case 1 的 30× 能说成线上快了 30 倍吗？</summary>
-  <p>不能。30× 是 <code>deserialize_bytes_tensor</code> 这个函数的 microbenchmark。结果表里 retrieval model 的 latency speedup 是 1.67×，两个数口径不同。</p>
-</details>
-<details>
-  <summary>这和 Offline Infrastructure 有什么关系？</summary>
-  <p>同一个循环可以搬到 data 和 training pipeline，目标换成 throughput 和 GPU-hour（见 <a href="offline-pipeline-optimization.html">offline pipeline</a>）。这是推断，本岗 JD 没有写 agent 或 kernel。</p>
+  <p>不能。30× 是 <code>deserialize_bytes_tensor</code> 这个函数的 microbenchmark，结果表里 retrieval model 的 latency speedup 是 1.67×。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2609.17391">FlashVector</a>（<a href="https://arxiv.org/html/2609.17391">HTML 全文</a>：§1、§4.1、§4.2、Algorithm 1、§5 的四个 case、Table 1、Table 4、Figure 2）· ml-八股 08 第 0 题 · 调研笔记 Unity 的证据和同类对照 第 0、1 节</p>

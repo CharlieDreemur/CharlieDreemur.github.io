@@ -18,29 +18,29 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>FLOPs 与 FLOP/s</dt>
-  <dd>FLOPs 是总工作量，FLOP/s 是速度，像"一共要搬多少砖"和"每秒搬几块"。一次乘加算 2 FLOPs。<span class="eg">例：A100 的 bf16 峰值 312 TFLOP/s。</span></dd>
+  <dd>FLOPs 是总工作量，FLOP/s 是速度。一次乘加算 2 FLOPs。<span class="eg">例：A100 的 bf16 峰值 312 TFLOP/s。</span></dd>
   <dt>6ND</dt>
-  <dd>N 个参数（本页记作 \(\Psi\)）、D 个 token：每个参数对每个 token 在 forward 做一次乘加（2），backward 再做两倍（4）。<span class="eg">例：7B 模型训 1T token → \(6\times7\text{B}\times10^{12} = 4.2\times10^{22}\) FLOPs。</span></dd>
+  <dd>N 个参数（本页记作 \(\Psi\)）、D 个 token。每个参数对每个 token 在 forward 做一次乘加（2），backward 是两倍（4）。</dd>
   <dt>MFU</dt>
-  <dd>model FLOPs utilization：实际 tokens/s × 6Ψ，除以峰值。分子只算模型"必须"的 FLOPs，像考试只按答对的题给分，不管草稿写了几遍。</dd>
+  <dd>model FLOPs utilization，实际 tokens/s × 6Ψ 除以峰值，分子只算模型必须的 FLOPs。</dd>
   <dt>HFU</dt>
-  <dd>hardware FLOPs utilization：把 recompute 多算的也算进去，所以 ≥ MFU。<span class="eg">例：PaLM 540B 的 MFU 46.2%，HFU 57.8%。</span></dd>
+  <dd>hardware FLOPs utilization，recompute 多算的也算进去，所以 ≥ MFU。<span class="eg">例：PaLM 540B 的 MFU 46.2%，HFU 57.8%。</span></dd>
   <dt>Memory-bound</dt>
-  <dd>每搬 1 byte 只做很少运算，卡在显存带宽而不是算力上，像厨师很快但食材一样一样慢慢送来。</dd>
+  <dd>每搬 1 byte 只做很少运算，卡在 memory bandwidth 而不是算力上。</dd>
 </dl>
 
 <h2 id="figs">看图：6ND 从哪来，MFU 一般多少</h2>
 <figure class="fig">
 <svg viewBox="0 0 520 400" role="img" aria-label="一个 Y = XW 的训练成本：forward 一次矩阵乘，backward 算 dX 和 dW 两次同样大的矩阵乘，每参数每 token 2 + 2 + 2 = 6 FLOPs，所以是 6ND；full recompute 再加一次 forward 变成 8ND"><text x="0" y="36" text-anchor="start" class="acc">forward</text><text x="0" y="54" text-anchor="start" class="m">Y = X × W</text><rect x="123" y="17" width="34" height="46" rx="3" class="f1"/><text x="140" y="45" text-anchor="middle" class="acc">X</text><text x="140" y="84" text-anchor="middle" class="m">[D, in]</text><rect x="199" y="23" width="34" height="34" rx="3" class="f1"/><text x="216" y="45" text-anchor="middle" class="acc">W</text><text x="216" y="84" text-anchor="middle" class="m">[in, out]</text><rect x="275" y="17" width="34" height="46" rx="3" class="f1"/><text x="292" y="45" text-anchor="middle" class="acc">Y</text><text x="292" y="84" text-anchor="middle" class="m">[D, out]</text><text x="178" y="45" text-anchor="middle" class="hd">×</text><text x="254" y="45" text-anchor="middle" class="hd">=</text><text x="345" y="36" text-anchor="start">2 · D · in · out FLOPs</text><text x="345" y="54" text-anchor="start" class="m">in · out 正好是 W 的参数个数</text><text x="0" y="128" text-anchor="start" class="c2">backward</text><text x="0" y="146" text-anchor="start" class="m">dX = dY × Wᵀ</text><rect x="123" y="109" width="34" height="46" rx="3" class="f2"/><text x="140" y="137" text-anchor="middle" class="c2">dY</text><text x="140" y="176" text-anchor="middle" class="m">[D, out]</text><rect x="199" y="115" width="34" height="34" rx="3" class="f2"/><text x="216" y="137" text-anchor="middle" class="c2">Wᵀ</text><text x="216" y="176" text-anchor="middle" class="m">[out, in]</text><rect x="275" y="109" width="34" height="46" rx="3" class="f2"/><text x="292" y="137" text-anchor="middle" class="c2">dX</text><text x="292" y="176" text-anchor="middle" class="m">[D, in]</text><text x="178" y="137" text-anchor="middle" class="hd">×</text><text x="254" y="137" text-anchor="middle" class="hd">=</text><text x="345" y="128" text-anchor="start">2 · D · in · out FLOPs</text><text x="345" y="146" text-anchor="start" class="m">和 forward 一样大</text><text x="0" y="220" text-anchor="start" class="c2">backward</text><text x="0" y="238" text-anchor="start" class="m">dW = Xᵀ × dY</text><rect x="117" y="207" width="46" height="34" rx="3" class="f2"/><text x="140" y="229" text-anchor="middle" class="c2">Xᵀ</text><text x="140" y="268" text-anchor="middle" class="m">[in, D]</text><rect x="199" y="201" width="34" height="46" rx="3" class="f2"/><text x="216" y="229" text-anchor="middle" class="c2">dY</text><text x="216" y="268" text-anchor="middle" class="m">[D, out]</text><rect x="275" y="207" width="34" height="34" rx="3" class="f2"/><text x="292" y="229" text-anchor="middle" class="c2">dW</text><text x="292" y="268" text-anchor="middle" class="m">[in, out]</text><text x="178" y="229" text-anchor="middle" class="hd">×</text><text x="254" y="229" text-anchor="middle" class="hd">=</text><text x="345" y="220" text-anchor="start">2 · D · in · out FLOPs</text><text x="345" y="238" text-anchor="start" class="m">和 forward 一样大</text><text x="0" y="310" text-anchor="start" class="m">每参数</text><text x="0" y="326" text-anchor="start" class="m">每 token</text><rect x="71" y="290" width="106" height="34" rx="4" class="f1"/><text x="124" y="312" text-anchor="middle" class="acc">forward 2</text><rect x="179" y="290" width="106" height="34" rx="4" class="f2"/><text x="232" y="312" text-anchor="middle" class="c2">dX 2</text><rect x="287" y="290" width="106" height="34" rx="4" class="f2"/><text x="340" y="312" text-anchor="middle" class="c2">dW 2</text><rect x="395" y="290" width="106" height="34" rx="4" class="bwd"/><text x="448" y="312" text-anchor="middle" class="acc">重算 forward 2</text><path d="M72,334 V340 H392 V334" class="ln"/><text x="232" y="356" text-anchor="middle" class="hd">6ΨD：MFU 只算这些</text><path d="M72,368 V374 H500 V368" class="ln"/><text x="286" y="390" text-anchor="middle" class="hd">8ΨD：full recompute 再跑一遍 forward，HFU 也算它</text></svg>
-<figcaption>图 1：模型里每个 weight 矩阵都做一次 Y = XW，X 是 D 个 token 的输入。forward 是一次矩阵乘，要 2 · D · in · out FLOPs，而 in · out 就是这个 W 的参数个数，所以每参数每 token 2 FLOPs。backward 要算两个同样大的矩阵乘：dX 传给前一层，dW 用来更新 W，所以是 4。加起来 6，全模型就是 6ΨD；full recompute 多跑一遍 forward（虚线），变成 8ΨD。</figcaption>
+<figcaption>图 1：每个 weight 矩阵做一次 Y = XW。backward 要算 dX（传给前一层）和 dW（更新 W）两个同样大的矩阵乘，所以是 forward 的 2 倍。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 490 200" role="img" aria-label="几个大模型的 MFU，满格是 GPU 峰值：GPT-3 21.3%，MT-NLG 30.2%，Llama 3 405B 38% 到 43%，PaLM 540B 46.2%，PaLM 的 HFU 是 57.8%"><path d="M118.0,26 V32" class="axis"/><text x="118" y="20" text-anchor="middle" class="m">0</text><path d="M208.0,26 V32" class="axis"/><text x="208" y="20" text-anchor="middle" class="m">25%</text><path d="M298.0,26 V32" class="axis"/><text x="298" y="20" text-anchor="middle" class="m">50%</text><path d="M388.0,26 V32" class="axis"/><text x="388" y="20" text-anchor="middle" class="m">75%</text><path d="M478.0,26 V32" class="axis"/><text x="478" y="20" text-anchor="end" class="m">100% = 峰值</text><path d="M118,32 H478" class="axis"/><text x="0" y="63" text-anchor="start">GPT-3</text><rect x="118" y="46" width="360" height="24" rx="3" class="box"/><rect x="118" y="46" width="76.7" height="24" rx="3" class="f1"/><text x="188.7" y="63" text-anchor="end" class="acc">21.3%</text><text x="0" y="101" text-anchor="start">MT-NLG</text><rect x="118" y="84" width="360" height="24" rx="3" class="box"/><rect x="118" y="84" width="108.7" height="24" rx="3" class="f1"/><text x="220.7" y="101" text-anchor="end" class="acc">30.2%</text><text x="0" y="139" text-anchor="start">Llama 3 405B</text><rect x="118" y="122" width="360" height="24" rx="3" class="box"/><rect x="118" y="122" width="136.8" height="24" rx="3" class="f1"/><text x="248.8" y="139" text-anchor="end" class="acc">38%</text><path d="M254.8,134 H272.8 M272.8,127 V141" class="ln1"/><text x="278.8" y="139" text-anchor="start" class="acc">到 43%</text><text x="0" y="177" text-anchor="start">PaLM 540B</text><rect x="118" y="160" width="360" height="24" rx="3" class="box"/><rect x="118" y="160" width="166.3" height="24" rx="3" class="f1"/><text x="278.3" y="177" text-anchor="end" class="acc">46.2%</text><rect x="284.3" y="160" width="41.8" height="24" rx="3" class="f2"/><text x="332.1" y="177" text-anchor="start" class="c2">HFU 57.8%</text></svg>
-<figcaption>图 2：灰色满格是 GPU 的峰值 FLOP/s，橙色是 MFU，也就是实际 tokens/s × 6Ψ 占峰值的比例。蓝色是 PaLM 的 HFU 比 MFU 多出来的部分，来自 recompute 多算的 FLOPs，HFU 高不代表训得更快。这几个模型都只用上了峰值的一半左右或更少。</figcaption>
+<figcaption>图 2：灰色满格是 GPU 的峰值 FLOP/s，橙色是 MFU，蓝色是 PaLM 的 HFU 多出来的部分。这几个模型的 MFU 都不到峰值的一半。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>A Transformer layer has about 12h² parameters, 4h² in the attention projections and 8h² in the MLP, so the model has about 12Lh² plus Vh for the embedding. Each parameter does one multiply-add per token forward, 2 FLOPs, and backward costs twice that, so training takes about 6ND FLOPs; full recomputation adds a forward, about 8ND. MFU is achieved tokens per second times 6N, divided by peak FLOP/s; HFU also counts recomputation, so it is higher. Training time is 6ND over GPU count times peak times MFU: a 7B model on 1T tokens with 1024 A100s at 50% MFU takes about 3 days.</p></div>
+<div class="answer"><p>A Transformer layer has about 12h² parameters, 4h² in attention and 8h² in the MLP, so the model has about 12Lh² plus Vh. Each parameter does one multiply-add per token forward, 2 FLOPs, and backward costs twice that, so training takes about 6ND FLOPs; full recomputation adds a forward, about 8ND. MFU is tokens per second times 6N over peak FLOP/s; HFU also counts recomputation, so it is higher. Training time is 6ND over GPU count times peak times MFU: 7B on 1T tokens with 1024 A100s at 50% MFU takes about 3 days.</p></div>
 
 <h2 id="how">怎么算</h2>
 <div class="deriv">
@@ -49,7 +49,7 @@
   <p>GPT-3（\(L = 96\)、\(h = 12288\)、\(V = 51200\)）→ 174.6B。</p>
   <h3 id="flops">FLOPs</h3>
   \[ C \approx 6\Psi D = \underbrace{2\Psi D}_{\text{forward}} + \underbrace{4\Psi D}_{\text{backward}} \]
-  <p>每层 forward \(24bsh^2 + 4bs^2h\) 的推导见 <a href="transformer-complexity.html">Transformer 复杂度</a>；\(s \ll 6h\) 时 attention 项可忽略。Megatron 的公式含 full recompute（4 次 forward），\(B\) = global batch 条数：</p>
+  <p>每层 forward \(24bsh^2 + 4bs^2h\) 的推导见 <a href="transformer-complexity.html">Transformer 复杂度</a>。Megatron 的公式含 full recompute（4 次 forward），\(B\) = global batch 条数：</p>
   \[ F = 96BsLh^2\Big(1 + \frac{s}{6h} + \frac{V}{16Lh}\Big) \approx 8\Psi\cdot Bs \]
   <h3 id="mfu">MFU 与时长</h3>
   \[ \text{MFU} = \frac{\text{tokens/s}\times 6\Psi}{\text{卡数}\times\text{峰值}} \]
@@ -58,10 +58,10 @@
 
 <h2 id="example">手算例子</h2>
 <ul>
-  <li><strong>时长</strong>：7B、1T token、1024 张 A100、MFU 50% → \(4.2\times10^{22} / (1024\times312\text{T}\times0.5) \approx 2.6\times10^5\) s ≈ 3 天。</li>
+  <li><strong>时长</strong>：7B、1T token、1024 张 A100、MFU 50% → \(6\times7\text{B}\times10^{12} = 4.2\times10^{22}\) FLOPs，\(4.2\times10^{22} / (1024\times312\text{T}\times0.5) \approx 2.6\times10^5\) s ≈ 3 天。</li>
   <li><strong>反推 MFU</strong>：MT-NLG 530B 在 2240 张 A100 上跑 65.43K tokens/s → \(65.43\text{K}\times6\times530\text{B} / (2240\times312\text{T}) \approx 29.8\%\)。</li>
   <li><strong>Megatron 版</strong>：时长 ≈ \(8\Psi D/(\text{卡数}\times X)\)，\(X\) 是实测每卡 FLOP/s（含 recompute）。GPT-3 175B、300B token、1024 卡、\(X = 140\) TFLOP/s → 约 34 天。</li>
-  <li><strong>decode 为什么 memory-bound</strong>：batch = 1 时每个 token 读一遍全部 weight（\(2\Psi\) bytes），只做 \(2\Psi\) FLOPs，intensity ≈ 1；H100 SXM 的 ridge point ≈ 989 TFLOP/s（dense bf16）÷ 3.35 TB/s ≈ 295，算力几乎闲着（见 <a href="matmul-roofline.html">roofline</a>）。</li>
+  <li><strong>decode 为什么 memory-bound</strong>：batch = 1 时每个 token 读一遍全部 weight（\(2\Psi\) bytes），只做 \(2\Psi\) FLOPs，intensity ≈ 1。H100 SXM 的 ridge point ≈ 989 TFLOP/s（dense bf16）÷ 3.35 TB/s ≈ 295（见 <a href="matmul-roofline.html">roofline</a>）。</li>
 </ul>
 
 <h2>必答点</h2>
@@ -75,16 +75,12 @@
 
 <h2>追问</h2>
 <details>
-  <summary>给定输入维度，每层输出多大？trainable 参数多少？</summary>
+  <summary>每层输出多大？trainable 参数多少？</summary>
   <p>输入输出都是 \([b, s, h]\)；Q、K、V reshape 成 \([b, a, s, h/a]\)，score \([b, a, s, s]\)，MLP 中间 \([b, s, 4h]\)。参数 \(12h^2\) 加 \(13h\)（QKV、output、两层 MLP 的 bias 共 \(9h\)，两个 LayerNorm \(4h\)）。</p>
 </details>
 <details>
-  <summary>为什么 backward 是 forward 的 2 倍？</summary>
-  <p>forward 每个 \(Y = XW\)，backward 要算 \(\partial L/\partial X = \partial L/\partial Y\cdot W^\top\) 和 \(\partial L/\partial W = X^\top\cdot\partial L/\partial Y\) 两个同样大的矩阵乘。</p>
-</details>
-<details>
   <summary>为什么用 MFU 而不是 HFU？MFU 一般多少？</summary>
-  <p>HFU 取决于实现，recompute 越多它越高，不代表训得更快；MFU 只看模型和峰值，能跨系统比。GPT-3 21.3%、MT-NLG 30.2%、PaLM 540B 46.2%、Llama 3 405B 38%–43%。前三个是 PaLM 论文统计的，FLOPs 里算了 attention，所以 MT-NLG 比上面只用 6N 手算的 29.8% 略高。</p>
+  <p>HFU 取决于实现，recompute 越多它越高，不代表训得更快。MFU 只看模型和峰值，能跨系统比，数值见图 2。其中 GPT-3、MT-NLG、PaLM 来自 PaLM 论文，FLOPs 算了 attention，所以 MT-NLG 的 30.2% 比上面用 6N 手算的 29.8% 略高。</p>
 </details>
 <details>
   <summary>6ND 漏了什么？</summary>

@@ -18,18 +18,18 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Euclidean distance</dt>
-  <dd>两点之间拉一把直尺量出来的直线距离，\(\|a - b\| = \sqrt{\sum_i (a_i - b_i)^2}\)。方向和长短它都管。
+  <dd>两点之间的直线距离，\(\|a - b\| = \sqrt{\sum_i (a_i - b_i)^2}\)，方向和长短都管。
     <span class="eg">例：(0, 0) 到 (3, 4) 的距离是 5。</span></dd>
   <dt>Dot product</dt>
   <dd>\(a^\top b = \sum_i a_i b_i = \|a\|\,\|b\|\cos\theta\)：长度和夹角乘在一起，分不开。</dd>
   <dt>Cosine similarity</dt>
-  <dd>只看两个向量的夹角，不管长短。像两个人给你指路：只要指的是同一个方向就算一致，不管胳膊伸多长。同向为 1，垂直为 0，反向为 −1。tf-idf 这类非负向量只会落在 [0, 1]。
-    <span class="eg">例：(1, 0) 和 (1, 1) 夹 45°，cosine = 0.707；(1, 2) 和 (10, 20) 方向相同，cosine = 1。</span></dd>
+  <dd>只看两个向量的夹角，不管长短。同向为 1，垂直为 0，反向为 −1，tf-idf 这类非负向量只会落在 [0, 1]。
+    <span class="eg">例：(1, 0) 和 (1, 1) 夹 45°，cosine = 0.707。</span></dd>
   <dt>L2 normalization</dt>
-  <dd>每个向量除以自己的长度，变成长度 1，相当于把所有点都推到单位球面上，只留下方向。
+  <dd>每个向量除以自己的长度，把所有点推到单位球面上，只留下方向。
     <span class="eg">例：(3, 4) 变成 (0.6, 0.8)。</span></dd>
   <dt>Cosine distance</dt>
-  <dd>\(1 - \cos\theta\)：把"越大越像"翻成"越小越像"，方便塞进只认 distance 的算法。但它不是真正的 metric（见追问）。</dd>
+  <dd>\(1 - \cos\theta\)，方便塞进只认 distance 的算法，但它不是真正的 metric（见追问）。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
@@ -40,27 +40,26 @@
   \[ \|a - b\|^2 = (a - b)^\top(a - b) = \|a\|^2 + \|b\|^2 - 2\,a^\top b \]
   \[ a^\top b = \|a\|\,\|b\|\cos\theta \]
   \[ \|a\| = \|b\| = 1 \;\Longrightarrow\; \|a - b\|^2 = 2 - 2\cos\theta \]
-  <p>\(2 - 2\cos\theta\) 随 \(\cos\theta\) 单调递减，所以 cosine 最大的邻居，就是 Euclidean 最近的邻居，kNN 和排序结果完全一样。对应关系：\(\cos = 1\) → 距离 0；\(\cos = 0\) → \(\sqrt2\)；\(\cos = -1\) → 2。</p>
+  <p>\(2 - 2\cos\theta\) 随 \(\cos\theta\) 单调递减，所以 cosine 最大的邻居就是 Euclidean 最近的邻居，排序完全一样。\(\cos = 1\) → 距离 0，\(\cos = 0\) → \(\sqrt2\)，\(\cos = -1\) → 2。</p>
   <p>没 normalize 时 \(\|a - b\|^2 = \|a\|^2 + \|b\|^2 - 2\|a\|\|b\|\cos\theta\)，长度和夹角混在一起，排序可能不同。</p>
 </div>
 
 <h2 id="choose">什么时候用哪个</h2>
-<p><strong>一句话：看向量的长度有没有意义。</strong>长度只是噪声 → cosine（或先 normalize）；长度本身是信息 → Euclidean。</p>
+<p><strong>看向量的长度有没有意义。</strong></p>
 <ol>
-  <li>先问：两个向量方向相同、长短不同，算不算"一样"？一篇文档和它自己重复 5 遍，内容一样 → 算一样 → 用 cosine。</li>
+  <li>一篇文档和它自己重复 5 遍，方向相同、长短不同，内容算一样 → cosine。</li>
   <li>tf-idf、文本 embedding 一般用 cosine：长度主要受文档长短、词频影响，和语义关系不大。</li>
-  <li>坐标、物理量这类大小本身有意义的数据 → Euclidean。推荐系统常用不 normalize 的 inner product（maximum inner product search），这时 item 向量的长度会影响排序。</li>
-  <li>工具只支持 Euclidean 或 inner product（K-means、FAISS 等）：先 L2-normalize，再用它们，排序和 cosine 一样。</li>
+  <li>坐标、物理量这类大小本身有意义的数据 → Euclidean。推荐系统常用不 normalize 的 inner product，item 向量的长度会影响排序。</li>
 </ol>
 <p>例：query \(q = (1, 1)\)，两篇文档 \(d_1 = (5, 5)\)（同一个话题，只是更长）、\(d_2 = (1, 0)\)。</p>
 <table>
-  <thead><tr><th></th><th>和 \(q\) 的 Euclidean</th><th>和 \(q\) 的 cosine</th><th>normalize 后 \(\|\hat q - \hat d\|^2\)</th></tr></thead>
+  <thead><tr><th></th><th>Euclidean</th><th>cosine</th><th>normalize 后 \(\|\hat q - \hat d\|^2\)</th></tr></thead>
   <tbody>
     <tr><td class="nw">\(d_1 = (5, 5)\)</td><td>\(\sqrt{32} \approx 5.66\)</td><td><strong>1</strong></td><td><strong>0</strong></td></tr>
     <tr><td class="nw">\(d_2 = (1, 0)\)</td><td><strong>1</strong></td><td>0.707</td><td>\(2 - 2 \times 0.707 = 0.586\)</td></tr>
   </tbody>
 </table>
-<p>原始的 Euclidean 说 \(d_2\) 更近，cosine 说 \(d_1\) 更像；normalize 之后，Euclidean 也选 \(d_1\)，而且数值正好等于 \(2 - 2\cos\)。</p>
+<p>原始的 Euclidean 说 \(d_2\) 更近，cosine 说 \(d_1\) 更像。normalize 之后 Euclidean 也选 \(d_1\)，数值正好等于 \(2 - 2\cos\)。</p>
 
 <h2 id="code">代码（NumPy）</h2>
 <pre><code>A = X / np.linalg.norm(X, axis=1, keepdims=True)  # L2 normalize
@@ -79,20 +78,16 @@ print(np.allclose(D2, 2 - 2 * C))           # True</code></pre>
 
 <h2>追问</h2>
 <details>
-  <summary>不 normalize，nearest neighbor 还一样吗？</summary>
-  <p>不一定，上面的例子就反过来了。只有所有向量长度都相同时，两者的排序才一定一样。</p>
-</details>
-<details>
   <summary>Cosine distance（1 − cos）是 metric 吗？</summary>
-  <p>不是，triangle inequality 不成立：\(a = (1, 0)\)、\(b = (1, 1)/\sqrt2\)、\(c = (0, 1)\)，\(d(a, b) + d(b, c) = 0.29 + 0.29 = 0.59 &lt; d(a, c) = 1\)。normalize 后的 Euclidean \(\sqrt{2 - 2\cos\theta}\) 是 metric：\(0.77 + 0.77 \ge 1.41\)。靠 triangle inequality 剪枝的索引（比如 BallTree）用不了 cosine distance，所以 sklearn 里 <code>metric="cosine"</code> 的 kNN 只能 brute force。</p>
+  <p>不是，triangle inequality 不成立。\(a = (1, 0)\)、\(b = (1, 1)/\sqrt2\)、\(c = (0, 1)\) 时 \(d(a, b) + d(b, c) = 0.29 + 0.29 = 0.59 &lt; d(a, c) = 1\)。normalize 后的 Euclidean \(\sqrt{2 - 2\cos\theta}\) 是 metric。BallTree 这类靠 triangle inequality 剪枝的索引用不了 cosine distance，所以 sklearn 里 <code>metric="cosine"</code> 的 kNN 只能 brute force。</p>
 </details>
 <details>
   <summary>K-means 想按 cosine 聚类怎么办？</summary>
-  <p>先 L2-normalize 再跑 K-means，因为 assign 这一步按 \(2 - 2\cos\theta\) 分，等于按 cosine 分。但簇内均值不再是单位向量。每轮把质心也重新 normalize，就是 spherical k-means。</p>
+  <p>先 L2-normalize 再跑 K-means，assign 这一步就等于按 cosine 分。但簇内均值不再是单位向量，每轮把质心也重新 normalize，就是 spherical k-means。</p>
 </details>
 <details>
   <summary>向量检索（比如 FAISS）里怎么做 cosine？</summary>
-  <p>建 inner product 索引，入库和查询前都 L2-normalize，最大 inner product 就是最大 cosine。也可以用 L2 索引，两者的距离满足 \(\|x - y\|^2 = 2 - 2\langle x, y\rangle\)。不 normalize 的 inner product 不是 cosine，库里向量的长度会影响排序。</p>
+  <p>建 inner product 索引，入库和查询前都 L2-normalize，最大 inner product 就是最大 cosine。也可以用 L2 索引，因为 \(\|x - y\|^2 = 2 - 2\langle x, y\rangle\)。</p>
 </details>
 <details>
   <summary>Cosine 和 Pearson correlation 什么关系？</summary>

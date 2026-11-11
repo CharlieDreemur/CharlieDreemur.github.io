@@ -18,25 +18,25 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Computational graph</dt>
-  <dd>forward 时每个结果都记下"由哪些输入、经过什么 op 算出来"，像菜谱记下每一步用了哪些食材。最后得到一个 DAG。leaf 是输入和 parameter，root 是 loss。<span class="eg">例：\(L = xy + x\) 有 4 个节点：\(x\)、\(y\)、\(u = xy\)、\(L = u + x\)。</span></dd>
+  <dd>forward 时每个结果都记下自己的输入和 op，最后得到一个 DAG。leaf 是输入和 parameter，root 是 loss。<span class="eg">例：\(L = xy + x\) 有 4 个节点：\(x\)、\(y\)、\(u = xy\)、\(L = u + x\)。</span></dd>
   <dt>Local gradient 与 chain rule</dt>
-  <dd>记 \(\bar v = \partial L/\partial v\)。每个 op 只要知道自己输出对输入的导数：收到 \(\overline{\text{out}}\)，乘上 local derivative 传给输入，像接力传话，每人只乘上自己的放大倍数。各个 op 的公式见下表。</dd>
+  <dd>记 \(\bar v = \partial L/\partial v\)。每个 op 只需要自己输出对输入的导数，收到 \(\overline{\text{out}}\) 后乘上 local derivative 传给输入。</dd>
   <dt>Topological sort</dt>
-  <dd>排一个顺序，让每个节点都排在它的输入之后。backward 按逆序走，保证一个节点收齐所有下游的 gradient 之后才往上游传。像穿衣服先袜子后鞋，脱的时候倒过来。</dd>
+  <dd>让每个节点都排在它的输入之后。backward 按逆序走，一个节点收齐所有下游的 gradient 之后才往上游传。</dd>
   <dt>Fan-out 与 +=</dt>
-  <dd>一个变量被用了好几次，它的 gradient 是各条路径之和，所以代码里必须写 +=，不能写 =。<span class="eg">例：\(L = xy + x\)，\(x = 2,\ y = 3\)：\(\partial L/\partial x = y + 1 = 4\)；写成 = 会被覆盖成 3。</span></dd>
+  <dd>一个变量被用了多次，它的 gradient 是各条路径之和，所以代码里写 +=。<span class="eg">例：\(x = 2,\ y = 3\) 时 \(\partial L/\partial x = y + 1 = 4\)，写成 = 会被覆盖成 3。</span></dd>
   <dt>Reverse mode vs forward mode</dt>
-  <dd>forward mode 从输入往后推，一遍只得到对一个输入的导数，\(n\) 个 parameter 要 \(n\) 遍；reverse mode 从 scalar loss 往回推，一遍得到全部 gradient。代价是 forward 的中间结果要存到 backward 用完（见 <a href="activation-recompute.html">activation recomputation</a>）。<span class="eg">例：\(10^9\) 个 parameter，forward mode 要 \(10^9\) 遍，reverse mode 1 遍。</span></dd>
+  <dd>forward mode 从输入往后推，一遍只得到对一个输入的导数，\(n\) 个 parameter 要 \(n\) 遍。reverse mode 从 scalar loss 往回推，一遍得到全部 gradient，代价是 forward 的中间结果要存到 backward 用完（见 <a href="activation-recompute.html">activation recomputation</a>）。</dd>
 </dl>
 
 <h2 id="figs">看图：L = xy + x 的 graph 和 backward 顺序</h2>
 <figure class="fig">
 <svg viewBox="0 0 540 362" role="img" aria-label="L = xy + x 的 computation graph：x = 2、y = 3、u = 6、L = 8；backward 时 L 传回 1，u 传给 x 3、传给 y 2，x 的 gradient 是两条路相加 1 + 3 = 4；topological order 是 x、y、u、L，backward 按逆序 L、u、y、x"><defs><marker id="ag-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><path d="M152,72 L394,124" class="ln" marker-end="url(#ag-ah)"/><path d="M122,92 L262,214" class="ln" marker-end="url(#ag-ah)"/><path d="M152,238 L232,238" class="ln" marker-end="url(#ag-ah)"/><path d="M352,216 L420,152" class="ln" marker-end="url(#ag-ah)"/><rect x="20" y="48" width="132" height="44" rx="6" class="hot"/><text x="86" y="67" text-anchor="middle" class="acc">x = 2</text><text x="86" y="85" text-anchor="middle" class="c2">grad = 1 + 3 = 4</text><rect x="20" y="216" width="132" height="44" rx="6" class="box"/><text x="86" y="235" text-anchor="middle" class="acc">y = 3</text><text x="86" y="253" text-anchor="middle" class="c2">grad = 2</text><rect x="234" y="216" width="132" height="44" rx="6" class="box"/><text x="300" y="235" text-anchor="middle" class="acc">u = x · y = 6</text><text x="300" y="253" text-anchor="middle" class="c2">grad = 1</text><rect x="396" y="106" width="132" height="44" rx="6" class="box"/><text x="462" y="125" text-anchor="middle" class="acc">L = u + x = 8</text><text x="462" y="143" text-anchor="middle" class="c2">grad = 1</text><text x="268" y="86" text-anchor="middle" class="c2">← 1</text><text x="210" y="150" text-anchor="start" class="c2">← y · 1 = 3</text><text x="192" y="230" text-anchor="middle" class="c2">← x · 1 = 2</text><text x="398" y="194" text-anchor="start" class="c2">← 1</text><text x="20" y="30" text-anchor="start" class="m">x 被用了两次：两条路传回的 1 和 3 相加</text><path d="M0,274 H540" class="grid"/><text x="0" y="309" text-anchor="start" class="m">topological order（DFS 后序）</text><rect x="196" y="292" width="44" height="26" rx="4" class="box"/><text x="218" y="310" text-anchor="middle">x</text><path d="M243,305 H279" class="ln" marker-end="url(#ag-ah)"/><rect x="282" y="292" width="44" height="26" rx="4" class="box"/><text x="304" y="310" text-anchor="middle">y</text><path d="M329,305 H365" class="ln" marker-end="url(#ag-ah)"/><rect x="368" y="292" width="44" height="26" rx="4" class="box"/><text x="390" y="310" text-anchor="middle">u</text><path d="M415,305 H451" class="ln" marker-end="url(#ag-ah)"/><rect x="454" y="292" width="44" height="26" rx="4" class="box"/><text x="476" y="310" text-anchor="middle">L</text><text x="0" y="347" text-anchor="start" class="m">backward 按逆序调用</text><rect x="196" y="330" width="44" height="26" rx="4" class="f2"/><text x="218" y="348" text-anchor="middle">L</text><path d="M243,343 H279" class="ln" marker-end="url(#ag-ah)"/><rect x="282" y="330" width="44" height="26" rx="4" class="f2"/><text x="304" y="348" text-anchor="middle">u</text><path d="M329,343 H365" class="ln" marker-end="url(#ag-ah)"/><rect x="368" y="330" width="44" height="26" rx="4" class="f2"/><text x="390" y="348" text-anchor="middle">y</text><path d="M415,343 H451" class="ln" marker-end="url(#ag-ah)"/><rect x="454" y="330" width="44" height="26" rx="4" class="f2"/><text x="476" y="348" text-anchor="middle">x</text></svg>
-<figcaption>图 1：正文的例子 L = xy + x，x = 2、y = 3。灰色箭头是 forward 的计算方向，框里橙色是 forward 算出的值；蓝色是 backward 沿每条边传回去的 gradient（收到的 grad × local derivative），框里的 grad 是最后的结果。x 有两条边（去 u 和去 L），所以 x.grad = 1 + 3 = 4，这就是要写 += 的原因。下面两行是 build() 排出的 topological order 和 backward 的调用顺序，正好相反。</figcaption>
+<figcaption>图 1：L = xy + x，x = 2、y = 3。灰色箭头是 forward 的方向，橙色是 forward 的值，蓝色是 backward 沿每条边传回的 gradient。x 有两条边，所以 x.grad = 1 + 3 = 4。下面两行是 build() 排出的 topological order 和 backward 的调用顺序，正好相反。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 540 190" role="img" aria-label="backward 每一步之后各变量的 grad：L._backward 让 u.grad 和 x.grad 变成 1，u._backward 让 x.grad 加 3 变成 4、y.grad 变成 2；如果写成 =，x.grad 会被覆盖成 3"><defs></defs><text x="238" y="18" text-anchor="middle" class="hd">L.grad</text><text x="322" y="18" text-anchor="middle" class="hd">u.grad</text><text x="406" y="18" text-anchor="middle" class="hd">x.grad</text><text x="490" y="18" text-anchor="middle" class="hd">y.grad</text><text x="0" y="48" text-anchor="start">起点：L.grad = 1</text><rect x="199" y="30" width="78" height="25" rx="4" class="box"/><text x="238" y="47" text-anchor="middle">1</text><rect x="283" y="30" width="78" height="25" rx="4" class="box"/><text x="322" y="47" text-anchor="middle">0</text><rect x="367" y="30" width="78" height="25" rx="4" class="box"/><text x="406" y="47" text-anchor="middle">0</text><rect x="451" y="30" width="78" height="25" rx="4" class="box"/><text x="490" y="47" text-anchor="middle">0</text><text x="0" y="78" text-anchor="start">L._backward()（add）</text><rect x="199" y="60" width="78" height="25" rx="4" class="box"/><text x="238" y="77" text-anchor="middle">1</text><rect x="283" y="60" width="78" height="25" rx="4" class="f2"/><text x="322" y="77" text-anchor="middle" class="c2">0 + 1 = 1</text><rect x="367" y="60" width="78" height="25" rx="4" class="f2"/><text x="406" y="77" text-anchor="middle" class="c2">0 + 1 = 1</text><rect x="451" y="60" width="78" height="25" rx="4" class="box"/><text x="490" y="77" text-anchor="middle">0</text><text x="0" y="108" text-anchor="start">u._backward()（mul）</text><rect x="199" y="90" width="78" height="25" rx="4" class="box"/><text x="238" y="107" text-anchor="middle">1</text><rect x="283" y="90" width="78" height="25" rx="4" class="box"/><text x="322" y="107" text-anchor="middle">1</text><rect x="367" y="90" width="78" height="25" rx="4" class="f2"/><text x="406" y="107" text-anchor="middle" class="c2">1 + 3 = 4</text><rect x="451" y="90" width="78" height="25" rx="4" class="f2"/><text x="490" y="107" text-anchor="middle" class="c2">0 + 2 = 2</text><text x="0" y="138" text-anchor="start">y、x 是 leaf：什么都不做</text><rect x="199" y="120" width="78" height="25" rx="4" class="box"/><text x="238" y="137" text-anchor="middle">1</text><rect x="283" y="120" width="78" height="25" rx="4" class="box"/><text x="322" y="137" text-anchor="middle">1</text><rect x="367" y="120" width="78" height="25" rx="4" class="box"/><text x="406" y="137" text-anchor="middle">4</text><rect x="451" y="120" width="78" height="25" rx="4" class="box"/><text x="490" y="137" text-anchor="middle">2</text><path d="M0,154 H540" class="grid"/><text x="0" y="176" text-anchor="start" class="acc">若 += 写成 =</text><rect x="367" y="158" width="78" height="25" rx="4" class="hot"/><text x="406" y="175" text-anchor="middle" class="acc">3（错）</text><text x="456" y="175" text-anchor="start" class="m">1 被覆盖</text></svg>
-<figcaption>图 2：按 backward 的调用顺序，每一行是调完这一步后 4 个 grad 的值，蓝色格是这一步改过的。x.grad 被改了两次：L 先给它 1，u 再给它 3，用 += 才能得到 4；如果写成 =，第二次会把第一次的 1 覆盖掉，结果变成错的 3。</figcaption>
+<figcaption>图 2：每一行是调完这一步后 4 个 grad 的值，蓝色格是这一步改过的。x.grad 被改了两次，L 先给 1，u 再给 3。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
@@ -114,7 +114,7 @@ L.backward()                            # x.grad = 4.0, y.grad = 2.0</code></pre
 
 <h2>必答点</h2>
 <ul>
-  <li>forward 建 DAG：每个节点存 data、grad、parents 和自己的 local backward</li>
+  <li>forward 建 DAG：每个节点存 data、grad、parents 和 local backward</li>
   <li>backward：topological sort，从 loss（grad = 1）逆序调用 local backward</li>
   <li>gradient 用 +=：同一个变量被用多次时各路径相加</li>
   <li>reverse mode：scalar loss 一遍 backward 拿到全部 gradient；代价是存 activation</li>
@@ -124,31 +124,27 @@ L.backward()                            # x.grad = 4.0, y.grad = 2.0</code></pre
 <h2>追问</h2>
 <details>
   <summary>matmul、bias、softmax + CE 的 backward 怎么推？</summary>
-  <p><b>matmul</b> \(Y = XW\)，X 是 [n, in]，W 是 [in, out]。先写一个元素：\(Y_{ij} = \sum_k X_{ik} W_{kj}\)，所以 \(\partial Y_{ij}/\partial W_{kl} = X_{ik}\,[l = j]\)，\(\partial Y_{ij}/\partial X_{ab} = W_{bj}\,[a = i]\)。再用 chain rule 把所有 \(Y_{ij}\) 加起来：</p>
+  <p><b>matmul</b> \(Y = XW\)，X 是 [n, in]，W 是 [in, out]。按元素写 \(Y_{ij} = \sum_k X_{ik} W_{kj}\)，所以 \(\partial Y_{ij}/\partial W_{kl} = X_{ik}\,[l = j]\)，\(\partial Y_{ij}/\partial X_{ab} = W_{bj}\,[a = i]\)。用 chain rule 对所有 \(Y_{ij}\) 求和：</p>
   \[ \frac{\partial L}{\partial W_{kl}} = \sum_{i,j} \frac{\partial L}{\partial Y_{ij}} \frac{\partial Y_{ij}}{\partial W_{kl}} = \sum_i X_{ik}\, dY_{il} = (X^\top dY)_{kl} \]
   \[ \frac{\partial L}{\partial X_{ab}} = \sum_j dY_{aj}\, W_{bj} = (dY\,W^\top)_{ab} \]
-  <p><b>bias</b> \(Y = XW + b\)，b 加到每个 token 上：\(db_j = \sum_i dY_{ij}\)，也就是 dY 按 token 求和。<b>elementwise</b> \(H = f(A)\)：\(dA = dH \odot f'(A)\)，每个元素各算各的。</p>
-  <p><b>softmax + CE</b>：\(L = -\log p_t = -z_t + \log\sum_k e^{z_k}\)，对 \(z_j\) 求导得 \(-[j = t] + e^{z_j}/\sum_k e^{z_k}\)，即 \(dz = p - \text{onehot}(t)\)。例：z = [2, 1, 0]、t = 0 → p ≈ [0.665, 0.245, 0.090]，dz ≈ [−0.335, 0.245, 0.090]。</p>
+  <p><b>bias</b> \(Y = XW + b\)：\(db_j = \sum_i dY_{ij}\)，即 dY 按 token 求和。<b>elementwise</b> \(H = f(A)\)：\(dA = dH \odot f'(A)\)。</p>
+  <p><b>softmax + CE</b>（合成一个 op，数值更稳）：\(L = -\log p_t = -z_t + \log\sum_k e^{z_k}\)，对 \(z_j\) 求导得 \(-[j = t] + e^{z_j}/\sum_k e^{z_k}\)，即 \(dz = p - \text{onehot}(t)\)。例：z = [2, 1, 0]、t = 0 → p ≈ [0.665, 0.245, 0.090]，dz ≈ [−0.335, 0.245, 0.090]。</p>
 </details>
 <details>
   <summary>怎么验证 gradient 写对了？</summary>
-  <p>central difference \(\big(f(x+\epsilon) - f(x-\epsilon)\big)/2\epsilon\)，用 float64、\(\epsilon \approx 10^{-6}\)，逐个输入比 relative error（应远小于 \(10^{-6}\)）；或者和 PyTorch 同一个计算的 <code>.grad</code> 对比。</p>
+  <p>central difference \(\big(f(x+\epsilon) - f(x-\epsilon)\big)/2\epsilon\)，用 float64、\(\epsilon \approx 10^{-6}\)，逐个输入比 relative error（应远小于 \(10^{-6}\)）。也可以和 PyTorch 的 <code>.grad</code> 对比。</p>
 </details>
 <details>
   <summary>为什么不直接从 loss 递归调 parents 的 backward？</summary>
-  <p>节点可能在收齐所有下游 gradient 之前就往上传，被用 \(k\) 次就要重复传 \(k\) 次，路径一多就指数爆炸；按 topological order 每个节点的 local backward 只跑一次。图很深时递归 DFS 会超过 Python recursion limit，改用显式 stack。</p>
-</details>
-<details>
-  <summary>怎么扩展到 tensor？</summary>
-  <p>按上表给每个 op 写 backward，gradient 的 shape 要和原 tensor 一样，所以 broadcasting 过的维度要 sum 回去。softmax 和 cross-entropy 合成一个 op，backward 直接用 \(p - y\)，数值上更稳。</p>
+  <p>节点没收齐下游 gradient 就往上传，被用 \(k\) 次就传 \(k\) 次，路径一多就指数爆炸，按 topological order 每个 local backward 只跑一次。图很深时递归 DFS 会超 Python recursion limit，改用显式 stack。</p>
 </details>
 <details>
   <summary>PyTorch 里实际是怎么做的？</summary>
-  <p>每个 tensor 的 <code>grad_fn</code> 指向 graph 里的 <code>Function</code> 节点，graph 每个 iteration 重新建。backward 完默认释放 graph 和 saved tensor，要再 backward 一次得传 <code>retain_graph=True</code>。只有 <code>requires_grad=True</code> 的 leaf tensor 会把 gradient 累加进 <code>.grad</code>（见 <a href="gradient-accumulation.html">gradient accumulation</a>）。</p>
+  <p>tensor 的 <code>grad_fn</code> 指向 graph 里的 <code>Function</code> 节点，graph 每个 iteration 重新建。backward 完默认释放 graph，再 backward 一次要传 <code>retain_graph=True</code>。只有 <code>requires_grad=True</code> 的 leaf tensor 把 gradient 累加进 <code>.grad</code>（见 <a href="gradient-accumulation.html">gradient accumulation</a>）。</p>
 </details>
 <details>
   <summary>什么时候反而用 forward mode？</summary>
-  <p>输入少、输出多（\(n \ll k\)），或者只要 Jacobian-vector product 时。reverse mode 一遍给出的是 vector-Jacobian product \(J^\top r\)（从 \(\bar y = r\) 开始往回推）。</p>
+  <p>输入少、输出多（\(n \ll k\)），或者只要 Jacobian-vector product 时。reverse mode 一遍给出的是 vector-Jacobian product \(J^\top r\)（从 \(\bar y = r\) 往回推）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1502.05767">Baydin et al., Automatic differentiation in machine learning: a survey</a> §3.1（p.10）、§3.2 + Table 3（pp.12–13）· <a href="https://docs.pytorch.org/docs/stable/notes/autograd.html">PyTorch, Autograd mechanics</a>（How autograd encodes the history、Saved tensors、Setting requires_grad）· <a href="https://docs.pytorch.org/docs/stable/generated/torch.Tensor.backward.html">torch.Tensor.backward</a> · <a href="https://github.com/karpathy/micrograd">Karpathy, micrograd</a>（README：scalar <code>Value</code> 上的 reverse-mode autodiff）</p>

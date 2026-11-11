@@ -18,29 +18,29 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Normalization（标准化）</dt>
-  <dd>减均值、除以标准差，把一组数变成 mean 0、variance 1。像把卷面分换成"比平均高几个标准差"，难度不同的科目也能比。<span class="eg">例：60、70、80 分，mean 70，std 8.16 → −1.22、0、1.22。</span></dd>
+  <dd>减均值、除以标准差，把一组数变成 mean 0、variance 1。</dd>
   <dt>BatchNorm</dt>
-  <dd>对<strong>每个 feature</strong>，拿 batch 里所有 sample 的这一维一起算：同一门课，全班一起排名。CNN 里每个 channel 一组，在 batch 和所有像素位置上一起算。</dd>
+  <dd>对<strong>每个 feature</strong>，拿 batch 里所有 sample 的这一维一起算。CNN 里每个 channel 一组，在 batch 和所有像素位置上一起算。</dd>
   <dt>LayerNorm</dt>
-  <dd>对<strong>每个 sample</strong>（Transformer 里是每个 token），拿它自己的所有 feature 一起算：同一个学生，只和自己的各科比，不看别人。</dd>
+  <dd>对<strong>每个 sample</strong>（Transformer 里是每个 token），拿它自己的所有 feature 一起算，不看别的 sample。</dd>
   <dt>γ 和 β（learnable scale、shift）</dt>
-  <dd>标准化后再乘 γ、加 β，让网络自己决定输出的大小和偏移；γ = σ、β = μ 时正好还原原输入，不损失表达能力。<span class="eg">例：γ = 2、β = 1，−1.22、0、1.22 变成 −1.45、1、3.45。</span></dd>
+  <dd>标准化后再乘 γ、加 β，让网络自己决定输出的大小和偏移。γ = σ、β = μ 时正好还原原输入，不损失表达能力。</dd>
   <dt>Running mean / variance</dt>
-  <dd>BatchNorm 训练时用当前 batch 的统计量，同时用 EMA 记一份"往年平均"，eval 时只用这份。像平时按本班排名，统考按往年的平均分换算，结果不再受同场其他人影响。</dd>
+  <dd>BatchNorm 训练时用当前 batch 的统计量，同时用 EMA 记一份，eval 时只用这份。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Both normalize activations to zero mean and unit variance, then apply a learnable scale γ and shift β; the difference is the axis. BatchNorm computes statistics per feature, or per channel in a CNN, across the batch, so it depends on the batch: training uses batch statistics and updates running averages, which are used at inference. LayerNorm computes statistics per sample across its features, so it behaves the same in training and inference and works with any batch size. That's why CNNs use BatchNorm, while RNNs and Transformers use LayerNorm. Both allow higher learning rates, mainly by smoothing the loss landscape.</p></div>
+<div class="answer"><p>Both normalize activations to zero mean and unit variance, then apply a learnable scale γ and shift β; the difference is the axis. BatchNorm computes statistics per feature, or per channel in a CNN, across the batch, so it depends on the batch: training uses batch statistics and updates running averages, which are used at inference. LayerNorm computes statistics per sample across its features, so it behaves the same in training and inference and works with any batch size. That's why CNNs use BatchNorm, while RNNs and Transformers use LayerNorm.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
   <h3 id="bn">BatchNorm：每个 feature \(j\)，沿 batch 的 \(m\) 个 sample</h3>
   \[ \mu_j = \frac1m\sum_{i=1}^{m} x_{ij},\qquad \sigma_j^2 = \frac1m\sum_{i=1}^{m}(x_{ij}-\mu_j)^2 \]
   \[ y_{ij} = \gamma_j\,\frac{x_{ij}-\mu_j}{\sqrt{\sigma_j^2+\epsilon}} + \beta_j \]
-  <p>LayerNorm 公式完全一样，只是改成沿 \(j\) 求和。每个 sample 在自己的 \(D\) 个 feature 上算一组 \(\mu, \sigma\)。</p>
+  <p>LayerNorm 公式一样，只是改成沿 \(j\) 求和，每个 sample 在自己的 \(D\) 个 feature 上算一组 \(\mu, \sigma\)。</p>
   <h3 id="running">Running statistics（只有 BatchNorm 有）</h3>
   \[ \hat\mu \leftarrow (1-\alpha)\,\hat\mu + \alpha\,\mu_B \]
-  <p>\(\hat\sigma^2\) 同理，但存 unbiased 的 \(\tfrac{m}{m-1}\sigma_B^2\)；\(\alpha\) 即 PyTorch 的 momentum，默认 0.1。eval 时用 \(\hat\mu, \hat\sigma^2\) 代替 batch 统计量。</p>
+  <p>\(\hat\sigma^2\) 同理，但存 unbiased 的 \(\tfrac{m}{m-1}\sigma_B^2\)；\(\alpha\) 即 PyTorch 的 momentum，默认 0.1。</p>
 </div>
 
 <h2 id="axis">沿哪个轴：一个例子</h2>
@@ -84,7 +84,7 @@
   <li>BatchNorm train 用 batch stats 并更新 running stats，eval 用 running stats；LayerNorm 两种模式一样</li>
   <li>BatchNorm 依赖 batch size → CNN；LayerNorm 与 batch 无关 → RNN、Transformer</li>
   <li>都有 learnable γ、β</li>
-  <li>作用：能用更大 learning rate；原论文说减少 internal covariate shift，后续研究认为主要是 loss landscape 更 smooth</li>
+  <li>作用：能用更大 learning rate；原论文说减少 internal covariate shift，Santurkar et al. 2018 认为主要是 loss landscape 更 smooth</li>
 </ul>
 
 <h2>追问</h2>
@@ -94,19 +94,15 @@
 </details>
 <details>
   <summary>Transformer 为什么用 LayerNorm？</summary>
-  <p>sequence 长短不一、batch 小，按 batch 算的统计量不稳。用在 RNN 上还得每个 time step 存一组，测试序列更长就没得用（LayerNorm 原文 §3.1）。LLaMA 用 RMSNorm：不减均值，只除以 \(\sqrt{\tfrac1D\sum_j x_j^2}\)，更省。</p>
-</details>
-<details>
-  <summary>BatchNorm 为什么有用？</summary>
-  <p>原论文：固定每层输入的分布（减少 internal covariate shift），从而能用更高的 learning rate。Santurkar et al. 2018 发现它其实没怎么减少 internal covariate shift，主要是让 loss landscape 更 smooth、gradient 更可预测。</p>
+  <p>sequence 长短不一、batch 小，按 batch 算的统计量不稳。用在 RNN 上还得每个 time step 存一组，测试序列更长就没得用（LayerNorm 原文 §3.1）。LLaMA 用 RMSNorm，不减均值，只除以 \(\sqrt{\tfrac1D\sum_j x_j^2}\)。</p>
 </details>
 <details>
   <summary>batch 很小怎么办？</summary>
-  <p>换不依赖 batch 的 normalization，比如 GroupNorm：channel 分组，每个 sample 每组单独算。只分 1 组就是 LayerNorm（Murphy §14.2.4.2）。</p>
+  <p>换 GroupNorm，channel 分组，每个 sample 每组单独算。只分 1 组就是 LayerNorm（Murphy §14.2.4.2）。</p>
 </details>
 <details>
   <summary>BatchNorm 的 backward 怎么写？</summary>
-  <p>记 \(\sigma=\sqrt{\sigma_B^2+\epsilon}\)，沿 batch 求和：\(dx = \frac{\gamma}{m\sigma}\big(m\,dy - \sum dy - \hat x\sum dy\,\hat x\big)\)，\(d\gamma = \sum dy\,\hat x\)，\(d\beta = \sum dy\)。原论文 p.4 有逐步的 chain rule。</p>
+  <p>记 \(\sigma=\sqrt{\sigma_B^2+\epsilon}\)，沿 batch 求和：\(dx = \frac{\gamma}{m\sigma}\big(m\,dy - \sum dy - \hat x\sum dy\,\hat x\big)\)，\(d\gamma = \sum dy\,\hat x\)，\(d\beta = \sum dy\)。原论文 p.4 有 chain rule。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1502.03167">Ioffe &amp; Szegedy 2015</a> Alg. 1–2、§3.1（pp.3–4）· <a href="https://arxiv.org/abs/1607.06450">Ba et al. 2016</a> §3–3.1（pp.2–3）· <a href="https://arxiv.org/abs/1805.11604">Santurkar et al. 2018</a> abstract · <a href="https://arxiv.org/abs/1910.07467">Zhang &amp; Sennrich 2019</a>（RMSNorm）eq. 4 · <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023</a>（LLaMA）§2.2 · <a href="https://d2l.ai/chapter_convolutional-modern/batch-norm.html">d2l §8.5</a> · <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §14.2.4（pp.476–479）· <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html">PyTorch BatchNorm2d</a></p>

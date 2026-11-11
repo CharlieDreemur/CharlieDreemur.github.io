@@ -18,29 +18,27 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>KV head</dt>
-  <dd>MHA 里每个 head 都有自己的 K、V。decode 时每个 token 的 K、V 都要存进 <a href="kv-cache.html">KV cache</a>，KV head 越多，要存的、每步要从显存读的就越多。</dd>
+  <dd>MHA 里每个 head 都有自己的 K、V，decode 时都要存进 <a href="kv-cache.html">KV cache</a>，每步还要整个读一遍（memory-bound）。KV head 越少，decode 越快。</dd>
   <dt>MQA（multi-query attention）</dt>
-  <dd>所有 query head 共用 1 组 K、V。像全班共用一本参考书：书架省 h 倍，但大家只能看同一本，quality 略降。</dd>
+  <dd>所有 query head 共用 1 组 K、V，cache 省 h 倍，quality 略降。<span class="eg">例：原论文的 decoder 每个 token 从 46 µs 降到 3.8 µs。</span></dd>
   <dt>GQA（grouped-query attention）</dt>
-  <dd>query head 分成 g 组，每组共用一组 K、V，介于 MHA（g = h）和 MQA（g = 1）之间。<span class="eg">例：LLaMA 3 8B 有 32 个 query head、8 个 KV head，每 4 个 query head 共用一组。</span></dd>
+  <dd>query head 分成 g 组，每组共用一组 K、V。<span class="eg">例：LLaMA 3 8B 有 32 个 query head、8 个 KV head。</span></dd>
   <dt>MLA（multi-head latent attention）</dt>
-  <dd>不存 K、V 本身，只存一个低维 latent 向量，像存压缩包，用时再 up-project 回 K、V。<span class="eg">例：DeepSeek-V2 每层每 token 只存 512 + 64 = 576 个数。</span></dd>
-  <dt>Memory-bound decode</dt>
-  <dd>decode 每步只算 1 个 token，却要把整个 KV cache 从显存读一遍，时间花在搬数据上。cache 越小，每步越快，batch 也能开得越大。</dd>
+  <dd>不存 K、V，只存一个低维 latent 向量。<span class="eg">例：DeepSeek-V2 每层每 token 只存 512 + 64 = 576 个数。</span></dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>In multi-head attention every query head has its own K and V head, and decoding caches all of them: 2 × layers × KV heads × head dim × bytes per token. Decoding is memory-bound, so this cache limits speed, batch size and context length. MQA shares one K/V head across all query heads, shrinking the cache by the head count at some quality cost. GQA shares one K/V head per group of query heads and stays close to MHA quality; LLaMA 3 uses 8 groups. MLA in DeepSeek-V2 caches a low-rank latent per token instead, about as small as GQA with 2.25 groups.</p></div>
+<div class="answer"><p>In multi-head attention every query head has its own K and V, and decoding caches all of them: 2 × layers × KV heads × head dim × bytes per token. Decoding is memory-bound, so this cache limits speed, batch size and context length. MQA shares one K/V head across all query heads, shrinking the cache by the head count at some quality cost. GQA shares one per group and stays close to MHA quality. MLA in DeepSeek-V2 caches a low-rank latent per token, about as small as GQA with 2.25 groups.</p></div>
 
 <h2>关键公式与手算</h2>
 <div class="deriv">
   \[ \text{KV cache / token} = 2 \cdot L \cdot n_{kv} \cdot d_{head} \cdot \text{bytes} \]
-  <p>2 = K 和 V；\(L\) 层；\(n_{kv}\)：MHA 是 \(h\)，GQA 是 \(g\)，MQA 是 1。总量再乘 context 长度和 batch。</p>
+  <p>\(n_{kv}\) 在 MHA 是 \(h\)，GQA 是 \(g\)，MQA 是 1。总量再乘 context 长度和 batch。</p>
 </div>
 <p>bf16（2 bytes），\(d_{head} = 128\)：</p>
 <ul>
-  <li>LLaMA 2 7B（MHA，32 层，32 个 head）：2 × 32 × 32 × 128 × 2 = <strong>512 KiB</strong>/token，4K context 一条序列 2 GiB</li>
-  <li>LLaMA 3 8B（GQA，8 个 KV head）：2 × 32 × 8 × 128 × 2 = <strong>128 KiB</strong>/token，小 4 倍；128K context 一条序列 16 GiB，和 weights（8B × 2 bytes）差不多大</li>
+  <li>LLaMA 2 7B（MHA，32 层，32 个 head）：2 × 32 × 32 × 128 × 2 = <strong>512 KiB</strong>/token</li>
+  <li>LLaMA 3 8B（GQA，8 个 KV head）：2 × 32 × 8 × 128 × 2 = <strong>128 KiB</strong>/token，小 4 倍。128K context 一条序列 16 GiB，和 weights（8B × 2 bytes）差不多大</li>
   <li>同样形状换成 MQA：16 KiB/token</li>
 </ul>
 
@@ -50,7 +48,7 @@
     <tr><td class="nw">MHA</td><td class="nw">\(2\,h\,d_h\)</td><td>LLaMA 2 7B</td><td>baseline</td></tr>
     <tr><td class="nw">MQA</td><td class="nw">\(2\,d_h\)（÷ \(h\)）</td><td>PaLM</td><td>略降，可能训练不稳</td></tr>
     <tr><td class="nw">GQA</td><td class="nw">\(2\,g\,d_h\)（÷ \(h/g\)）</td><td>LLaMA 2 34B、70B；LLaMA 3 全系 \(g = 8\)</td><td>接近 MHA</td></tr>
-    <tr><td class="nw">MLA</td><td class="nw">\(d_c + d_R\)</td><td>DeepSeek-V2：512 + 64</td><td>论文称强于 MHA</td></tr>
+    <tr><td class="nw">MLA</td><td class="nw">\(d_c + d_R\)</td><td>DeepSeek-V2</td><td>论文称强于 MHA</td></tr>
   </tbody>
 </table>
 
@@ -69,7 +67,7 @@
     S = Q @ K.transpose(0, 2, 1) / np.sqrt(Q.shape[-1])
     P = np.exp(S - S.max(-1, keepdims=True))
     return (P / P.sum(-1, keepdims=True)) @ V</code></pre>
-<p>\(g = h\) 就是 MHA，\(g = 1\) 就是 MQA。cache 里只存 \(g\) 组，repeat 只在算的时候做。完整 attention 练习见 ml-coding。</p>
+<p>cache 里只存 \(g\) 组，repeat 只在算的时候做。完整练习见 ml-coding。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -83,23 +81,15 @@
 <h2>追问</h2>
 <details>
   <summary>Q 和 K 的 dim 必须一样吗？（NVIDIA 原题）</summary>
-  <p>同一个 head 里必须一样，要做 dot product；head 数可以不同，就是 GQA、MQA。V 的 head dim 可以不同。DeepSeek-V2 每个 head 的 q、k 是 128 + 64 = 192 维，v 是 128 维。</p>
-</details>
-<details>
-  <summary>已有 MHA checkpoint 怎么变成 GQA？</summary>
-  <p>uptraining：每组内把原来各 head 的 K、V projection 取平均（mean-pool），再用原 pre-training 约 5% 的 compute 继续训。</p>
+  <p>同一个 head 里必须一样，因为要做 dot product，但 head 数可以不同，就是 GQA、MQA。V 的 head dim 也可以不同，DeepSeek-V2 的 q、k 是 128 + 64 = 192 维，v 是 128 维。</p>
 </details>
 <details>
   <summary>MQA 更省，为什么大模型多用 GQA？</summary>
-  <p>MQA quality 和训练稳定性有损。GQA 论文的 T5-XXL 每个样本推理 MHA 1.51 s、MQA 0.24 s、GQA-8 0.28 s，平均分 47.2、46.6、47.1，GQA 几乎一样快、分数接近 MHA。而且 tensor parallel 时 KV head 少于 GPU 数，没法按 head 切，只能每张卡复制一份，KV cache 就和 GQA 一样大了（LLaMA 2 Appendix A.2.1）。</p>
+  <p>GQA 论文的 T5-XXL 每个样本推理 MHA 1.51 s、MQA 0.24 s、GQA-8 0.28 s，平均分 47.2、46.6、47.1，GQA 速度接近 MQA、分数接近 MHA。tensor parallel 时 KV head 少于 GPU 数就没法按 head 切，只能每张卡复制一份，KV cache 和 GQA 一样大。</p>
 </details>
 <details>
   <summary>MLA 和 RoPE 有什么冲突？</summary>
-  <p>RoPE 矩阵随位置变化，夹在 \(W^Q\) 和 \(W^{UK}\) 中间，\(W^{UK}\) 就并不进 \(W^Q\)，每步得重算前缀的 K。DeepSeek-V2 另加 \(d_R = 64\) 维、所有 head 共用的 key 专门带 RoPE，所以 cache 是 \((d_c + d_R)\cdot L\)。</p>
-</details>
-<details>
-  <summary>为什么 KV cache 变小就更快？</summary>
-  <p>decode 每步要把 KV cache 从显存读一遍。MQA 把读 K、V 的量降为 \(1/h\)；原论文翻译模型的 decoder 每个 token 从 46 µs 降到 3.8 µs。</p>
+  <p>RoPE 矩阵随位置变化，夹在 \(W^Q\) 和 \(W^{UK}\) 中间，\(W^{UK}\) 并不进 \(W^Q\)，每步得重算前缀的 K。DeepSeek-V2 另加 \(d_R = 64\) 维、所有 head 共用的 key 带 RoPE，所以 cache 是 \((d_c + d_R)\cdot L\)。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1911.02150">Shazeer 2019, MQA</a> §2.4.1（p.4）、§3–3.1（pp.5–6）、Table 1–2（p.8）· <a href="https://arxiv.org/abs/2305.13245">Ainslie et al. 2023, GQA</a> §1–2.2（pp.1–2）、§3.1–3.2、Table 1（pp.2–3）· <a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2</a> §2.1.1–2.1.4（pp.6–9，eq. 9–19，Table 1）、§3.1.2（p.12）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023a, LLaMA</a> Table 2（p.3）· <a href="https://arxiv.org/abs/2307.09288">Touvron et al. 2023b, Llama 2</a> §2.2、Table 1（pp.5–6）、Appendix A.2.1（p.47）· <a href="https://arxiv.org/abs/2407.21783">Llama 3 Herd</a> §3.2 Table 3（p.7）</p>

@@ -20,9 +20,7 @@
   <dt>Context window</dt>
   <dd>model 一次能看的 token 上限。长任务里 messages 越积越多，早晚会满。</dd>
   <dt>Context compaction</dt>
-  <dd>把旧的历史换成一段摘要，腾出空间。像交接班时只留一页交接单，不把整本值班日志交给下一班。</dd>
-  <dt>大 tool result 落盘</dt>
-  <dd>很长的 tool result 写进文件，context 里只留路径和开头几行。<span class="eg">例：一次查出几万行日志，context 里只放文件路径和前 20 行。</span></dd>
+  <dd>把旧的历史换成一段摘要，腾出空间。</dd>
   <dt>Prefix cache</dt>
   <dd>两次请求的前缀完全相同时，这段前缀算过的结果可以复用。前缀里改了一处，它后面的部分都要重算。</dd>
   <dt>规则文件</dt>
@@ -61,7 +59,7 @@
   <text class="c2" x="110" y="180" text-anchor="middle">cache 命中</text>
   <text class="acc" x="215" y="180" text-anchor="middle">重算一次</text>
 </svg>
-<figcaption>图 1：横条的总长是 context window，各段的长度只作示意。用量过了阈值，旧的历史换成一段摘要，大 tool result 的全文留在文件里。固定前缀是 system prompt 和 tool 定义，compaction 不动它，所以它的 cache 还能命中。摘要和它后面的部分要重算一次。</figcaption>
+<figcaption>图 1：横条的总长是 context window，各段的长度只作示意。固定前缀是 system prompt 和 tool 定义，compaction 不动它，所以它的 cache 还能命中。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
@@ -71,18 +69,18 @@
 <table>
   <thead><tr><th>问题</th><th>做法</th></tr></thead>
   <tbody>
-    <tr><td class="nw">谁触发</td><td>harness 每轮数 token，过了阈值就压，比如到 window 的 80%（数字是举例）。不靠 model 自己想起来</td></tr>
+    <tr><td class="nw">谁触发</td><td>harness 每轮数 token，过了阈值就压，比如 window 的 80%。不靠 model 自己想起来</td></tr>
     <tr><td class="nw">大 tool result</td><td>写进文件，context 里只留路径和开头几行</td></tr>
     <tr><td class="nw">摘要里留什么</td><td>目标、约束、已做的决定、未完成的步骤</td></tr>
-    <tr><td class="nw">摘要丢了细节</td><td>原始记录留在磁盘，摘要里带路径，要用时按路径取回</td></tr>
-    <tr><td class="nw">不能丢的约束</td><td>放进规则文件，逐字保留</td></tr>
+    <tr><td class="nw">摘要丢了细节<br>（字节原题）</td><td>原始记录留在磁盘，摘要里带路径，要用时 model 用 read tool 取回</td></tr>
+    <tr><td class="nw">不能丢的约束<br>（蚂蚁原题）</td><td>放进规则文件，逐字保留。写进长期 memory 之前，再拿规则文件核对一遍</td></tr>
   </tbody>
 </table>
-<p>单个文件本身就放不进 context 的情况是另一道题，见 <a href="long-document.html">文件放不进 context</a>。</p>
+<p>单个文件放不进 context 是另一道题，见 <a href="long-document.html">文件放不进 context</a>。</p>
 
 <h2 id="cache">对 prefix cache 的影响</h2>
-<p>Prefix cache 的原理见 <a href="kv-cache.html">KV cache</a> 和 <a href="inference-cost.html">inference cost</a>。Compaction 改写了历史，所以从摘要开始往后的部分会 miss 一次。对策有两条。第一条是少压，一次压到位，不要每轮都改一点。第二条是把 system prompt 和 tool 定义放在最前面，compaction 不动它们。</p>
-<p>手算一遍，数字都是举例。window 是 200K，阈值 80% 就是 160K。压之前有固定前缀 10K、旧的历史 135K、最近几轮 20K，合计 165K，过了阈值。把旧的历史压成 5K 的摘要，合计变成 35K。压完后的第一次请求里，10K 的固定前缀命中 cache，后面的 25K 重算。再往后每轮又只需要算新增的部分。</p>
+<p>Compaction 改写了历史，所以从摘要开始往后的部分会 miss 一次（原理见 <a href="kv-cache.html">KV cache</a> 和 <a href="inference-cost.html">inference cost</a>）。对策是少压，一次压到位，并把 system prompt 和 tool 定义放在最前面不动。</p>
+<p>数字都是举例。window 是 200K，阈值 80% 就是 160K。压之前有固定前缀 10K、旧的历史 135K、最近几轮 20K，合计 165K，过了阈值。把旧的历史压成 5K 的摘要，合计变成 35K。压完后的第一次请求里，10K 的固定前缀命中 cache，后面的 25K 重算，再往后每轮只算新增的部分。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -96,20 +94,8 @@
 
 <h2>追问</h2>
 <details>
-  <summary>摘要把“不能修改生产配置”写成了“修改生产配置”，怎么办？（蚂蚁原题）</summary>
-  <p>约束不交给摘要，它放在不参与 compaction 的规则文件里，每次逐字放进 context。写进长期 memory 之前，再拿规则文件核对一遍。</p>
-</details>
-<details>
-  <summary>旧信息已经被摘要掉了，后面还要用怎么办？（字节，作者转述）</summary>
-  <p>原始记录没有删，还在磁盘上。摘要里留着路径，model 用 read tool 把那一段取回来。</p>
-</details>
-<details>
-  <summary>compaction 的触发点是 model 主动，还是 harness 实现？</summary>
-  <p>harness 实现。它每轮都能拿到确切的 token 用量，触发条件写成代码最稳，不依赖 model 记得去做。</p>
-</details>
-<details>
   <summary>被问到 Claude Code 或 Codex 的 compaction 是怎么实现的，怎么答？</summary>
-  <p>中文面经里有几帖这样问。没读过实现就直说，然后讲自己会怎么设计，也就是上面那张表的五行。</p>
+  <p>没读过实现就直说，然后讲自己会怎么设计，也就是上面那张表的五行。</p>
 </details>
 <details>
   <summary>FlashVector 怎么控制 context 的大小？</summary>

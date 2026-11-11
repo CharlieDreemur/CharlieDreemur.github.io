@@ -18,25 +18,25 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Activation function</dt>
-  <dd>每层 linear 变换之后的那一下"弯折"。没有它，叠多少层都等于一层 linear，就像把几把直尺首尾接起来还是一条直线。<span class="eg">例：\(y = 2\cdot(3x) = 6x\)，两层合起来还是一条直线。</span></dd>
+  <dd>每层 linear 变换之后的那一下弯折。没有它，叠多少层都等于一层 linear。<span class="eg">例：\(y = 2\cdot(3x) = 6x\)。</span></dd>
   <dt>Saturation</dt>
-  <dd>输入很大或很小时输出几乎不变，像音量旋钮已经拧到头，再拧也没反应。这时导数接近 0，gradient 传不回去。<span class="eg">例：\(\sigma'(0) = 0.25\)，\(\sigma'(5) \approx 0.0066\)。</span></dd>
+  <dd>输入很大或很小时输出几乎不变，这时导数接近 0，gradient 传不回去。<span class="eg">例：\(\sigma'(0) = 0.25\)，\(\sigma'(5) \approx 0.0066\)。</span></dd>
   <dt>Sigmoid 与 tanh</dt>
-  <dd>都把任意实数压进一个区间：sigmoid 压到 (0, 1)，像一个"概率开关"；tanh 压到 (−1, 1)，以 0 为中心。<span class="eg">例：\(\sigma(0) = 0.5\)，\(\sigma(2) \approx 0.88\)；\(\tanh(0) = 0\)。</span></dd>
+  <dd>sigmoid 把任意实数压到 (0, 1)，tanh 压到 (−1, 1)，以 0 为中心。<span class="eg">例：\(\sigma(0) = 0.5\)，\(\sigma(2) \approx 0.88\)；\(\tanh(0) = 0\)。</span></dd>
   <dt>Softmax</dt>
-  <dd>把一组分数（logits）变成加起来等于 1 的概率，按 \(e^{z}\) 的比例分蛋糕。分数高一点，分到的多很多。<span class="eg">例：logits (1, 2, 3) → (0.09, 0.24, 0.67)。</span></dd>
+  <dd>把一组 logits 按 \(e^{z}\) 的比例变成加起来等于 1 的概率，分数高一点分到的多很多。</dd>
   <dt>ReLU 与 dead ReLU</dt>
-  <dd>ReLU 像单向阀。负数清零，正数原样通过。如果某个 neuron 对所有输入都落在负区间，它的输出和 gradient 永远是 0，再也学不动，叫 dead ReLU。<span class="eg">例：ReLU(−2) = 0，ReLU(3) = 3；正区间导数恒为 1。</span></dd>
+  <dd>负数清零，正数原样通过。neuron 对所有输入都落在负区间时，输出和 gradient 永远是 0，叫 dead ReLU。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Sigmoid squashes to (0, 1), so it suits binary outputs and gates, but it saturates: its derivative is at most 0.25 and near zero for large inputs, which causes vanishing gradients, and it isn't zero-centered. Tanh is zero-centered but still saturates. Softmax turns logits into a probability distribution for multi-class outputs; with cross-entropy the gradient is just p minus y, and we subtract the max logit for numerical stability. ReLU is the default for hidden layers: it doesn't saturate for positive inputs, it's cheap, and it's sparse. Its downside is dead ReLUs, units stuck at zero, which Leaky ReLU or GELU fix.</p></div>
+<div class="answer"><p>Sigmoid squashes to (0, 1), so it suits binary outputs and gates, but it saturates: its derivative is at most 0.25 and near zero for large inputs, which causes vanishing gradients, and it isn't zero-centered. Tanh is zero-centered but still saturates. Softmax turns logits into a probability distribution for multi-class outputs; with cross-entropy the gradient is p minus y, and we subtract the max logit for stability. ReLU is the default for hidden layers: it doesn't saturate for positive inputs, and it's cheap and sparse. Its downside is dead ReLUs, units stuck at zero, which Leaky ReLU or GELU fix.</p></div>
 
 <h2>对比</h2>
 <table>
   <thead><tr><th>函数</th><th>范围</th><th class="nw">导数最大</th><th>优点</th><th>缺点</th><th>用在哪</th></tr></thead>
   <tbody>
-    <tr><td class="nw">sigmoid</td><td class="nw">(0, 1)</td><td class="nw">0.25</td><td>输出像概率</td><td>saturate → vanishing；非 zero-centered；exp 较贵</td><td>binary output、LSTM gate</td></tr>
+    <tr><td class="nw">sigmoid</td><td class="nw">(0, 1)</td><td class="nw">0.25</td><td>输出像概率</td><td>saturate → vanishing；非 zero-centered</td><td>binary output、LSTM gate</td></tr>
     <tr><td class="nw">tanh</td><td class="nw">(−1, 1)</td><td class="nw">1</td><td>zero-centered</td><td>两端仍 saturate</td><td>RNN hidden state</td></tr>
     <tr><td class="nw">softmax</td><td class="nw">(0, 1)，和为 1</td><td class="nw">–</td><td>logits → 概率分布；配 cross-entropy，gradient = \(p - y\)</td><td>要减 max 防 overflow；只适合类别互斥</td><td>multi-class output</td></tr>
     <tr><td class="nw">ReLU</td><td class="nw">[0, ∞)</td><td class="nw">1</td><td>正区间不 saturate；便宜；sparse</td><td>dead ReLU；非 zero-centered</td><td>CNN / MLP hidden 默认</td></tr>
@@ -51,15 +51,15 @@
   \[ \sigma'(z) = \sigma(z)\big(1 - \sigma(z)\big) \le \tfrac14 \]
   \[ \tanh(z) = 2\sigma(2z) - 1 \]
   \[ \tanh'(z) = 1 - \tanh^2(z) \le 1 \]
-  <p>最大值都在 \(z = 0\)，两端都趋于 0。这就是 saturation。</p>
+  <p>最大值都在 \(z = 0\)，两端都趋于 0。</p>
 
   <h3 id="zero-centered">非 zero-centered 为什么不好</h3>
   \[ \frac{\partial L}{\partial w_i} = \delta \cdot x_i \]
-  <p>上一层是 sigmoid 时所有 \(x_i &gt; 0\)，同一个 neuron 的所有 weight gradient 都和 \(\delta\) 同号，一步里只能一起变大或一起变小，路线走成"之"字形。例：\(x = (0.5, 0.9)\)，\(\delta = -2\) → gradient \((-1, -1.8)\)，全是负的。</p>
+  <p>上一层是 sigmoid 时所有 \(x_i &gt; 0\)，同一个 neuron 的所有 weight gradient 都和 \(\delta\) 同号，只能一起变大或变小，路线走成之字形。例：\(x = (0.5, 0.9)\)，\(\delta = -2\) → gradient \((-1, -1.8)\)。</p>
 
   <h3 id="relu">ReLU</h3>
   \[ \mathrm{ReLU}(z) = \max(0, z),\qquad \mathrm{ReLU}'(z) = \mathbb{I}[z &gt; 0] \]
-  <p>正区间导数恒为 1，深层连乘不会衰减；负区间导数为 0，dead ReLU 就是从这里来的。</p>
+  <p>正区间导数恒为 1，深层连乘不衰减（数字见 <a href="vanishing-gradient.html#relu">vanishing gradient</a>）。sigmoid 只留在输出层，配 cross-entropy 时 log 能抵消它的 saturation。</p>
 
   <h3 id="softmax">softmax + cross-entropy</h3>
   \[ p_i = \frac{e^{z_i}}{\sum_j e^{z_j}} \]
@@ -73,7 +73,7 @@
 <ul>
   <li>\(e^{z} = (2.72,\ 7.39,\ 20.09)\)，和 = 30.19 → \(p = (0.090,\ 0.245,\ 0.665)\)</li>
   <li>loss \(= -\log 0.665 = 0.408\)；gradient \(p - y = (0.090,\ 0.245,\ -0.335)\)：错的类往下压，对的类往上推</li>
-  <li>\(z = (1000, 1001, 1002)\)：直接算 \(e^{1000}\) 得 inf，inf / inf = NaN；先减 max 变成 \((-2, -1, 0)\)，结果还是 \((0.090, 0.245, 0.665)\)</li>
+  <li>\(z = (1000, 1001, 1002)\)：直接算 \(e^{1000}\) 得 inf，inf / inf = NaN；先减 max 变成 \((-2, -1, 0)\)，结果不变</li>
 </ul>
 
 <h2>必答点</h2>
@@ -87,24 +87,20 @@
 
 <h2>追问</h2>
 <details>
-  <summary>hidden layer 为什么用 ReLU，不用 sigmoid？</summary>
-  <p>sigmoid 的导数最多 0.25，深层连乘后 gradient 消失（见 <a href="vanishing-gradient.html#relu">vanishing gradient</a>）；ReLU 正区间导数恒为 1，不 saturate，而且只要比较一次，比 exp 便宜。sigmoid 只留在输出层，配 cross-entropy 时 log 能抵消它的 saturation。</p>
-</details>
-<details>
   <summary>dead ReLU 是怎么产生的？怎么办？</summary>
-  <p>learning rate 太大或初始化不好，把 weight / bias 推到让这个 neuron 对所有输入都有 \(z &lt; 0\)，输出和 gradient 都恒为 0，再也回不来。办法：Leaky ReLU / PReLU / ELU 让负区间也有 gradient，调小 learning rate，用 He init。</p>
+  <p>learning rate 太大或初始化不好，把 weight / bias 推到对所有输入都有 \(z &lt; 0\)，gradient 恒为 0，再也回不来。办法是 Leaky ReLU / PReLU / ELU 让负区间也有 gradient，调小 learning rate，用 He init。</p>
 </details>
 <details>
   <summary>multi-label 用 softmax 还是 sigmoid？两者什么关系？</summary>
-  <p>类别互斥（只能选一个）用 softmax；multi-label（每类各自是 / 否）每类一个 sigmoid + binary cross-entropy。两类时 softmax 就是 sigmoid：\(\operatorname{softmax}(z)_1 = \sigma(z_1 - z_2)\)。</p>
+  <p>类别互斥用 softmax。multi-label 每类一个 sigmoid + binary cross-entropy。两类时 softmax 就是 sigmoid，\(\operatorname{softmax}(z)_1 = \sigma(z_1 - z_2)\)。</p>
 </details>
 <details>
   <summary>ReLU 在 0 点不可导，怎么 backprop？</summary>
-  <p>实现里直接取一侧的导数（0 或 1），不报错。输入恰好等于 0 的情况几乎不会发生，而且训练本来就不会走到 gradient 正好为 0 的点，所以不影响。</p>
+  <p>实现里直接取一侧的导数（0 或 1）。输入恰好等于 0 几乎不会发生，所以不影响。</p>
 </details>
 <details>
   <summary>Transformer / LLM 用什么 activation？</summary>
-  <p>BERT 和 GPT 用 GELU：\(x\,\Phi(x)\)，\(\Phi\) 是标准正态的 CDF，可以看成平滑版 ReLU，负区间也有一点 gradient。LLaMA 把 FFN 里的 ReLU 换成 SwiGLU。</p>
+  <p>BERT 和 GPT 用 GELU \(x\,\Phi(x)\)，\(\Phi\) 是标准正态的 CDF，是平滑版 ReLU，负区间也有一点 gradient。LLaMA 用 SwiGLU。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.deeplearningbook.org/contents/mlp.html">Goodfellow et al., Deep Learning</a> §6.2.2.3 eq. 6.32–6.33（p.182）、§6.3（p.188）、§6.3.1（pp.189–190）、§6.3.2（p.191）· <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §13.2.3（pp.428–429）、§13.4.3（pp.448–451，Table 13.4）· <a href="https://d2l.ai/chapter_linear-classification/softmax-regression.html#softmax-and-cross-entropy-loss">Dive into Deep Learning</a> §4.1.2.2 eq. 4.1.10 · <a href="https://arxiv.org/abs/1606.08415">Hendrycks &amp; Gimpel 2016</a>（GELU）· <a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2018</a> Appendix A.2（p.13）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023</a> §2.2（p.3）</p>

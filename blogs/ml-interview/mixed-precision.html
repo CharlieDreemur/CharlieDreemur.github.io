@@ -18,29 +18,29 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Exponent 与 mantissa（range vs precision）</dt>
-  <dd>浮点数 = 符号 × 1.mantissa × 2<sup>exponent</sup>。exponent 的 bit 决定尺子有多长（能表示多大、多小，range），mantissa 的 bit 决定刻度有多密（precision）。<span class="eg">例：1 附近相邻两个数的间距，FP16 是 \(2^{-10}\approx 0.001\)，BF16 是 \(2^{-7}\approx 0.008\)。</span></dd>
+  <dd>浮点数 = 符号 × 1.mantissa × 2<sup>exponent</sup>。exponent 的 bit 决定尺子有多长（range），mantissa 的 bit 决定刻度有多密（precision）。<span class="eg">例：1 附近相邻两个数的间距，FP16 是 \(2^{-10}\approx 0.001\)，BF16 是 \(2^{-7}\approx 0.008\)。</span></dd>
   <dt>Underflow / overflow</dt>
-  <dd>比最小值还小就变成 0，比最大值还大就变成 inf。FP16 只有 5 位 exponent，两头都容易出事。<span class="eg">例：<code>np.float16(1e-8)</code> = 0；<code>np.float16(70000)</code> = inf（FP16 最大 65504）。</span></dd>
+  <dd>比最小值还小就变成 0，比最大值还大就变成 inf。<span class="eg">例：<code>np.float16(1e-8)</code> = 0；<code>np.float16(70000)</code> = inf。</span></dd>
   <dt>Loss scaling</dt>
-  <dd>backward 之前把 loss 乘 \(S\)，chain rule 让所有 gradient 一起放大 \(S\) 倍，小 gradient 就不会变成 0。optimizer 更新前再除回去。像录音前先把太小的声音放大。<span class="eg">例：gradient \(10^{-8}\) 存成 FP16 是 0；乘 \(S = 2^{16}\) 得 \(6.55\times10^{-4}\)，存得下；在 FP32 里除回来仍 ≈ \(10^{-8}\)。</span></dd>
+  <dd>backward 之前把 loss 乘 \(S\)，所有 gradient 一起放大 \(S\) 倍，小 gradient 不会变成 0，optimizer 更新前再除回去。<span class="eg">例：gradient \(10^{-8}\) 存成 FP16 是 0；乘 \(S = 2^{16}\) 得 \(6.55\times10^{-4}\)，存得下；在 FP32 里除回来仍 ≈ \(10^{-8}\)。</span></dd>
   <dt>FP32 master weights</dt>
-  <dd>weight 的"正本"用 FP32 保存和更新，forward/backward 用它转出来的 16-bit 副本。因为 update 比 weight 小太多时，16-bit 加法会把它整个舍掉。<span class="eg">例：\(w = 1\)、update \(= 10^{-4}\)：FP16、BF16 算出来都还是 1；FP16 连加 10000 次仍是 1，FP32 是 2.0002。</span></dd>
+  <dd>weight 的正本用 FP32 保存和更新，forward/backward 用它转出的 16-bit 副本。FP16 只有 10 位 mantissa，weight 比 update 大超过 2048 倍时 \(w + \Delta w\) 舍入后还是 \(w\)。<span class="eg">例：\(w = 1\)、update \(= 10^{-4}\)：FP16、BF16 算出来都还是 1；FP16 连加 10000 次仍是 1，FP32 是 2.0002。</span></dd>
   <dt>Per-tensor scaling（FP8）</dt>
-  <dd>FP8 的 range 太窄，一个全局 loss scale 照顾不了所有 tensor，于是每个 tensor 各配一个 scale，把它的 amax（最大绝对值）对准格式的最大值。Transformer Engine 的 delayed scaling 用前几个 iteration 的 amax history 来算这个 scale。</dd>
+  <dd>FP8 的 range 够放下任意一个 tensor，但放不下所有 tensor。所以每个 tensor 各配一个 scale，把它的 amax（最大绝对值）对准格式的最大值。</dd>
 </dl>
 
-<h2 id="figs">看图：各格式的 bit 怎么分，一个 step 怎么走</h2>
+<h2 id="figs">看图：bit 怎么分，一个 step 怎么走</h2>
 <figure class="fig">
 <svg viewBox="0 0 500 338" role="img" aria-label="五种浮点格式的 bit 布局：FP32 是 1 位 sign、8 位 exponent、23 位 mantissa；FP16 是 1、5、10；BF16 是 1、8、7；FP8 E4M3 是 1、4、3；E5M2 是 1、5、2。exponent 越长 range 越大，mantissa 越长 precision 越高"><rect x="0" y="4" width="22" height="16" rx="3" class="box"/><text x="30" y="17" text-anchor="start">sign</text><rect x="82" y="4" width="22" height="16" rx="3" class="f1"/><text x="112" y="17" text-anchor="start" class="acc">exponent：range</text><rect x="252" y="4" width="22" height="16" rx="3" class="f2"/><text x="282" y="17" text-anchor="start" class="c2">mantissa：precision</text><text x="0" y="56" text-anchor="start" class="hd">FP32</text><text x="0" y="74" text-anchor="start" class="m">master weight</text><rect x="101" y="38" width="10" height="26" rx="3" class="box"/><rect x="113" y="38" width="94" height="26" rx="3" class="f1"/><text x="160" y="55" text-anchor="middle" class="acc">8</text><path d="M124,59 V64M136,59 V64M148,59 V64M160,59 V64M172,59 V64M184,59 V64M196,59 V64" class="grid"/><rect x="209" y="38" width="274" height="26" rx="3" class="f2"/><text x="346" y="55" text-anchor="middle" class="c2">23</text><path d="M220,59 V64M232,59 V64M244,59 V64M256,59 V64M268,59 V64M280,59 V64M292,59 V64M304,59 V64M316,59 V64M328,59 V64M340,59 V64M352,59 V64M364,59 V64M376,59 V64M388,59 V64M400,59 V64M412,59 V64M424,59 V64M436,59 V64M448,59 V64M460,59 V64M472,59 V64" class="grid"/><text x="100" y="82" text-anchor="start" class="m">最大 3.4e38 · 最小 normal 1.2e-38 · 1 附近间距 2⁻²³</text><text x="0" y="118" text-anchor="start" class="hd">FP16</text><text x="0" y="136" text-anchor="start" class="m">要 loss scaling</text><rect x="101" y="100" width="10" height="26" rx="3" class="box"/><rect x="113" y="100" width="58" height="26" rx="3" class="f1"/><text x="142" y="117" text-anchor="middle" class="acc">5</text><path d="M124,121 V126M136,121 V126M148,121 V126M160,121 V126" class="grid"/><rect x="173" y="100" width="118" height="26" rx="3" class="f2"/><text x="232" y="117" text-anchor="middle" class="c2">10</text><path d="M184,121 V126M196,121 V126M208,121 V126M220,121 V126M232,121 V126M244,121 V126M256,121 V126M268,121 V126M280,121 V126" class="grid"/><text x="100" y="144" text-anchor="start" class="m">最大 65504 · 最小 normal 6.1e-5 · 1 附近间距 2⁻¹⁰</text><text x="0" y="180" text-anchor="start" class="hd">BF16</text><text x="0" y="198" text-anchor="start" class="m">LLM 训练首选</text><rect x="101" y="162" width="10" height="26" rx="3" class="box"/><rect x="113" y="162" width="94" height="26" rx="3" class="f1"/><text x="160" y="179" text-anchor="middle" class="acc">8</text><path d="M124,183 V188M136,183 V188M148,183 V188M160,183 V188M172,183 V188M184,183 V188M196,183 V188" class="grid"/><rect x="209" y="162" width="82" height="26" rx="3" class="f2"/><text x="250" y="179" text-anchor="middle" class="c2">7</text><path d="M220,183 V188M232,183 V188M244,183 V188M256,183 V188M268,183 V188M280,183 V188" class="grid"/><text x="100" y="206" text-anchor="start" class="m">最大 3.4e38 · 最小 normal 1.2e-38 · 1 附近间距 2⁻⁷</text><text x="0" y="242" text-anchor="start" class="hd">FP8 E4M3</text><text x="0" y="260" text-anchor="start" class="m">forward</text><rect x="101" y="224" width="10" height="26" rx="3" class="box"/><rect x="113" y="224" width="46" height="26" rx="3" class="f1"/><text x="136" y="241" text-anchor="middle" class="acc">4</text><path d="M124,245 V250M136,245 V250M148,245 V250" class="grid"/><rect x="161" y="224" width="34" height="26" rx="3" class="f2"/><text x="178" y="241" text-anchor="middle" class="c2">3</text><path d="M172,245 V250M184,245 V250" class="grid"/><text x="100" y="268" text-anchor="start" class="m">最大 448 · 最小 normal 2⁻⁶ · 1 附近间距 2⁻³</text><text x="0" y="304" text-anchor="start" class="hd">FP8 E5M2</text><text x="0" y="322" text-anchor="start" class="m">gradient</text><rect x="101" y="286" width="10" height="26" rx="3" class="box"/><rect x="113" y="286" width="58" height="26" rx="3" class="f1"/><text x="142" y="303" text-anchor="middle" class="acc">5</text><path d="M124,307 V312M136,307 V312M148,307 V312M160,307 V312" class="grid"/><rect x="173" y="286" width="22" height="26" rx="3" class="f2"/><text x="184" y="303" text-anchor="middle" class="c2">2</text><path d="M184,307 V312" class="grid"/><text x="100" y="330" text-anchor="start" class="m">最大 57344 · 最小 normal 2⁻¹⁴ · 1 附近间距 2⁻²</text></svg>
-<figcaption>图 1：每个小格是 1 bit，灰色是 sign，橙色是 exponent，蓝色是 mantissa。exponent 越长，能表示的数越大、越小（range 越宽）；mantissa 越长，相邻两个数挨得越近（precision 越高）。BF16 的 exponent 和 FP32 一样是 8 位，所以 range 一样；FP16 把位数让给了 mantissa，最大只有 65504。FP8 两种都很短：E4M3 精度高一点用于 forward，E5M2 range 宽一点用于 gradient。</figcaption>
+<figcaption>图 1：每个小格是 1 bit。BF16 的 exponent 和 FP32 一样是 8 位，所以 range 一样。FP16 把位数让给了 mantissa，最大只有 65504。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 520 316" role="img" aria-label="mixed precision 的一个 training step：FP32 master weight 转出 16-bit 副本，forward 用 16-bit matmul，loss 乘 S 后 backward 得到 16-bit gradient，再除以 S、检查 inf 和 NaN、clipping，最后更新 FP32 master weight；有 inf 或 NaN 时跳过这步并把 S 减半"><defs><marker id="mp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="mp-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="mp-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="100" y="16" text-anchor="middle" class="c2">FP32</text><text x="402" y="16" text-anchor="middle" class="acc">16-bit（BF16 / FP16）</text><rect x="10" y="28" width="180" height="40" rx="6" class="f2"/><text x="100" y="53" text-anchor="middle">master weight（正本）</text><rect x="290" y="28" width="224" height="40" rx="6" class="f1"/><text x="402" y="53" text-anchor="middle">16-bit 副本</text><path d="M192,48 H287" class="ln" marker-end="url(#mp-a)"/><text x="240" y="41" text-anchor="middle" class="m">① 转出副本</text><rect x="290" y="100" width="224" height="48" rx="6" class="f1"/><text x="402" y="120" text-anchor="middle">② forward：matmul 用 16-bit</text><text x="402" y="138" text-anchor="middle" class="m">accumulate、softmax、norm 用 FP32</text><rect x="290" y="180" width="224" height="48" rx="6" class="f1"/><text x="402" y="200" text-anchor="middle">③ loss × S → backward</text><text x="402" y="218" text-anchor="middle" class="m">得到 16-bit gradient（BF16：S = 1）</text><rect x="10" y="180" width="180" height="48" rx="6" class="f2"/><text x="100" y="200" text-anchor="middle">④ gradient ÷ S</text><text x="100" y="218" text-anchor="middle" class="m">查 inf/NaN、clipping</text><path d="M402.0,70 V97" class="ln" marker-end="url(#mp-a)"/><path d="M402.0,150 V177" class="ln" marker-end="url(#mp-a)"/><path d="M288,204 H193" class="ln" marker-end="url(#mp-a)"/><path d="M100.0,178 V71" class="ln2" marker-end="url(#mp-a2)"/><text x="110" y="120" text-anchor="start" class="c2">更新</text><text x="110" y="138" text-anchor="start" class="c2">master weight</text><path d="M100.0,230 V257" class="ln1" marker-end="url(#mp-a1)"/><rect x="10" y="260" width="260" height="48" rx="6" class="bwd"/><text x="140" y="280" text-anchor="middle" class="acc">有 inf/NaN：跳过这步，S ← S/2</text><text x="140" y="298" text-anchor="middle" class="m">连续 2000 步正常：S ← 2S</text></svg>
-<figcaption>图 2：一个 training step 走一圈。左边蓝色在 FP32 里做，右边橙色在 16-bit 里做。matmul 都在右边用 16-bit 算；更新只在左边的 FP32 正本上做，因为 update 比 weight 小太多时，16-bit 加法会把它整个舍掉。loss × S 和 ÷ S 是 loss scaling，只有 FP16 需要（BF16 时 S = 1）；虚线框是 dynamic loss scaling 遇到溢出时的处理。</figcaption>
+<figcaption>图 2：一个 training step。左边蓝色在 FP32 里做，右边橙色在 16-bit 里做，虚线框是 dynamic loss scaling 遇到溢出时的处理。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Mixed precision runs matmuls in 16-bit or FP8 and keeps the sensitive parts in FP32: master weights for the update, accumulation inside matmuls, and reductions like softmax and norms. FP16 has only 5 exponent bits, so small gradients underflow; dynamic loss scaling fixes that: multiply the loss by S, unscale before the step, and on inf or NaN skip the step and halve S. BF16 keeps FP32's 8 exponent bits, so it has FP32's range and needs no loss scaling, but with 7 mantissa bits we still need FP32 master weights. FP8 uses E4M3 for weights and activations and E5M2 for gradients, with a scale per tensor.</p></div>
+<div class="answer"><p>Mixed precision runs matmuls in 16-bit or FP8 and keeps the sensitive parts in FP32: master weights, accumulation inside matmuls, and reductions like softmax and norms. FP16 has only 5 exponent bits, so small gradients underflow; dynamic loss scaling fixes that: multiply the loss by S, unscale before the step, and on inf or NaN skip the step and halve S. BF16 keeps FP32's 8 exponent bits, so it needs no loss scaling, but with only 7 mantissa bits it still needs FP32 master weights. FP8 uses E4M3 for weights and activations and E5M2 for gradients, with a scale per tensor.</p></div>
 
 <h2>关键公式</h2>
 <table>
@@ -54,12 +54,11 @@
   </tbody>
 </table>
 <div class="deriv">
-  <p>loss scaling：backward 是线性的，放大 loss 就放大所有 gradient</p>
+  <p>loss scaling：backward 是线性的</p>
   \[ \nabla_\theta (S\cdot L) = S\cdot \nabla_\theta L \]
   <p>dynamic loss scaling（PyTorch <code>GradScaler</code> 默认值）：</p>
   \[ S_0 = 2^{16};\quad \text{有 inf/NaN} \Rightarrow \text{跳过这步},\ S \leftarrow S/2 \]
   \[ \text{连续 2000 步正常} \Rightarrow S \leftarrow 2S \]
-  <p>master weight：FP16 有 10 位 mantissa，weight 比 update 大超过 2048 倍时，\(w + \Delta w\) 舍入后还是 \(w\)，这次 update 就丢了。</p>
 </div>
 
 <h2 id="step">一个 training step</h2>
@@ -69,7 +68,7 @@
   <li>loss × \(S\) → backward，得到 16-bit gradient（BF16 时 \(S = 1\)）</li>
   <li>gradient ÷ \(S\)，检查 inf/NaN，再 clipping → 更新 FP32 master weight</li>
 </ol>
-<p>显存：每个 parameter 16 bytes（2 + 2 + 4 + 4 + 4），见 <a href="optimizer.html">optimizer</a> 和 <a href="training-memory.html">training memory</a>。</p>
+<p>model states 每个 parameter 占 16 bytes，见 <a href="training-memory.html">training memory</a>。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -83,23 +82,23 @@
 <h2>追问</h2>
 <details>
   <summary>为什么大模型都用 BF16，不用 FP16？</summary>
-  <p>BF16 和 FP32 的 range 一样，不用调 loss scale，也不怕超过 65504。PyTorch 文档提醒，多数 BF16 预训练的模型放进 FP16 时 gradient 会 overflow。代价是 precision 低，靠 FP32 master weight 和 FP32 accumulate 补回来。</p>
+  <p>range 和 FP32 一样，不用调 loss scale。PyTorch 文档提醒，多数 BF16 预训练的模型放进 FP16 时 gradient 会 overflow。</p>
 </details>
 <details>
   <summary>loss scale 选多大？太大会怎样？</summary>
-  <p>只要不 overflow，越大越好。可以选 \(S\) 使 \(S\cdot\max|g| &lt; 65504\)。太大会出 inf/NaN，所以实际用 dynamic：跳过这步、\(S\) 减半。\(S\) 取 2 的幂，乘除不引入误差。</p>
+  <p>只要不 overflow 越大越好，也就是 \(S\cdot\max|g| &lt; 65504\)。太大会出 inf/NaN，所以实际用 dynamic loss scaling。\(S\) 取 2 的幂，乘除不引入误差。</p>
 </details>
 <details>
-  <summary>FP8 为什么不能也用一个全局 loss scale？</summary>
-  <p>FP8 的 range 够放下任意一个 tensor，但放不下所有 tensor，所以每个 tensor 一个 scale。溢出时直接 saturate 到最大值，不再跳过 step（FP8 溢出太频繁）。delayed scaling 用历史 amax，省掉现算 amax 多扫一遍数据。</p>
+  <summary>FP8 溢出了怎么办？delayed scaling 是什么？</summary>
+  <p>溢出时直接 saturate 到最大值，不跳过 step，因为 FP8 溢出太频繁。Transformer Engine 的 delayed scaling 用前几个 iteration 的 amax history 算 scale，不用现算 amax 多扫一遍数据。</p>
 </details>
 <details>
   <summary>MXFP8 / NVFP4 怎么缩放？在哪个维度？（智谱）</summary>
-  <p>按 block 缩放：MXFP8 每 32 个连续元素一个 E8M0 scale（2 的幂）；NVFP4 每 16 个元素一个 E4M3 scale，再加一个 per-tensor FP32 scale。block 沿 matmul 的 reduction 维连续；NVFP4 的 weight 用 16×16 的 2D block，转置后值不变。NVFP4 训练还用 Random Hadamard Transform 打散 outlier，gradient 用 stochastic rounding。</p>
+  <p>按 block 缩放，block 沿 matmul 的 reduction 维连续。MXFP8 每 32 个元素一个 E8M0 scale，NVFP4 每 16 个元素一个 E4M3 scale 再加一个 per-tensor FP32 scale（见 <a href="low-precision-cuda-graph.html">MXFP8、NVFP4</a>）。NVFP4 的 weight 用 16×16 的 2D block，训练 recipe 见 <a href="nemotron-3-ultra.html">Nemotron 3 Ultra</a>。</p>
 </details>
 <details>
   <summary>哪些 op 必须留在 FP32？</summary>
-  <p>大的 reduction 和容易溢出的 op（softmax、layer_norm、cross_entropy、exp/log、sum，PyTorch autocast 自动放 FP32）、matmul 的累加、optimizer update 和 Adam state。逐元素 op 受 memory bandwidth 限制，内部用 FP16 还是 FP32 算，速度一样。</p>
+  <p>大的 reduction 和容易溢出的 op（softmax、layer_norm、cross_entropy、exp/log、sum，PyTorch autocast 自动放 FP32）、matmul 的累加、optimizer update 和 Adam state。逐元素 op 受 memory bandwidth 限制，用 FP16 还是 FP32 速度一样。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1710.03740">Micikevicius et al. 2018, Mixed Precision Training</a> §3.1（pp.2–3）、§3.2（pp.3–5）、§3.3（p.5）· <a href="https://arxiv.org/abs/2209.05433">Micikevicius et al. 2022, FP8 Formats</a> §2（p.2）、§3 Table 1（p.3）· <a href="https://arxiv.org/abs/1905.12322">Kalamkar et al. 2019, BFLOAT16</a> abstract、§3 Table 1（pp.3–4）· <a href="https://docs.pytorch.org/docs/stable/amp.html">PyTorch AMP</a>（Gradient Scaling、<code>GradScaler</code>）· <a href="https://docs.nvidia.com/deeplearning/transformer-engine-releases/release-2.13/user-guide/examples/fp8_primer.html">Transformer Engine: Using FP8 and FP4</a>（delayed scaling、MXFP8、NVFP4）</p>

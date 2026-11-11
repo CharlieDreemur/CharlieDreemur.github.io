@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Grounding</dt>
-  <dd>回答里的每句话都能在 tool result 里找到依据，像写报告时每个数字都有出处。</dd>
+  <dd>回答里的每句话都能在 tool result 里找到依据。</dd>
   <dt>Source of truth</dt>
-  <dd>tool result 说了算，模型自己的记忆不算。时间、金额、ID 这类字段直接 copy，不让模型重写。<span class="eg">例：tool 返回 <code>3:00 PM</code>，回答说“4 点”，这就是错。</span></dd>
+  <dd>tool result 说了算，模型的记忆不算。</dd>
   <dt>Claim</dt>
   <dd>回答里一条可以单独核对的事实。<span class="eg">例：“UA 123 明天 3 点起飞”有两条 claim：航班号、起飞时间。</span></dd>
   <dt>Abstention</dt>
-  <dd>没查到就说没查到。空结果和调用失败要分开。前者说“没查到”，后者重试或如实说出错了。</dd>
+  <dd>没查到就说没查到，并说明查了哪些 source。调用失败不算没查到，要重试或如实告知。</dd>
   <dt>Voice length budget</dt>
-  <dd>语音回答要短，因为听的人不能回看。先说答案，列表只念前几项。</dd>
+  <dd>语音回答要短，听的人不能回看。列表只念前几项。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
@@ -43,21 +43,21 @@
     <tr><td class="nw">Voice formatting</td><td>先说答案，数字转成口语</td><td>太长、读出来别扭</td></tr>
   </tbody>
 </table>
-<p><strong>Hallucination 分六类</strong>：contradiction（和 tool 矛盾）、unsupported（tool 没给却说了）、entity confusion（张冠李戴）、temporal（时间解析错或用了旧数据）、omission（为了短漏掉必要信息）、该拒答却答。</p>
+<p><strong>Hallucination 分六类</strong>：contradiction（和 tool 矛盾）、unsupported（tool 没给却说了）、entity confusion、temporal（时间错或数据旧）、omission（为了短而漏）、该拒答却答。</p>
 
 <h2 id="metrics">Eval 指标</h2>
 <table>
   <thead><tr><th>维度</th><th>Metric</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Factuality</td><td>claim precision = 有依据的 claim ÷ 全部 claim；关键字段 exact match</td></tr>
+    <tr><td class="nw">Factuality</td><td>claim precision = 有依据的 claim ÷ 全部 claim</td></tr>
     <tr><td class="nw">Completeness</td><td>required-field recall = 答到的必要信息 ÷ 全部必要信息</td></tr>
     <tr><td class="nw">Abstention</td><td>unanswerable 的拒答率和 answerable 的回答率，一起看</td></tr>
-    <tr><td class="nw">Usefulness</td><td>人工或 LLM judge 按 rubric 打分，judge 用人工校准</td></tr>
+    <tr><td class="nw">Usefulness</td><td>人工或 LLM judge 按 rubric 打分，judge 用人工校准（见<a href="annotation-judge.html">标注与 LLM judge</a>）</td></tr>
     <tr><td class="nw">Voice</td><td>在长度预算内的比例</td></tr>
     <tr><td class="nw">Online</td><td>reformulation（换个说法再问）、barge-in（打断）、task completion</td></tr>
   </tbody>
 </table>
-<p><span class="eg">例：回答有 4 条 claim，3 条有依据 → claim precision 0.75。这类问题要求答 3 项信息，答到 2 项 → required-field recall 0.67。</span></p>
+<p><span class="eg">例：4 条 claim 里 3 条有依据 → claim precision 0.75。要求答 3 项信息，答到 2 项 → required-field recall 0.67。</span></p>
 
 <h2>必答点</h2>
 <ul>
@@ -71,23 +71,15 @@
 <h2>追问</h2>
 <details>
   <summary>回答变短之后漏信息怎么办？</summary>
-  <p>按 intent 定 required fields，先保 required-field recall，再压长度。两个 metric 一起看，只压长度会把 omission 推高。</p>
+  <p>按 intent 定 required fields，先保 required-field recall，再压长度。只压长度会把 omission 推高。</p>
 </details>
 <details>
   <summary>context 变长后质量下降怎么办？</summary>
-  <p>先量：画 context 长度和 claim precision 的曲线。再治：旧 tool result 压成 summary，名字、ID、日期逐字保留。只把和当前问题有关的字段放进 context。</p>
-</details>
-<details>
-  <summary>verifier 也是 LLM，不可靠怎么办？</summary>
-  <p>关键字段用规则校验，其余抽样做人工校准，多堆几个 judge 帮助有限（见<a href="annotation-judge.html">标注与 LLM judge</a>）。</p>
-</details>
-<details>
-  <summary>“没查到”和“tool 失败”怎么区分？</summary>
-  <p>tool 返回里带状态：成功但 0 条、失败（超时、权限）。失败要重试或如实告知；确实 0 条才说找不到，并说明查了哪些 source。</p>
+  <p>先画 context 长度和 claim precision 的曲线。再把旧 tool result 压成 summary，名字、ID、日期逐字保留。</p>
 </details>
 <details>
   <summary>为什么会 hallucinate？</summary>
-  <p>四个主要原因：模型的 parametric memory 压过 context。context 长、干扰多。payload 被截断，模型补全了缺的部分。训练时偏向“总要给个答案”。更一般的原因和对策见 <a href="hallucination.html">LLM hallucination</a>。</p>
+  <p>parametric memory 压过 context，context 长而干扰多，payload 被截断后模型自己补全，训练时偏向“总要给个答案”。一般的原因和对策见 <a href="hallucination.html">LLM hallucination</a>。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.1point3acres.com/interview/problems/company/apple/siri-grounded-response-generation">一亩三分地站方题面：Siri Grounded Response Generation</a>（要求覆盖 grounding、hallucination、voice 长度、长 context 下的 eval）· <a href="https://arxiv.org/abs/2605.29800">Nine Judges（Apple）</a> · 完整证据见 Apple 面经报告</p>

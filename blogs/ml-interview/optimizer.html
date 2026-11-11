@@ -18,19 +18,19 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>SGD 与 learning rate</dt>
-  <dd>下山时看脚下哪边最陡，往反方向迈一步。SGD 只用一个 mini-batch 估计坡度，所以有噪声。learning rate \(\eta\) 是步长。<span class="eg">例：w = 1，g = 0.5，η = 0.1 → w = 0.95。</span></dd>
+  <dd>沿 gradient 的反方向迈一步，learning rate \(\eta\) 是步长。SGD 只用一个 mini-batch 估计 gradient，所以有噪声。</dd>
   <dt>Momentum</dt>
-  <dd>像滚下山的球有惯性：把过去的 gradient 累加成"速度"，方向一致的分量越滚越快，来回震荡的分量互相抵消。<span class="eg">例：μ = 0.9、gradient 一直是 g，速度最后稳定在 10g，步子放大 10 倍。</span></dd>
+  <dd>把过去的 gradient 累加成速度，像滚下山的球。方向一致的分量越滚越快，来回震荡的分量互相抵消。</dd>
   <dt>Adam</dt>
-  <dd>momentum 加上"每个参数自己的步长"：m 记 gradient 的平均（往哪走），v 记 g² 的平均（这个参数的 gradient 一般多大），步子按 \(1/\sqrt{v}\) 缩放，gradient 一直很大的参数步子被压小。</dd>
+  <dd>momentum 加上每个参数自己的步长。m 记 gradient 的平均，v 记 g² 的平均，步子按 \(1/\sqrt{v}\) 缩放，gradient 一直很大的参数步子被压小。</dd>
   <dt>Weight decay vs L2</dt>
-  <dd>L2 是在 loss 上加 \(\tfrac{\lambda}{2}\|w\|^2\)，gradient 多一项 λw；weight decay 是每步直接把 weight 缩一点。SGD 下两者一样，Adam 下不一样，这就是 AdamW 的出发点。</dd>
+  <dd>L2 是在 loss 上加 \(\tfrac{\lambda}{2}\|w\|^2\)，gradient 多一项 λw。weight decay 是每步直接把 weight 缩一点。</dd>
   <dt>Optimizer state</dt>
-  <dd>optimizer 为每个参数额外存的数：SGD 没有，momentum 存 1 份速度，Adam 存 m、v 两份。<span class="eg">例：7B 参数的模型，Adam 多存 14B 个数。</span></dd>
+  <dd>optimizer 为每个参数额外存的数，SGD 0 份、momentum 1 份、Adam 2 份。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>SGD steps against the minibatch gradient, w ← w − ηg. Momentum accumulates past gradients into a velocity, damping oscillation. Adam keeps moving averages of the gradient, m, and the squared gradient, v, bias-corrects both because they start at zero, and updates w by η·m/(√v + ε) with the corrected values, so each parameter gets its own step size. AdamW decouples weight decay: instead of adding λw to the gradient, where Adam would rescale it, it shrinks the weights directly by ηλw. Memory-wise, SGD adds no state, momentum one copy of the parameters and Adam two; mixed-precision Adam totals 16 bytes per parameter, about 112 GB for a 7B model.</p></div>
+<div class="answer"><p>SGD steps against the minibatch gradient, w ← w − ηg. Momentum accumulates past gradients into a velocity, damping oscillation. Adam keeps moving averages of the gradient, m, and the squared gradient, v, bias-corrects both because they start at zero, and updates w by η·m/(√v + ε), so each parameter gets its own step size. AdamW decouples weight decay: instead of adding λw to the gradient, where Adam would rescale it, it shrinks the weights directly by ηλw. Memory-wise, SGD adds no state, momentum one copy of the parameters and Adam two; mixed-precision Adam totals 16 bytes per parameter, about 112 GB for a 7B model.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
@@ -60,7 +60,7 @@
     <tr><td class="nw">Adam，mixed precision</td><td>fp32 master、m、v</td><td>2 + 2 + 12 = 16</td><td class="nw">112 GB</td></tr>
   </tbody>
 </table>
-<p>只问 optimizer state：7B 的 Adam 多存 14B 个数，fp32 就是 56 GB。纯 fp32 的 Adam 是"4 倍参数量"（w、g、m、v）；mixed precision 时 bf16 省下的被 fp32 master copy 吃回去，还是 16 bytes。</p>
+<p>只问 optimizer state 时，7B 的 Adam 多存 14B 个数，fp32 就是 56 GB。纯 fp32 的 Adam 是 4 倍参数量（w、g、m、v）。mixed precision 时 bf16 省下的被 fp32 master copy 吃回去，还是 16 bytes。低精度的 weight 直接更新会把小的更新量舍掉，所以要这份 master copy，见 <a href="mixed-precision.html">mixed precision</a>。一张卡放不下就用 ZeRO 切，见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -74,23 +74,11 @@
 <h2>追问</h2>
 <details>
   <summary>Adam 和 SGD 怎么选？</summary>
-  <p>LLM 基本都用 AdamW（LLaMA：β₂ = 0.95、weight decay 0.1）。图像分类上 SGD + momentum 过去常比 Adam 泛化好，AdamW 原文认为主因是 L2 在 Adam 里不起作用，换成 decoupled weight decay 后差距大幅缩小。</p>
-</details>
-<details>
-  <summary>Adam 每步大概走多远？</summary>
-  <p>约 η：\(\hat m/\sqrt{\hat v}\) 的量级一般不超过 1，而且 gradient 整体放大 c 倍时分子分母一起变、比值不变，所以 η 几乎直接决定步长（Adam 原文 §2.1）。</p>
+  <p>LLM 基本都用 AdamW（LLaMA 取 β₂ = 0.95、weight decay 0.1）。图像分类上 SGD + momentum 过去常比 Adam 泛化好，AdamW 原文认为主因是 L2 在 Adam 里不起作用。</p>
 </details>
 <details>
   <summary>为什么要 warmup + cosine decay？</summary>
-  <p>刚开始参数随机、gradient 不稳，直接用峰值 learning rate 容易发散，所以先线性升上去，之后按 cosine 慢慢降。LLaMA：2000 步 warmup，最后降到峰值的 10%。</p>
-</details>
-<details>
-  <summary>Mixed precision 为什么还要 fp32 master weight？</summary>
-  <p>fp16 只有 10 位 mantissa：weight 比更新量 ηg 大 2048 倍以上时，相加后更新被直接舍掉（fp16 里 1 + 0.0001 = 1）；小于 2⁻²⁴ 的更新本身也变成 0。所以在 fp32 副本上更新（见 <a href="mixed-precision.html">mixed precision</a>）。</p>
-</details>
-<details>
-  <summary>7B 一张卡放不下怎么办？</summary>
-  <p>ZeRO 把 model states 切到 N 张卡。ZeRO-1 只切 optimizer state，7B、N = 8 时每卡从 112 GB 降到 38.5 GB，ZeRO-3 / FSDP 全切后更少。每级的公式见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</p>
+  <p>刚开始参数随机、gradient 不稳，直接用峰值 learning rate 容易发散，所以先线性升上去，再按 cosine 慢慢降。LLaMA 用 2000 步 warmup，最后降到峰值的 10%。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1412.6980">Kingma &amp; Ba 2014</a>（Adam）Alg. 1（p.2）、§2.1、§3（pp.2–3）· <a href="https://arxiv.org/abs/1711.05101">Loshchilov &amp; Hutter 2017</a>（AdamW）§2、Alg. 2（pp.2–3）· <a href="https://www.deeplearningbook.org/contents/optimization.html">Goodfellow et al.</a> §8.3.2（pp.292–296）· <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §8.2.4.1（pp.287–288）、§8.4.6.3（p.300）· <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2019</a>（ZeRO）§3.1、§5（pp.7–11）· <a href="https://arxiv.org/abs/1710.03740">Micikevicius et al. 2017</a> §3.1 · <a href="https://arxiv.org/abs/2302.13971">LLaMA</a> §2.3 · <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.AdamW.html">PyTorch AdamW</a></p>

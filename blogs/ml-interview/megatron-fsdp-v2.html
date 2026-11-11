@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>MFSDP v2</dt>
-  <dd>Megatron 自己的 fully sharded data parallel 的第二版。0.19.0 的 release notes 还写着 "MFSDP v2 is under development"，0.20.0 通过一个 experimental 的 Megatron Core adapter 接了进来。</dd>
+  <dd>Megatron 自己的 FSDP 第二版。0.19.0 的 release notes 还写着 "MFSDP v2 is under development"，0.20.0 通过一个 experimental 的 Megatron Core adapter 接了进来。</dd>
   <dt>ZeRO 级别</dt>
-  <dd>一共四级，配置里叫 sharding strategy，名字是 <code>no_shard</code>（DDP）、<code>optim</code>（ZeRO-1）、<code>optim_grads</code>（ZeRO-2）、<code>optim_grads_params</code>（ZeRO-3）。每级切什么、每卡多少显存见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</dd>
+  <dd>配置里叫 sharding strategy，四级是 <code>no_shard</code>（DDP）、<code>optim</code>（ZeRO-1）、<code>optim_grads</code>（ZeRO-2）、<code>optim_grads_params</code>（ZeRO-3）。每级切什么见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</dd>
   <dt>NVLink domain</dt>
-  <dd>一组互相用 NVLink 直连的 GPU，像同一间办公室里的人。<span class="eg">例：DGX H100 一台 8 卡是一个 domain。GTP 文档把 GB200 NVL72 叫作 "a 72-GPU NVLink domain"。</span></dd>
+  <dd>一组互相用 NVLink 直连的 GPU。<span class="eg">例：<a href="gtp.html">GTP</a> 文档把 GB200 NVL72 叫作 "a 72-GPU NVLink domain"。</span></dd>
   <dt>Hybrid FSDP</dt>
   <dd>把 DP 的 rank 排成两层。inner 轴 <code>dp_shard</code> 是 domain 里的 N 张卡，outer 轴 <code>dp_outer</code> 是 M 个 domain，每层各选一个 ZeRO 级别。</dd>
-  <dt>FullyShardedOptimizer</dt>
-  <dd>MFSDP v2 专用的 optimizer 类，管它自己切开的 parameter 和 gradient。<code>DistributedOptimizer</code> 留给 DDP 和 MFSDP v1。</dd>
 </dl>
 
 <h2 id="figs">看图：domain 内一个级别，domain 之间另一个级别</h2>
@@ -63,14 +61,14 @@
   <text class="c2" x="280" y="196" text-anchor="middle">outer 轴 dp_outer：no_shard（HSDP）或 ZeRO-1（HFSDP）</text>
   <text class="m" x="280" y="214" text-anchor="middle">每步一次的 gradient reduction，走跨 domain 的网络</text>
 </svg>
-<figcaption>图 1：暖色线是 inner 轴，一个 domain 里的卡把 parameter、gradient、optimizer state 都切开。蓝色线是 outer 轴，两个 domain 之间 parameter 各留一份。为了好画每个 domain 只画 4 张卡。把 inner 轴对到 domain 内是按 release notes 那句话读的，PR 和 design doc 没有提 NVLink。</figcaption>
+<figcaption>图 1：把 inner 轴对到 domain 内是按 release notes 那句话读的，PR 和 design doc 没有提 NVLink。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>MFSDP v2 is Megatron's own fully sharded data parallel. It supports no-shard and ZeRO-1, 2 and 3, and it can put data-parallel ranks on two axes, each with its own level. The 0.20.0 release notes say you can set different ZeRO levels inside and across NVLink domains. They don't say why. My reading is that ZeRO-3 gathers parameters for every layer, which is cheap on NVLink and expensive across nodes, so you shard fully inside a domain and keep cross-domain traffic to once per step. It uses its own FullyShardedOptimizer. In 0.20.0 the adapter is experimental and requires TP and expert TP of one.</p></div>
+<div class="answer"><p>MFSDP v2 is Megatron's own fully sharded data parallel. It supports no-shard and ZeRO-1, 2 and 3, and puts data-parallel ranks on two axes, each with its own level. The 0.20.0 release notes say the levels can differ inside and across NVLink domains, without saying why. My reading: ZeRO-3 gathers parameters for every layer, cheap on NVLink but expensive across nodes, so you shard fully inside a domain and sync across domains once per step. It has its own FullyShardedOptimizer. In 0.20.0 the adapter is experimental and requires TP and expert TP of one.</p></div>
 
 <h2 id="hybrid">两层各切到哪一级</h2>
-<p>Design doc 写明 MFSDP v2 不给 HSDP、HFSDP 写特例，每个 DP 轴各自指定 parameter、gradient、optimizer state 怎么放。下表是两个常见组合，N 是 inner 轴的大小，M 是 outer 轴的大小。</p>
+<p>Design doc 不给 HSDP、HFSDP 写特例，每个 DP 轴各自指定 parameter、gradient、optimizer state 怎么放。</p>
 <table>
   <thead><tr><th>名字</th><th>outer 轴</th><th>inner 轴</th><th>parameter 和 gradient</th><th>optimizer state</th></tr></thead>
   <tbody>
@@ -78,31 +76,29 @@
     <tr><td class="nw">HFSDP</td><td class="nw">ZeRO-1</td><td class="nw">ZeRO-3</td><td>同上</td><td>sharded (N × M)</td></tr>
   </tbody>
 </table>
-<p>PR #6873 还写了 "ZeRO-2 and ZeRO-3 on the outer axis come for free"。</p>
-<p>手算一遍。7B 模型的 model states 是 \(16\Psi\) = 112 GB，2 个 domain 各 8 张卡，所以 N = 8、M = 2。16 张卡全部 ZeRO-3 时每卡 7 GB，但每层的 parameter all-gather 要跨 domain。HSDP 每卡 \(16\Psi/8\) = 14 GB，all-gather 只在 domain 内。HFSDP 每卡 \(4\Psi/8 + 12\Psi/16\) = 3.5 + 5.25 = 8.75 GB。这是按 \(16\Psi\) 的口径估的，不是 Megatron 给的数字。</p>
+<p>PR #6873 写 "ZeRO-2 and ZeRO-3 on the outer axis come for free"。</p>
+<p>手算 7B 模型，model states 是 \(16\Psi\) = 112 GB，2 个 domain 各 8 张卡，N = 8、M = 2。16 张卡全部 ZeRO-3 时每卡 7 GB，但每层的 parameter all-gather 要跨 domain。HSDP 每卡 \(16\Psi/8\) = 14 GB，all-gather 只在 domain 内。HFSDP 每卡 \(4\Psi/8 + 12\Psi/16\) = 3.5 + 5.25 = 8.75 GB。这是估算，不是 Megatron 给的数字。</p>
 
 <h2 id="why">为什么按 NVLink domain 分层（推断）</h2>
-<p>0.20.0 的 release notes 只有一句 "The user can specify different ZeRO levels for inter-nvlink domains and intra-nvlink domains."，没有给理由。PR #6873 和 design doc 也没有给。下面是推断。</p>
-<p>ZeRO-3 的每个 unit 在 forward 和 backward 前都要 all-gather 一次 parameter，这些通信要藏在计算后面才不拖慢训练。DGX H100 上 NVLink 单向约 450 GB/s，跨机每卡的网卡是 50 GB/s，差约 9 倍（数字见 <a href="tp-communication.html">TP communication</a>）。所以 inner 轴放在 domain 里切到 ZeRO-3。outer 轴的 gradient reduction 每步只做一次，在最后一个 micro-batch 之后，HFSDP 另外在下一步开头把更新后的 parameter all-gather 回来。PyTorch FSDP 的 <code>HYBRID_SHARD</code> 和 HSDP 是同一个布局，PyTorch 文档给的理由是 "expensive all-gathers and reduce-scatters are only done within a node"。</p>
+<p>0.20.0 的 release notes 只有一句 "The user can specify different ZeRO levels for inter-nvlink domains and intra-nvlink domains."，没有给理由。</p>
+<p>ZeRO-3 的每个 unit 在 forward 和 backward 前都要 all-gather 一次 parameter。DGX H100 上 NVLink 单向约 450 GB/s，跨机每卡的网卡是 50 GB/s，差约 9 倍（数字见 <a href="tp-communication.html">TP communication</a>）。所以 inner 轴放在 domain 里切到 ZeRO-3。outer 轴的 gradient reduction 每步只做一次，在最后一个 micro-batch 之后，HFSDP 另外在下一步开头把更新后的 parameter all-gather 回来。PyTorch FSDP 的 <code>HYBRID_SHARD</code> 和 HSDP 是同一个布局，文档给的理由是 "expensive all-gathers and reduce-scatters are only done within a node"。</p>
 
-<h2 id="limits">Optimizer、限制和组合</h2>
+<h2 id="limits">限制和组合</h2>
 <table>
-  <thead><tr><th>项</th><th>core 0.20.0 的说法</th><th>出处</th></tr></thead>
+  <thead><tr><th>项</th><th>core 0.20.0 release notes 的说法</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Optimizer</td><td>单独的 <code>FullyShardedOptimizer</code>。"This keeps the existing <code>DistributedOptimizer</code> focused on DDP and MFSDP v1."</td><td class="nw">PR #5865</td></tr>
-    <tr><td class="nw">TP</td><td>"the adapter requires TP=1 and expert TP=1"</td><td class="nw">release notes</td></tr>
-    <tr><td class="nw">能组合</td><td>context、expert、pipeline parallel 和 hybrid data-parallel sharding</td><td class="nw">release notes</td></tr>
-    <tr><td class="nw">Checkpoint</td><td>用 PyTorch distributed checkpoint。"optimizer checkpointing currently excludes expert-parallel layouts"</td><td class="nw">release notes</td></tr>
-    <tr><td class="nw">CUDA Graph</td><td>full-iteration capture 只限 "supported dense-model configurations"。MoE 的 expert-dispatch buffer 依赖数据，不能 capture</td><td class="nw">release notes；PR #7075</td></tr>
-    <tr><td class="nw">Low precision</td><td>MXFP8 compute 和 quantized parameter gather</td><td class="nw">release notes</td></tr>
+    <tr><td class="nw">TP</td><td>"the adapter requires TP=1 and expert TP=1"</td></tr>
+    <tr><td class="nw">能组合</td><td>context、expert、pipeline parallel 和 hybrid data-parallel sharding</td></tr>
+    <tr><td class="nw">Checkpoint</td><td>用 PyTorch distributed checkpoint。"optimizer checkpointing currently excludes expert-parallel layouts"</td></tr>
+    <tr><td class="nw">CUDA Graph</td><td>full-iteration capture 只限 "supported dense-model configurations"，原因见 <a href="low-precision-cuda-graph.html#graph">CUDA Graph</a></td></tr>
+    <tr><td class="nw">Low precision</td><td>MXFP8 compute 和 quantized parameter gather（见 <a href="low-precision-cuda-graph.html#lowp">low precision</a>）</td></tr>
   </tbody>
 </table>
-<p>这些限制变得很快。EP 的 checkpoint 限制在 main 上已经修掉了（PR #8230）。面试里引用时说清读的是 0.20.0 的 release notes。</p>
+<p>这些限制变得很快，EP 的 checkpoint 限制在 main 上已经修掉了（PR #8230）。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>MFSDP v2 是 Megatron 自己的 FSDP，0.20.0 里是 experimental 的 adapter</li>
-  <li>四级：<code>no_shard</code>、ZeRO-1、ZeRO-2、ZeRO-3</li>
+  <li>MFSDP v2 是 Megatron 自己的 FSDP，0.20.0 里是 experimental 的 adapter，支持 <code>no_shard</code> 和 ZeRO-1/2/3</li>
   <li>Hybrid FSDP 有 inner 和 outer 两个轴，各选一级。HSDP 的 outer 是 <code>no_shard</code>，HFSDP 的 outer 是 ZeRO-1，inner 都是 ZeRO-3</li>
   <li>分层的理由是推断：每层的 parameter all-gather 留在 NVLink 上，跨 domain 每步只同步一次</li>
   <li>Optimizer 是 <code>FullyShardedOptimizer</code>，<code>DistributedOptimizer</code> 留给 DDP 和 MFSDP v1</li>
@@ -112,23 +108,15 @@
 <h2>追问</h2>
 <details>
   <summary>为什么不复用 DistributedOptimizer？</summary>
-  <p>PR #5865 的理由是 <code>DistributedOptimizer</code> "has strong assumptions about DDP API/classes such as DistributedDataParallel and ParamAndGradBuffer"。MFSDP v1 复用了它，但 PR 说这种复用是 "shallow"，大部分 DDP 的代码靠 <code>if use_megatron_fsdp</code> 分支绕过去。</p>
+  <p>PR #5865 的理由是 <code>DistributedOptimizer</code> "has strong assumptions about DDP API/classes such as DistributedDataParallel and ParamAndGradBuffer"。MFSDP v1 的复用被 PR 称为 "shallow"，大部分 DDP 的代码靠 <code>if use_megatron_fsdp</code> 分支绕过去。</p>
 </details>
 <details>
-  <summary>dense 部分和 MoE 部分能用不同的配置吗？</summary>
-  <p>能。release notes 写 "different configs for the dense section and the MoE section"。PR #7012 里 <code>num_distributed_optimizer_instances</code> 管 dense 的 mesh，<code>expert_num_distributed_optimizer_instances</code> 管 expert 的 mesh。</p>
-</details>
-<details>
-  <summary>outer 轴存不存在、用哪一级，由什么决定？</summary>
-  <p>PR #6873 写 <code>num_distributed_optimizer_instances</code> "decides only whether an outer axis exists"，<code>outer_dp_sharding_strategy</code> "decides what lives on it"。</p>
+  <summary>outer 轴由什么配置决定，dense 和 MoE 部分能分开配吗？</summary>
+  <p>PR #6873 写 <code>num_distributed_optimizer_instances</code> "decides only whether an outer axis exists"，<code>outer_dp_sharding_strategy</code> "decides what lives on it"。能分开配，release notes 写 "different configs for the dense section and the MoE section"，expert 的 mesh 由 <code>expert_num_distributed_optimizer_instances</code> 管（PR #7012）。</p>
 </details>
 <details>
   <summary>TP=1 这个限制会一直在吗？</summary>
-  <p>不能当定论。9 月 12 日合入的 PR #7220 还写着 "TP and PP remain unsupported"，9 月 23 日 PR #6486 就加上了 PP。Q4 roadmap 里 MFSDP 的几条是 "Tune MFSDP v2 for Nemotron and DeepSeek workloads" 和加 Muon、PP/VPP、combined 1F1B，读到的条目里没有 TP。</p>
-</details>
-<details>
-  <summary>它和 GTP 都像 ZeRO-3，区别在哪？</summary>
-  <p>MFSDP v2 沿 data-parallel 轴切。GTP_remat 沿 model-parallel 轴切，一次只 all-gather 一个 weight，可以和 TP 叠在一起，见 <a href="gtp.html">GTP</a>。</p>
+  <p>不能当定论。9 月 12 日合入的 PR #7220 还写着 "TP and PP remain unsupported"，9 月 23 日 PR #6486 就加上了 PP。Q4 roadmap 里 MFSDP 的条目是 tuning 和加 Muon、PP/VPP、combined 1F1B，没有 TP。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（Parallelism、Performance and Memory、Precision and Optimizers 三节）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.0">core 0.19.0 release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/5865">PR #5865</a>（<code>FullyShardedOptimizer</code>）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/6873">PR #6873</a>（HSDP、HFSDP 和两个轴）· <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/distributed/fsdp/src/docs/mfsdp_design.md">MFSDP design doc</a>（Sharding Strategies 的表）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/7012">PR #7012</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/7075">PR #7075</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/7220">PR #7220</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/6486">PR #6486</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/8230">PR #8230</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/6812">MFSDP v2 roadmap #6812</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap #9232</a> · <a href="https://docs.pytorch.org/docs/2.15/fsdp.html">PyTorch FSDP 文档</a>（<code>ShardingStrategy.HYBRID_SHARD</code>）· 题库条目在 ml-八股 06 的“零、团队最近在做什么”</p>

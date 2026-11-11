@@ -17,29 +17,23 @@
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
-  <dt>Prompt engineering</dt>
-  <dd>不动模型，只改"怎么问"：写清指令、给几个 few-shot 例子。像给新同事写一份清楚的任务说明，几分钟就能试。</dd>
-  <dt>Fine-tuning</dt>
-  <dd>用自己的数据接着训练，改的是模型的 weight。像送员工去培训：学到的是习惯、格式和专业能力，不适合塞一份明天就变的资料。</dd>
   <dt>PEFT</dt>
-  <dd>冻住原模型，只训练一小撮新加的参数。像不重装系统、只装一个插件。每个 task 一个插件，随时换。</dd>
+  <dd>冻住原模型，只训练一小撮新加的参数，每个 task 一份，随时换。</dd>
   <dt>LoRA</dt>
-  <dd>假设微调带来的改动 \(\Delta W\) 是 low-rank 的，用两个"瘦"矩阵相乘 \(BA\) 来表示。<span class="eg">例：\(4096\times4096\) 的 \(\Delta W\) 有 16,777,216 个数；\(r = 8\) 时 \(B\)、\(A\) 合计 65,536 个，只占 0.39%。</span></dd>
+  <dd>假设 fine-tuning 带来的改动 \(\Delta W\) 是 low-rank 的，用两个瘦矩阵的乘积 \(BA\) 表示。</dd>
   <dt>QLoRA</dt>
-  <dd>把冻住的 base model 压成 4-bit 存，算的时候临时还原成 BF16，gradient 只更新 LoRA 参数。<span class="eg">例：65B 模型微调的显存从 &gt;780GB 降到 &lt;48GB，一张 48GB GPU 就够。</span></dd>
+  <dd>把冻住的 base model 压成 4-bit 存，计算时 dequantize 成 BF16，gradient 只更新 LoRA 参数。<span class="eg">例：65B 模型 fine-tuning 的 GPU memory 从 &gt;780GB 降到 &lt;48GB。</span></dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Start with prompt engineering, since it's cheapest. If the model lacks private or fresh knowledge, add RAG; if it needs a new behavior, format, style, or domain skill, fine-tune; they're often combined. Full fine-tuning is expensive, so we use PEFT. LoRA freezes the pretrained weight and learns a low-rank update BA, with B of size d×r and A of size r×k, scaled by α/r. A is random Gaussian and B is zero, so training starts exactly from the pretrained model. A d×d matrix needs 2dr trainable parameters instead of d². At inference we merge BA into W, so there's no extra latency. QLoRA keeps the frozen base in 4-bit NF4.</p></div>
+<div class="answer"><p>Start with prompt engineering, the cheapest. If the model lacks private or fresh knowledge, add RAG; if it needs a new behavior, format or domain skill, fine-tune. They're often combined. Full fine-tuning is expensive, so we use PEFT. LoRA freezes the pretrained weight and learns a low-rank update BA, with B of size d×r and A of size r×k, scaled by α/r. A is random Gaussian and B is zero, so training starts from the pretrained model. A d×d matrix needs 2dr trainable parameters instead of d². At inference BA merges into W, so there's no extra latency. QLoRA keeps the frozen base in 4-bit NF4.</p></div>
 
 <h2 id="choose">怎么选</h2>
-<p><strong>先 prompt；缺知识 → RAG；缺行为、格式或能力 → fine-tune；常组合使用。</strong></p>
 <table>
   <thead><tr><th></th><th>Prompt engineering</th><th>RAG</th><th>Fine-tuning（LoRA）</th></tr></thead>
   <tbody>
-    <tr><td class="nw">改什么</td><td>输入</td><td>输入 + 外部知识</td><td>weight</td></tr>
+    <tr><td class="nw">改什么</td><td>输入（指令、few-shot）</td><td>输入 + 外部知识</td><td>weight</td></tr>
     <tr><td class="nw">适合</td><td>模型本来就会，只是没说清</td><td>私有、最新知识，要 citation</td><td>固定格式、风格、domain 能力</td></tr>
-    <tr><td class="nw">更新知识</td><td>改 prompt</td><td>换 index，不用训练</td><td>要重新训练</td></tr>
     <tr><td class="nw">代价</td><td>最低；占 context</td><td>建 index、多一步检索</td><td>要数据和 GPU；可能 catastrophic forgetting</td></tr>
   </tbody>
 </table>
@@ -49,14 +43,14 @@
   <h3 id="lora">LoRA forward</h3>
   \[ h = W_0 x + \frac{\alpha}{r}\, B A x \]
   \[ B \in \mathbb{R}^{d\times r},\quad A \in \mathbb{R}^{r\times k},\quad r \ll \min(d, k) \]
-  <p>\(W_0\) 冻住；\(A\) 用随机 Gaussian 初始化，\(B = 0\)，所以一开始 \(\Delta W = BA = 0\)，模型和原来完全一样。</p>
+  <p>\(W_0\) 冻住，只训练 \(A\)、\(B\)。</p>
   <h3 id="merge">推理时 merge</h3>
   \[ W = W_0 + \frac{\alpha}{r}\, BA \]
-  <p>和原模型一样大、一样快。换 task 时减掉 \(BA\) 再加上另一组 \(B'A'\)。</p>
+  <p>和原模型一样大、一样快，换 task 时换一组 \(BA\)。</p>
 </div>
 
 <h2 id="count">参数怎么算</h2>
-<p><strong>每个被加 LoRA 的 \(d\times k\) 矩阵多 \(r(d+k)\) 个参数；方阵就是 \(2dr\)。</strong>原论文写成 \(|\Theta| = 2\hat L\, d_{\text{model}}\, r\)，\(\hat L\) 是加了 LoRA 的矩阵个数（每层有哪些矩阵见 <a href="transformer-complexity.html">Transformer 复杂度</a>）。</p>
+<p><strong>每个被加 LoRA 的 \(d\times k\) 矩阵多 \(r(d+k)\) 个参数；方阵就是 \(2dr\)。</strong>原论文写成 \(|\Theta| = 2\hat L\, d_{\text{model}}\, r\)，\(\hat L\) 是加了 LoRA 的矩阵个数。</p>
 <ul>
   <li>一个 \(W_q\)，\(d = 4096\)、\(r = 8\)：原矩阵 \(4096^2 = 16{,}777{,}216\) 个，LoRA 只要 \(2\times4096\times8 = 65{,}536\) 个（少 256 倍）</li>
   <li>LLaMA-7B（32 层，\(d = 4096\)）只加在 \(W_q\)、\(W_v\)：\(\hat L = 64\)，\(2\times64\times4096\times8 = 4{,}194{,}304 \approx 4.2\)M，约占 6.7B 的 0.06%</li>
@@ -79,19 +73,19 @@
 </details>
 <details>
   <summary>r 和 α 怎么设？加在哪些矩阵上？</summary>
-  <p>原论文 GPT-3 上 \(r = 1\) 就够适配 \(W_q, W_v\)。同样约 18M 参数，加在 \(W_q, W_v\)（\(r = 4\)）比只加 \(W_q\)（\(r = 8\)）好。\(\alpha\) 设成第一次试的 \(r\) 后不再调。QLoRA 发现要加在所有 linear layer 上才追得上 full fine-tuning。</p>
+  <p>原论文 GPT-3 上 \(r = 1\) 就够适配 \(W_q, W_v\)。同样约 18M 参数，加在 \(W_q, W_v\)（\(r = 4\)）比只加 \(W_q\)（\(r = 8\)）好。\(\alpha\) 设成第一次试的 \(r\) 后不再调。QLoRA 要加在所有 linear layer 上才追得上 full fine-tuning。</p>
 </details>
 <details>
   <summary>LoRA 训练省的是什么？</summary>
-  <p>frozen 参数不用存 gradient 和 Adam 状态。GPT-3 175B 训练显存从 1.2TB 降到 350GB，checkpoint 从 350GB 降到 35MB，训练快约 25%。activation 照样要存。</p>
+  <p>frozen 参数不用存 gradient 和 Adam 状态。GPT-3 175B 训练的 GPU memory 从 1.2TB 降到 350GB，checkpoint 从 350GB 降到 35MB，训练快约 25%。activation 照样要存。</p>
 </details>
 <details>
   <summary>QLoRA 具体多了什么？</summary>
-  <p>4-bit NormalFloat（NF4）存 base。Double Quantization 把量化常数也量化，从 0.5 降到 0.127 bit/参数。Paged Optimizers 用 unified memory 扛住显存峰值。计算时 dequantize 成 BF16 做 matmul。</p>
+  <p>4-bit NormalFloat（NF4）存 base。Double Quantization 把量化常数也量化，从 0.5 降到 0.127 bit/参数。Paged Optimizers 用 unified memory 扛住 GPU memory 峰值。</p>
 </details>
 <details>
   <summary>怎么防 catastrophic forgetting？</summary>
-  <p>混入通用数据 replay。learning rate 要更小，step 要更少。用 PEFT 冻住原 weight。对原模型输出加 KL penalty，或做 model merging。</p>
+  <p>混入通用数据 replay。learning rate 更小、step 更少。用 PEFT 冻住原 weight。对原模型输出加 KL penalty，或做 model merging。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021, LoRA</a> §4.1（p.4，eq. 3、init、\(\alpha/r\)、merge）、§4.2（p.5，显存、checkpoint、25%）、§5.1（p.6，\(|\Theta|\)）、§7.1–7.2 Table 5–6（p.10）· <a href="https://arxiv.org/abs/2305.14314">Dettmers et al. 2023, QLoRA</a> abstract（p.1）、§1（p.2，780GB → 48GB）、§3（pp.4–5，NF4、DQ 0.127 bit、BF16）、§4（p.6，all linear layers）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023, LLaMA</a> Table 2（p.3）· <a href="https://arxiv.org/abs/2005.11401">Lewis et al. 2020</a> §4.5（p.7，index hot-swapping）</p>

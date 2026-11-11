@@ -18,13 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Virtual function 与 dynamic dispatch</dt>
-  <dd>通过 base 的 pointer 或 reference 调用时，执行的是 object 真实类型（dynamic type）的版本，而不是 pointer 声明的类型。像万能遥控器按"播放"，放什么取决于接的是哪台机器。<span class="eg">例：<code>Base* b = new Derived; b-&gt;f();</code> 调的是 <code>Derived::f</code>。</span></dd>
+  <dd>通过 base 的 pointer 或 reference 调用时，执行的是 object 真实类型（dynamic type）的版本，而不是 pointer 声明的类型。<span class="eg">例：<code>Base* b = new Derived; b-&gt;f();</code> 调的是 <code>Derived::f</code>。</span></dd>
   <dt>vtable 与 vptr</dt>
-  <dd>标准没规定怎么实现，主流 ABI 都这样做：每个 polymorphic class 一张函数指针表（vtable），同类 object 共用；每个 object 开头藏一个指向它的指针（vptr）。virtual call = 读 vptr → 查表 → indirect call。<span class="eg">例：x86-64 上 <code>struct { int x; virtual void f(); }</code> 的 sizeof 是 16（8 字节 vptr + int + padding），去掉 virtual 是 4。</span></dd>
+  <dd>标准没规定怎么实现，主流 ABI 的做法是每个 polymorphic class 一张函数指针表（vtable），同类 object 共用，每个 object 开头藏一个指向它的指针（vptr）。virtual call = 读 vptr → 查表 → indirect call。<span class="eg">例：x86-64 上 <code>struct { int x; virtual void f(); }</code> 的 sizeof 是 16（8 字节 vptr + int + padding），去掉 virtual 是 4。</span></dd>
   <dt>inline</dt>
-  <dd>原意是"建议编译器把函数体展开"，现在真正的语义是"允许在多个 translation unit 里各有一份相同的定义"，所以 header 里定义的函数要加。class 内定义的 member function 自动 inline。展不展开由编译器决定，和写没写 inline 无关。</dd>
+  <dd>原意是建议编译器把函数体展开，现在的语义是允许多个 translation unit 里各有一份相同的定义，所以 header 里定义的函数要加。class 内定义的 member function 自动 inline。展不展开由编译器决定。</dd>
   <dt>Devirtualization</dt>
-  <dd>编译器能确定 dynamic type 时，把 virtual call 换成直接调用，于是也能 inline。像已经知道接的是 DVD 机，就直接按 DVD 机自己的按钮。常见情况：直接对 object 调用、<code>final</code>、qualified call <code>Base::f()</code>。</dd>
+  <dd>编译器能确定 dynamic type 时，把 virtual call 换成直接调用，于是也能 inline。常见情况是直接对 object 调用、<code>final</code>、qualified call。</dd>
   <dt>Virtual destructor 与 pure virtual</dt>
   <dd>通过 base pointer <code>delete</code> 一个 derived object，base 的 destructor 不是 virtual 就是 undefined behavior。<code>virtual void f() = 0;</code> 是 pure virtual，带它的 class 是 abstract class，不能直接创建 object。</dd>
 </dl>
@@ -32,11 +32,11 @@
 <h2 id="figs">看图：b-&gt;f() 怎么查 vtable</h2>
 <figure class="fig">
 <svg viewBox="0 0 540 342" role="img" aria-label="Base 和 Derived 各一张 vtable，每个 object 开头的 vptr 指向自己 class 的表；通过 Base* b 调 f 时先读 vptr、再取第 0 格，跳到 Derived::f；delete b 同样查表调到 ~Derived"><defs><marker id="cv-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="cv-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker></defs><text x="64.0" y="18" text-anchor="middle" class="hd">object</text><text x="248.0" y="18" text-anchor="middle" class="hd">vtable（每个 class 一张）</text><text x="459.0" y="18" text-anchor="middle" class="hd">函数代码</text><text x="64.0" y="44" text-anchor="middle" class="m">Base object</text><text x="248.0" y="44" text-anchor="middle" class="m">Base 的 vtable</text><rect x="16" y="52" width="96" height="30" rx="6" class="box"/><text x="64.0" y="72" text-anchor="middle">vptr</text><rect x="176" y="52" width="144" height="30" rx="3" class="box"/><text x="248.0" y="72" text-anchor="middle">[0] Base::f</text><rect x="384" y="54.0" width="150" height="26" rx="6" class="box"/><text x="459.0" y="72.0" text-anchor="middle">Base::f：return 1</text><path d="M320,67.0 H382" class="ln" marker-end="url(#cv-ah)"/><rect x="176" y="82" width="144" height="30" rx="3" class="box"/><text x="248.0" y="102" text-anchor="middle">~Base</text><rect x="384" y="84.0" width="150" height="26" rx="6" class="box"/><text x="459.0" y="102.0" text-anchor="middle">~Base()</text><path d="M320,97.0 H382" class="ln" marker-end="url(#cv-ah)"/><path d="M112,67.0 H174" class="ln" marker-end="url(#cv-ah)"/><text x="64.0" y="154" text-anchor="middle" class="m">Derived object</text><text x="248.0" y="154" text-anchor="middle" class="m">Derived 的 vtable</text><rect x="16" y="162" width="96" height="30" rx="6" class="hot"/><text x="64.0" y="182" text-anchor="middle">vptr</text><rect x="176" y="162" width="144" height="30" rx="3" class="f2"/><text x="248.0" y="182" text-anchor="middle">[0] Derived::f</text><rect x="384" y="164.0" width="150" height="26" rx="6" class="f2"/><text x="459.0" y="182.0" text-anchor="middle">Derived::f：return 2</text><path d="M320,177.0 H382" class="ln1" marker-end="url(#cv-ah1)"/><rect x="176" y="192" width="144" height="30" rx="3" class="f2"/><text x="248.0" y="212" text-anchor="middle">~Derived</text><rect x="384" y="194.0" width="150" height="26" rx="6" class="f2"/><text x="459.0" y="212.0" text-anchor="middle">~Derived()</text><path d="M320,207.0 H382" class="bwd" marker-end="url(#cv-ah1)"/><path d="M112,177.0 H174" class="ln1" marker-end="url(#cv-ah1)"/><text x="144.0" y="170.0" text-anchor="middle" class="acc">①</text><text x="352.0" y="170.0" text-anchor="middle" class="acc">②</text><text x="352.0" y="225.0" text-anchor="middle" class="acc">delete b</text><rect x="16" y="252" width="96" height="30" rx="6" class="hot"/><text x="64.0" y="272" text-anchor="middle" class="acc">Base* b</text><path d="M64.0,252 V194" class="ln1" marker-end="url(#cv-ah1)"/><text x="72.0" y="227.0" text-anchor="start" class="acc">b-&gt;f()</text><text x="16" y="302" text-anchor="start" class="m">static type：Base*</text><text x="16" y="320" text-anchor="start" class="m">dynamic type：Derived</text><text x="188" y="262" text-anchor="middle" class="acc">①</text><text x="204" y="262" text-anchor="start">读 vptr（mov rax, [rdi]）</text><text x="188" y="284" text-anchor="middle" class="acc">②</text><text x="204" y="284" text-anchor="start">取第 0 格，indirect jump</text><path d="M176,302 H196" class="bwd" marker-end="url(#cv-ah1)"/><text x="204" y="306" text-anchor="start">delete b：同样读 vptr，查表调 ~Derived</text><rect x="178" y="316" width="18" height="14" rx="3" class="f2"/><text x="204" y="328" text-anchor="start">Derived override 后换掉的格</text></svg>
-<figcaption>图 1：<code>Base* b = new Derived</code> 时 <code>b-&gt;f()</code> 怎么找到 <code>Derived::f</code>。每个 object 开头藏一个 vptr，指向自己 class 的 vtable；Derived override 过的格（蓝色）换成了 Derived 的函数。橙红色实线就是上面 g1 的两条指令：① 读 vptr，② 取第 0 格再 indirect jump；跳到哪要到运行时读了内存才知道，所以 g1 没法 inline，而 g2、g3、g4 编译期就知道调谁，直接 inline。橙红色虚线是 <code>delete b</code>，同样经过 vptr 取到 <code>~Derived</code>；如果 <code>~Base</code> 不是 virtual，表里就没有这一格，<code>delete b</code> 是 UB。</figcaption>
+<figcaption>图 1：<code>b-&gt;f()</code> 怎么经过 vptr 找到 <code>Derived::f</code>。Derived override 过的格（蓝色）换成了 Derived 的函数。橙红色实线是代码里 g1 的两条指令，先读 vptr，再取第 0 格 indirect jump。橙红色虚线是 <code>delete b</code>，同样经过 vptr 取到 <code>~Derived</code>。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>A virtual call is dispatched on the object's dynamic type. Typical implementations give each polymorphic class a vtable of function pointers and put a vptr in every object, so a call through a base pointer loads the vptr, loads the slot and makes an indirect call. The main cost is that such a call usually can't be inlined. Today inline mainly means the function may be defined in several translation units; actual inlining is the compiler's choice. A virtual function can be inline, and member functions defined in the class are implicitly inline, but it's only expanded when the compiler knows the dynamic type: a call on an object, a final class, or a qualified call. A polymorphic base needs a virtual destructor.</p></div>
+<div class="answer"><p>A virtual call is dispatched on the object's dynamic type. Typical implementations give each polymorphic class a vtable of function pointers and put a vptr in every object, so a call through a base pointer loads the vptr, loads the slot and makes an indirect call. The main cost is that such a call usually can't be inlined. Today inline mainly means the function may be defined in several translation units; actual inlining is the compiler's choice. A virtual function can be inline, but it's only expanded when the compiler knows the dynamic type: a call on an object, a final class, or a qualified call. A polymorphic base needs a virtual destructor.</p></div>
 
 <h2 id="code">代码：什么时候能 devirtualize</h2>
 <pre><code>struct Base {
@@ -61,29 +61,21 @@ int g4(Base* b) { return b-&gt;Base::f(); }  // qualified call
   <li>代价：两次 load + indirect call，最主要的是挡住了 inline；object 多一个 pointer</li>
   <li><code>inline</code> 的真正语义：允许多个 translation unit 重复定义；展不展开由编译器决定</li>
   <li>virtual 可以 inline，但只有 devirtualize（已知类型、<code>final</code>、qualified call）后才会展开</li>
-  <li>polymorphic base 要 virtual destructor，否则通过 base pointer <code>delete</code> 是 UB</li>
+  <li>polymorphic base 要 virtual destructor，否则通过 base pointer <code>delete</code> 是 UB；不让外部 delete 时用 protected non-virtual</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>在 constructor / destructor 里调 virtual function 会调到谁？</summary>
-  <p>调的是正在构造或析构的那个 class 自己的版本，不会分派到 derived，因为这时 derived 部分还没构造或已经析构。在 abstract class 的 constructor 里 virtual call 一个 pure virtual function 是 UB。</p>
+  <p>调的是正在构造或析构的那个 class 自己的版本，因为这时 derived 部分还没构造或已经析构。这时 virtual call 一个 pure virtual function 是 UB。</p>
 </details>
 <details>
   <summary>constructor 能是 virtual 吗？</summary>
-  <p>不能。constructor 的声明只允许 <code>friend</code>、<code>inline</code>、<code>constexpr</code>、<code>consteval</code>、<code>explicit</code>。而且分派要靠已经建好的 object 的 dynamic type，构造之前还没有。</p>
-</details>
-<details>
-  <summary>pure virtual function 能有函数体吗？</summary>
-  <p>能，但只能写在 class 外面，derived 可以用 <code>Base::f()</code> 调它。pure virtual destructor 必须给定义，因为 derived 析构时一定会调到它。</p>
+  <p>不能。分派要靠已经建好的 object 的 dynamic type，构造之前还没有。</p>
 </details>
 <details>
   <summary>virtual function 的默认参数按哪个类型取？</summary>
-  <p>按 static type，在编译期就替换好了。<code>Base</code> 写 <code>f(int x = 1)</code>、<code>Derived</code> 写 <code>f(int x = 2)</code>，通过 <code>Base*</code> 调 <code>f()</code> 执行的是 <code>Derived::f</code>，但 <code>x = 1</code>。</p>
-</details>
-<details>
-  <summary>base class 的 destructor 什么时候可以不 virtual？</summary>
-  <p>不会通过 base pointer <code>delete</code> 时。guideline：base 的 destructor 要么 public 且 virtual，要么 protected 且 non-virtual。</p>
+  <p>按 static type，编译期就替换好了。<code>Base</code> 写 <code>f(int x = 1)</code>、<code>Derived</code> 写 <code>f(int x = 2)</code>，通过 <code>Base*</code> 调 <code>f()</code> 执行的是 <code>Derived::f</code>，但 <code>x = 1</code>。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://en.cppreference.com/w/cpp/language/virtual">cppreference: virtual function specifier</a>（Explanation、In detail、Virtual destructor、During construction and destruction）· <a href="https://en.cppreference.com/w/cpp/language/inline">cppreference: inline specifier</a>（Explanation）· <a href="https://en.cppreference.com/w/cpp/language/abstract_class">cppreference: abstract class</a> · <a href="https://en.cppreference.com/w/cpp/language/constructor">cppreference: constructors</a> · <a href="https://itanium-cxx-abi.github.io/cxx-abi/abi.html">Itanium C++ ABI</a> §1.1（virtual table 定义）、§2.4（vptr 在 offset 0）、§2.5（Virtual Table Layout）</p>

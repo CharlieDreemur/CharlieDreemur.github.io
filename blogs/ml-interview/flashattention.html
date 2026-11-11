@@ -18,29 +18,29 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>HBM vs SRAM</dt>
-  <dd>HBM 是显存，大但慢；SRAM 是每个 SM 上的片上存储，快但小。像仓库和工作台。<span class="eg">例：A100 的 HBM 40–80 GB、1.5–2.0 TB/s；SRAM 每个 SM 192 KB（共 108 个）、约 19 TB/s。</span></dd>
+  <dd>HBM 是片外的 GPU memory，大但慢。SRAM 是每个 SM 上的片上存储，快但小（数字见 <a href="gpu-memory-hierarchy.html">GPU memory hierarchy</a>）。</dd>
   <dt>标准 attention 慢在哪</dt>
-  <dd>\(S = QK^\top\)、\(P = \mathrm{softmax}(S)\) 都是 \(s\times s\)，算完写回 HBM、下一步再读出来。softmax 本身计算很少，时间全花在搬运上。<span class="eg">例：\(s = 4096\)，每个 head 的 \(S\) 就有约 1678 万个数。</span></dd>
+  <dd>\(S = QK^\top\)、\(P = \mathrm{softmax}(S)\) 都是 \(s\times s\)，算完写回 HBM、下一步再读出来。softmax 计算很少，时间花在搬运上。<span class="eg">例：\(s = 4096\)，每个 head 的 \(S\) 就有约 1678 万个数。</span></dd>
   <dt>Online softmax</dt>
-  <dd>一行分块读进来，只记 running max \(m\) 和 running sum \(\ell\)；新块让 max 变大，就把旧的 \(\ell\) 和输出乘 \(e^{m_{\text{old}}-m_{\text{new}}}\) 校正。像边收卷子边算平均分，不用把卷子都留着。<span class="eg">例：一行 (1, 3 | 2, 5)。第一块后 \(m=3\)，\(\ell = e^{-2}+1 = 1.135\)；第二块后 \(m=5\)，\(\ell = 1.135\,e^{-2} + e^{-3} + 1 = 1.203\)，和一次算完相同。</span></dd>
+  <dd>一行分块读进来，只记 running max \(m\) 和 running sum \(\ell\)。新块让 max 变大，就把旧的 \(\ell\) 和输出乘 \(e^{m_{\text{old}}-m_{\text{new}}}\) 校正。<span class="eg">例：一行 (1, 3 | 2, 5)。第一块后 \(m=3\)，\(\ell = e^{-2}+1 = 1.135\)；第二块后 \(m=5\)，\(\ell = 1.135\,e^{-2} + e^{-3} + 1 = 1.203\)，和一次算完相同。</span></dd>
   <dt>Tiling</dt>
-  <dd>Q 切成 \(B_r\) 行一块，K、V 切成 \(B_c\) 行一块。每次在 SRAM 里算一个 \(B_r\times B_c\) 的 score block，用完就丢，不写回 HBM。</dd>
+  <dd>Q 切成 \(B_r\) 行一块，K、V 切成 \(B_c\) 行一块，每次在 SRAM 里算一个 \(B_r\times B_c\) 的 score block，不写回 HBM。</dd>
   <dt>Recomputation</dt>
-  <dd>backward 要用 \(P\)，但不存它，只存输出 \(O\) 和每行的 softmax 统计量，backward 时按块重算 \(S\)、\(P\)。像不留草稿纸，只记答案和一个校验数，要用时再算一遍。</dd>
+  <dd>backward 要用 \(P\)，但只存输出 \(O\) 和每行的 logsumexp，用时按块重算 \(S\)、\(P\)。</dd>
 </dl>
 
 <h2 id="figs">看图：Q、K、V 怎么分块，什么留在 SRAM</h2>
 <figure class="fig">
 <svg viewBox="0 0 540 404" role="img" aria-label="FlashAttention 的 tiling：外层循环取 Q 的一块，内层循环依次取 K 和 V 的一块，只在 SRAM 里算一个 B_r 乘 B_c 的 score 块，整个 s 乘 s 的矩阵从不存在；每个 Q 块带着 running max、running sum 和输出往右走"><defs><marker id="fa-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="fa-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="240" y="14" text-anchor="middle" class="acc">内层循环 j：K<tspan baseline-shift="-4" font-size="12">j</tspan>、V<tspan baseline-shift="-4" font-size="12">j</tspan> 一块块读进来</text><path d="M122,26 H358" class="ln1" marker-end="url(#fa-ah1)"/><path d="M48,126 V362" class="ln2" marker-end="url(#fa-ah2)"/><text x="34" y="244" text-anchor="middle" class="c2" transform="rotate(-90 34 244.0)">外层循环 i：Q<tspan baseline-shift="-4" font-size="12">i</tspan> 一块块来</text><text x="112" y="69" text-anchor="end" class="hd">Kᵀ</text><rect x="120" y="44" width="60" height="40" rx="3" class="box"/><rect x="180" y="44" width="60" height="40" rx="3" class="f1"/><rect x="240" y="44" width="60" height="40" rx="3" class="box"/><rect x="300" y="44" width="60" height="40" rx="3" class="box"/><text x="210" y="69" text-anchor="middle">K<tspan baseline-shift="-4" font-size="12">j</tspan>ᵀ</text><text x="368" y="69" text-anchor="start" class="m">每块 [B<tspan baseline-shift="-4" font-size="12">c</tspan>, d]</text><text x="90" y="112" text-anchor="middle" class="hd">Q</text><rect x="70" y="124" width="40" height="60" rx="3" class="box"/><rect x="70" y="184" width="40" height="60" rx="3" class="f2"/><rect x="70" y="244" width="40" height="60" rx="3" class="box"/><rect x="70" y="304" width="40" height="60" rx="3" class="box"/><text x="90" y="219" text-anchor="middle">Q<tspan baseline-shift="-4" font-size="12">i</tspan></text><rect x="120" y="124" width="60" height="60" rx="2" class="stale"/><rect x="180" y="124" width="60" height="60" rx="2" class="stale"/><rect x="240" y="124" width="60" height="60" rx="2" class="stale"/><rect x="300" y="124" width="60" height="60" rx="2" class="stale"/><rect x="120" y="184" width="60" height="60" rx="2" class="stale"/><rect x="180" y="184" width="60" height="60" rx="2" class="f1"/><rect x="240" y="184" width="60" height="60" rx="2" class="stale"/><rect x="300" y="184" width="60" height="60" rx="2" class="stale"/><rect x="120" y="244" width="60" height="60" rx="2" class="stale"/><rect x="180" y="244" width="60" height="60" rx="2" class="stale"/><rect x="240" y="244" width="60" height="60" rx="2" class="stale"/><rect x="300" y="244" width="60" height="60" rx="2" class="stale"/><rect x="120" y="304" width="60" height="60" rx="2" class="stale"/><rect x="180" y="304" width="60" height="60" rx="2" class="stale"/><rect x="240" y="304" width="60" height="60" rx="2" class="stale"/><rect x="300" y="304" width="60" height="60" rx="2" class="stale"/><text x="210" y="211" text-anchor="middle" class="acc">S<tspan baseline-shift="-4" font-size="12">ij</tspan></text><text x="210" y="229" text-anchor="middle" class="m">[B<tspan baseline-shift="-4" font-size="12">r</tspan>, B<tspan baseline-shift="-4" font-size="12">c</tspan>]</text><text x="150" y="219" text-anchor="middle" class="m">算完就丢</text><rect x="150" y="270" width="180" height="50" rx="6" class="box"/><text x="240" y="291" text-anchor="middle">s × s 的 S、P</text><text x="240" y="309" text-anchor="middle" class="m">从来不完整存在，不写回 HBM</text><path d="M240,214.0 H370" class="ln1" marker-end="url(#fa-ah1)"/><rect x="372" y="170" width="160" height="88" rx="6" class="f2"/><text x="452" y="190" text-anchor="middle" class="c2">第 i 块一直带着</text><text x="452" y="210" text-anchor="middle">m<tspan baseline-shift="-4" font-size="12">i</tspan>、ℓ<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>]</text><text x="452" y="228" text-anchor="middle">O<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, d]</text><text x="452" y="247" text-anchor="middle" class="m">每来一个 j 更新一次</text><text x="270" y="390" text-anchor="middle" class="m">Q<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, d]　K<tspan baseline-shift="-4" font-size="12">j</tspan>、V<tspan baseline-shift="-4" font-size="12">j</tspan>：[B<tspan baseline-shift="-4" font-size="12">c</tspan>, d]　S<tspan baseline-shift="-4" font-size="12">ij</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, B<tspan baseline-shift="-4" font-size="12">c</tspan>]</text></svg>
-<figcaption>图 1：按 FlashAttention-2 的循环顺序画（外层 Q 块、内层 K/V 块）。蓝色跟着外层 i：取 Q 的第 i 块 \(Q_i\)；橙红色跟着内层 j：依次取 \(K_j\)、\(V_j\)，在 SRAM 里算出一个 \([B_r, B_c]\) 的 score 块 \(S_{ij}\)，用完就丢。虚线格表示完整的 \(s\times s\) 矩阵从来没有同时存在过。每个 i 带着 running max \(m_i\)、running sum \(\ell_i\) 和输出 \(O_i\) 往右走，每来一块就按 online softmax 更新一次。</figcaption>
+<figcaption>图 1：按 FlashAttention-2 的循环顺序画（外层 Q 块、内层 K/V 块）。蓝色跟着外层 i，橙红色跟着内层 j，每次在 SRAM 里算出一个 score 块 \(S_{ij}\)。虚线格是从来没有同时存在过的完整 \(s\times s\) 矩阵。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 520 344" role="img" aria-label="HBM 和 SRAM 之间的数据搬运：Q 的块每个 i 读一次，K 和 V 的块每个 j 读一次，O 的块最后写回一次；score 块和 running max、sum 只留在 SRAM，s 乘 s 的矩阵不写回 HBM"><defs><marker id="fb-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="fb-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="80" y="22" text-anchor="middle" class="hd">HBM（大、慢）</text><rect x="10" y="35" width="140" height="30" rx="6" class="box"/><text x="80" y="55" text-anchor="middle">Q：[s, d]</text><rect x="10" y="79" width="140" height="30" rx="6" class="box"/><text x="80" y="99" text-anchor="middle">K、V：[s, d]</text><rect x="10" y="123" width="140" height="30" rx="6" class="box"/><text x="80" y="143" text-anchor="middle">O：[s, d]</text><rect x="10" y="167" width="140" height="74" rx="6" class="stale"/><text x="80" y="198" text-anchor="middle" class="m">S、P：[s, s]</text><text x="80" y="216" text-anchor="middle" class="m">从不写到这里</text><rect x="258" y="4" width="252" height="334" rx="10" class="hot"/><text x="384" y="22" text-anchor="middle" class="hd">SRAM（一个 SM 上，小、快）</text><rect x="268" y="35" width="232" height="30" rx="6" class="f2"/><text x="384" y="55" text-anchor="middle">Q<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, d]</text><rect x="268" y="79" width="232" height="30" rx="6" class="f1"/><text x="384" y="99" text-anchor="middle">K<tspan baseline-shift="-4" font-size="12">j</tspan>、V<tspan baseline-shift="-4" font-size="12">j</tspan>：[B<tspan baseline-shift="-4" font-size="12">c</tspan>, d]</text><rect x="268" y="123" width="232" height="30" rx="6" class="f2"/><text x="384" y="143" text-anchor="middle">O<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, d]</text><rect x="268" y="167" width="232" height="30" rx="6" class="f2"/><text x="384" y="187" text-anchor="middle">m<tspan baseline-shift="-4" font-size="12">i</tspan>、ℓ<tspan baseline-shift="-4" font-size="12">i</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>]</text><rect x="268" y="211" width="232" height="30" rx="6" class="f1"/><text x="384" y="231" text-anchor="middle">S<tspan baseline-shift="-4" font-size="12">ij</tspan>、P̃<tspan baseline-shift="-4" font-size="12">ij</tspan>：[B<tspan baseline-shift="-4" font-size="12">r</tspan>, B<tspan baseline-shift="-4" font-size="12">c</tspan>]</text><path d="M150,50 H266" class="ln2" marker-end="url(#fb-ah2)"/><text x="209" y="43" text-anchor="middle" class="c2">每个 i 读 1 次</text><path d="M150,94 H266" class="ln1" marker-end="url(#fb-ah1)"/><text x="209" y="87" text-anchor="middle" class="acc">每个 j 读 1 次</text><path d="M268,138 H152" class="ln2" marker-end="url(#fb-ah2)"/><text x="209" y="131" text-anchor="middle" class="c2">j 走完写回 1 次</text><text x="268" y="268" text-anchor="start" class="m">每个 j：① S<tspan baseline-shift="-4" font-size="12">ij</tspan> = Q<tspan baseline-shift="-4" font-size="12">i</tspan>K<tspan baseline-shift="-4" font-size="12">j</tspan>ᵀ</text><text x="268" y="287" text-anchor="start" class="m">② 新 max m′；旧 ℓ<tspan baseline-shift="-4" font-size="12">i</tspan>、O<tspan baseline-shift="-4" font-size="12">i</tspan> × exp(m − m′)</text><text x="268" y="306" text-anchor="start" class="m">③ ℓ<tspan baseline-shift="-4" font-size="12">i</tspan> += rowsum P̃<tspan baseline-shift="-4" font-size="12">ij</tspan>，O<tspan baseline-shift="-4" font-size="12">i</tspan> += P̃<tspan baseline-shift="-4" font-size="12">ij</tspan>V<tspan baseline-shift="-4" font-size="12">j</tspan></text><text x="268" y="325" text-anchor="start" class="m">j 走完：O<tspan baseline-shift="-4" font-size="12">i</tspan> ← O<tspan baseline-shift="-4" font-size="12">i</tspan> / ℓ<tspan baseline-shift="-4" font-size="12">i</tspan>，写回 HBM</text></svg>
-<figcaption>图 2：同一个过程，看数据在哪。左边是 HBM，右边是一个 SM 上的 SRAM；蓝色每个 i 读写一次，橙红色每个 j 换一块。\(Q_i\) 读一次、\(O_i\) 最后写一次，中间 \(K_j\)、\(V_j\) 一块块流过 SRAM；score 块 \(S_{ij}\)、\(\tilde P_{ij}\) 和 \(m_i\)、\(\ell_i\) 只留在 SRAM，所以 \(s\times s\) 的 S、P 从来不进 HBM。右下 4 行就是后面「推导」一节 online softmax 的公式。</figcaption>
+<figcaption>图 2：同一个过程里数据在哪。左边是 HBM，右边是一个 SM 上的 SRAM。\(Q_i\) 读一次、\(O_i\) 最后写一次，\(K_j\)、\(V_j\) 一块块流过 SRAM，\(S_{ij}\)、\(\tilde P_{ij}\) 和 \(m_i\)、\(\ell_i\) 只留在 SRAM。右下 4 行是 online softmax 的公式。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Standard attention writes the s×s score and probability matrices to HBM and reads them back, so it needs O(s²) memory and is bound by memory traffic, not FLOPs. FlashAttention splits Q into blocks of B_r rows and K, V into blocks of B_c rows, computes each B_r×B_c score block in on-chip SRAM, and never writes it out. Softmax needs the whole row, so it uses online softmax: keep a running row max m and sum ℓ, and when a new block raises the max, rescale the old sum and output by exp(m_old − m_new). It's exact, FLOPs stay O(s²d), extra memory is O(s), and backward recomputes the blocks.</p></div>
+<div class="answer"><p>Standard attention writes the s×s score and probability matrices to HBM and reads them back, so it needs O(s²) memory and is bound by memory traffic, not FLOPs. FlashAttention splits Q into blocks of B_r rows and K, V into blocks of B_c rows, computes each B_r×B_c score block in SRAM, and never writes it out. Softmax needs the whole row, so it uses online softmax: keep a running row max m and sum ℓ, and when a new block raises the max, rescale the old sum and output by exp(m_old − m_new). It's exact, FLOPs stay O(s²d), extra memory is O(s), and backward recomputes the blocks.</p></div>
 
 <h2>推导 / 关键公式</h2>
 <div class="deriv">
@@ -50,12 +50,12 @@
   \[ O' = e^{m - m'}\,O + \tilde P_{ij} V_j \]
   <p>全部块走完再 \(O \leftarrow O/\ell\)。\(e^{m-m'}\le 1\)，不会 overflow。</p>
   <h3 id="io">为什么快：数 HBM 读写，不数 FLOPs</h3>
-  <p>\(d\) 是 head dim，\(M\) 是 SRAM 大小（Theorem 2）：</p>
+  <p>\(d\) 是 head dim，\(M\) 是 SRAM 大小：</p>
   \[ \text{standard: } \Theta(sd + s^2),\qquad \text{Flash: } \Theta(s^2d^2/M) \]
-  <p>\(d\) = 64–128、\(M\) ≈ 100 KB 时 \(d^2 \ll M\)。FLOPs 仍是 \(O(s^2d)\)，额外 memory 降到 \(O(s)\)（见 <a href="transformer-complexity.html">Transformer 复杂度</a>）。</p>
+  <p>\(d\) = 64–128、\(M\) ≈ 100 KB 时 \(d^2 \ll M\)（FLOPs 见 <a href="transformer-complexity.html">Transformer 复杂度</a>）。</p>
 </div>
 
-<h2 id="shape">shape（字节面试要求讲清楚）</h2>
+<h2 id="shape">shape</h2>
 <table>
   <thead><tr><th>块</th><th>shape</th><th>放在哪</th></tr></thead>
   <tbody>
@@ -100,23 +100,19 @@ assert np.allclose(flash_attn(Q, K, V), ref)</code></pre>
 <h2>追问</h2>
 <details>
   <summary>FLOPs 更多了，为什么反而更快？</summary>
-  <p>论文 Fig. 2（A100、GPT-2 medium）：recompute 让 FLOPs 从 66.6 增到 75.2 GFLOPs，但 HBM 读写从 40.3 降到 4.4 GB，forward + backward 从 41.7 ms 降到 7.3 ms。attention 卡在 memory，不卡在算力。</p>
+  <p>论文 Fig. 2（A100、GPT-2 medium）：recompute 让 FLOPs 从 66.6 增到 75.2 GFLOPs，但 HBM 读写从 40.3 降到 4.4 GB，forward + backward 从 41.7 ms 降到 7.3 ms。attention 是 memory-bound（见 <a href="matmul-roofline.html#roofline">roofline</a>）。</p>
 </details>
 <details>
   <summary>\(B_r\)、\(B_c\) 怎么定？</summary>
-  <p>由 SRAM 大小 \(M\) 定：\(B_c = \lceil M/4d\rceil\)，\(B_r = \min(\lceil M/4d\rceil, d)\)，保证 \(Q_i, K_j, V_j, O_i\) 同时放得下（Algorithm 1 第 1 行）。block 越大，HBM 读写越少。</p>
+  <p>由 SRAM 大小 \(M\) 定：\(B_c = \lceil M/4d\rceil\)，\(B_r = \min(\lceil M/4d\rceil, d)\)，保证 \(Q_i, K_j, V_j, O_i\) 同时放得下。</p>
 </details>
 <details>
   <summary>FlashAttention-2 改了什么？</summary>
-  <p>中途不除 \(\ell\)、最后除一次，并且只存 logsumexp \(L = m + \log\ell\)，减少 non-matmul FLOPs（A100 上 non-matmul FP32 只有 19.5 TFLOPS，matmul 312）。外层循环改成 Q 块，沿 sequence 维分给不同 thread block。causal mask 下整块被 mask 的直接跳过。</p>
+  <p>中途不除 \(\ell\)、最后除一次，只存 logsumexp \(L = m + \log\ell\)，减少用不上 <a href="matmul-roofline.html">Tensor Core</a> 的 non-matmul FLOPs。外层循环改成 Q 块，沿 sequence 维分给不同 thread block。causal mask 下整块被 mask 的直接跳过。</p>
 </details>
 <details>
   <summary>多卡（ring attention）怎么合并两段结果？</summary>
   <p>每段算出归一化好的 \(O_k\) 和 logsumexp \(L_k\)：\(L = \log(e^{L_1} + e^{L_2})\)，\(O = e^{L_1-L}O_1 + e^{L_2-L}O_2\)，和 online softmax 是同一个式子（见 <a href="context-parallel.html">Context Parallel</a>）。</p>
-</details>
-<details>
-  <summary>causal mask、dropout 怎么处理？</summary>
-  <p>都在同一个 kernel 里对 SRAM 中的块做。dropout 不存 \(s\times s\) 的 mask，只存 random generator state，backward 时重新生成同一个 mask。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022, FlashAttention</a> §2.1（p.3）、§3.1 Algorithm 1 + Theorem 1（p.5）、Theorem 2 + Fig. 2（p.6）、App. B.3–B.4（pp.19–20）· <a href="https://arxiv.org/abs/2307.08691">Dao 2023, FlashAttention-2</a> §3.1–3.2（pp.5–8）· <a href="https://arxiv.org/abs/1805.02867">Milakov &amp; Gimelshein 2018</a> §3 Algorithm 3（pp.2–3）</p>

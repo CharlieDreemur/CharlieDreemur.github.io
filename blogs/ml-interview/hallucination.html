@@ -18,23 +18,21 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Hallucination</dt>
-  <dd>流畅、自信、但没有依据的内容。像考试不会也不留白，编一个看着像的答案。<span class="eg">例：问一个不太出名的人的生日，同一个模型三次答了三个不同的日期。</span></dd>
+  <dd>流畅、自信、但没有依据的内容。像考试不会也不留白，编一个看着像的答案。</dd>
   <dt>Factuality vs faithfulness</dt>
-  <dd>factuality 错是和真实世界不符；faithfulness 错是和给它的 context、指令不符。RAG 场景主要防后者。答案必须被检索到的文档支持。<span class="eg">例：说电话是 Edison 发明的 → factuality；摘要里出现原文没有的数字 → faithfulness。</span></dd>
+  <dd>factuality 错是和真实世界不符；faithfulness 错是和给它的 context、指令不符。RAG 场景主要防后者。<span class="eg">例：说电话是 Edison 发明的 → factuality；摘要里出现原文没有的数字 → faithfulness。</span></dd>
   <dt>Knowledge boundary（长尾知识）</dt>
-  <dd>训练数据里只见过一两次的事实记不牢，新发生的事根本没见过，但模型照样回答。<span class="eg">例：如果 20% 的生日事实在训练数据里只出现一次，base model 至少会在约 20% 的生日问题上编。</span></dd>
-  <dt>Grounding 与 citation</dt>
-  <dd>要求只根据给定材料回答、每句标出处，材料里没有就说不知道。像开卷考试要求每句话标页码，阅卷人能逐条核对。</dd>
+  <dd>训练数据里只见过一两次的事实记不牢，新发生的事没见过，但模型照样回答。<span class="eg">例：20% 的生日事实在训练数据里只出现一次，base model 就至少在约 20% 的生日问题上编。</span></dd>
   <dt>Self-consistency</dt>
-  <dd>同一个问题 sample 多次：真知道的，几次答案一致；编的，每次都不一样。可以对答案投票，也可以把不一致当成 hallucination 的信号（SelfCheckGPT）。</dd>
+  <dd>同一个问题 sample 多条 reasoning path，对最终答案 majority vote。编的答案每次不一样，所以不一致也能当 hallucination 的信号（SelfCheckGPT，不需要外部数据库）。代价是 inference 成本乘以 sample 数。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>A hallucination is fluent output that isn't supported: either factually wrong, or unfaithful to the context the model was given. Causes include noisy or outdated data, long-tail facts seen only once, training and benchmarks that reward a confident guess over "I don't know", and sampling randomness. I'd mitigate it in layers. Ground the model: retrieve documents with RAG, answer only from them with citations, and call tools for math or fresh data. Decode with a low temperature. Train abstention with SFT and RLHF data that reward saying "I don't know". Then verify: sample several answers and check consistency, run an NLI check against the sources, and track groundedness in evaluation.</p></div>
+<div class="answer"><p>A hallucination is fluent output that isn't supported: factually wrong, or unfaithful to the given context. Causes are noisy or outdated data, long-tail facts seen only once, training and benchmarks that reward confident guessing over abstaining, and sampling randomness. To mitigate, ground the model: retrieve documents with RAG, answer only from them with citations, and call tools for math or fresh data. Decode with a low temperature. Train abstention with SFT and RLHF data that reward "I don't know". Then verify: sample several answers and check consistency, run an NLI check against the sources, and track groundedness in evaluation.</p></div>
 
 <h2>推导：为什么模型宁可猜</h2>
 <div class="deriv">
-  <p>设模型答对的把握是 \(c\)。0-1 打分（答对 1 分，答错和"不知道"都 0 分）下，猜的期望是 \(c \ge 0\)，永远不亏。大多数 benchmark 和 post-training 都按这种方式打分，模型就被训练成爱猜。改成答错扣 \(t/(1-t)\) 分：</p>
+  <p>设模型答对的把握是 \(c\)。0-1 打分（答错和"不知道"都 0 分）下，猜的期望是 \(c \ge 0\)，永远不亏。大多数 benchmark 和 post-training 都这样打分，所以模型爱猜。改成答错扣 \(t/(1-t)\) 分：</p>
   \[ \mathbb{E}[\text{guess}] = c - (1-c)\,\frac{t}{1-t} \]
   \[ \mathbb{E}[\text{guess}] &gt; 0 \iff c &gt; t \]
   <p>例：\(c = 0.3\)。0-1 打分下猜得 0.3 分；\(t = 0.5\)（错一题扣 1 分）下猜得 \(0.3 - 0.7 = -0.4\)，应该说不知道。</p>
@@ -44,11 +42,11 @@
 <table>
   <thead><tr><th>层</th><th>做法</th><th>针对</th></tr></thead>
   <tbody>
-    <tr><td class="nw">数据 / 训练</td><td>data cleaning、更新数据；SFT 加"不知道就拒答"样本；RLHF 惩罚编造</td><td>错误知识、不会拒答</td></tr>
-    <tr><td class="nw">Grounding</td><td><a href="rag.html">RAG</a> + citation；prompt 要求只据材料回答；tool（search、calculator、code）</td><td>缺知识、知识过时</td></tr>
+    <tr><td class="nw">数据 / 训练</td><td>data cleaning、更新数据；SFT 加拒答样本；RLHF 惩罚编造</td><td>错误知识、不会拒答</td></tr>
+    <tr><td class="nw">Grounding</td><td><a href="rag.html">RAG</a> + 逐句 citation；prompt 要求只据材料回答，没有就说不知道；tool（search、calculator、code）</td><td>缺知识、知识过时</td></tr>
     <tr><td class="nw">Decoding</td><td>低 temperature 或 greedy</td><td>抽到 tail 里的词</td></tr>
     <tr><td class="nw">检测</td><td>self-consistency；NLI 判断回答是否被 source 支持；数字、日期做 rule check；高风险加 human review</td><td>前面漏掉的</td></tr>
-    <tr><td class="nw">评估</td><td>TruthfulQA、FActScore、groundedness；打分时别惩罚"不知道"</td><td>衡量和激励</td></tr>
+    <tr><td class="nw">评估</td><td>TruthfulQA、FActScore、groundedness</td><td>衡量</td></tr>
   </tbody>
 </table>
 
@@ -63,23 +61,15 @@
 <h2>追问</h2>
 <details>
   <summary>用了 RAG 还会 hallucinate 吗？</summary>
-  <p>会。检索不到或检索错。文档和模型自己的记忆冲突时模型信了记忆。context 太长时中间的信息被忽略（lost in the middle）。对策是 rerank、逐句 citation、用 NLI 检查每句话是否被文档支持，见 <a href="rag.html">RAG</a>。</p>
-</details>
-<details>
-  <summary>没有标准答案时怎么检测？</summary>
-  <p>SelfCheckGPT：同一个 prompt 多 sample 几次，某句话在其他 sample 里得不到支持就可疑，不需要外部数据库。有 source 时用 NLI 判断 source 是否 entail 这句话。</p>
-</details>
-<details>
-  <summary>self-consistency 具体怎么做？</summary>
-  <p>用 chain-of-thought sample 多条 reasoning path，对最终答案 majority vote。代价是 inference 成本乘以 sample 数。</p>
+  <p>会。检索错、文档和模型自己的记忆冲突、context 太长时中间的信息被忽略，都会出错。对策见 <a href="rag.html#hard">RAG 的三个难点</a>。</p>
 </details>
 <details>
   <summary>RLHF 之后为什么还会编，甚至顺着用户说？</summary>
-  <p>sycophancy：人类标注者和 reward model 都偏爱顺着用户的回答。RLHF 确实有用。InstructGPT 在 closed-domain 任务上的 hallucination 率从 GPT-3 的 41% 降到 21%，但不能根除。</p>
+  <p>因为 sycophancy，人类标注者和 reward model 都偏爱顺着用户的回答。RLHF 仍然有用，InstructGPT 在 closed-domain 任务上的 hallucination 率从 GPT-3 的 41% 降到 21%。</p>
 </details>
 <details>
   <summary>temperature 设成 0 就不会 hallucinate 了吗？</summary>
-  <p>不会。greedy 只去掉 sampling 的随机性；模型本来就记错或没见过的知识，照样会被当成最可能的答案输出。</p>
+  <p>不会。greedy 只去掉 sampling 的随机性，记错或没见过的知识照样被当成最可能的答案输出。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2311.05232">Huang et al. 2023（hallucination survey）</a> §2.3（pp.5–7）、§3.1.2（p.9）、§3.2.2–3.3.1（p.11）、§4.1（pp.12–15）、§4.2（pp.17–18）、§6.2（pp.30–31）·<a href="https://arxiv.org/abs/2509.04664">Kalai et al. 2025（Why Language Models Hallucinate）</a> §1（pp.1–4）、§4.2（p.13）· <a href="https://arxiv.org/abs/2303.08896">Manakul et al. 2023（SelfCheckGPT）</a> Abstract（p.1）· <a href="https://arxiv.org/abs/2203.11171">Wang et al. 2023（self-consistency）</a> §2（p.3）· <a href="https://arxiv.org/abs/2311.09677">Zhang et al. 2024（R-Tuning）</a> Abstract · <a href="https://arxiv.org/abs/2203.02155">Ouyang et al. 2022（InstructGPT）</a> §1（p.3）</p>

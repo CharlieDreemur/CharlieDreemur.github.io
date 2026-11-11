@@ -18,37 +18,37 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Prefill 与 decode</dt>
-  <dd>prefill 一次读完整个 prompt，矩阵乘矩阵，算力吃满（compute-bound）；decode 每步只出一个 token，却要把全部 weight 从显存搬一遍（memory-bound）。像读题一眼扫完，答案却一个字一个字写，每写一个字都要翻一遍整本书。<span class="eg">例：7B 模型 fp16 weight 14 GB，显存带宽 1 TB/s → batch = 1 时每 token 至少 14 ms，最多约 70 token/s。</span></dd>
+  <dd>prefill 一次读完整个 prompt，矩阵乘矩阵，compute-bound。decode 每步只出一个 token，却要把全部 weight 从 GPU memory 搬一遍，memory-bound（见 <a href="kv-cache.html">KV cache</a>）。</dd>
   <dt>Quantization</dt>
-  <dd>weight 用更少的 bit 存：INT8、INT4（怎么量化见 <a href="quantization-int8.html">INT8 quantization</a>）。decode 主要在搬 weight，搬得少就快，也省显存。<span class="eg">例：7B 从 fp16 的 14 GB 降到 INT4 的 3.5 GB，每 token 下限从 14 ms 降到 3.5 ms。</span></dd>
+  <dd>weight 用更少的 bit 存：INT8、INT4（怎么量化见 <a href="quantization-int8.html">INT8 quantization</a>）。decode 主要在搬 weight，搬得少就快，也省 GPU memory。</dd>
   <dt>Continuous batching</dt>
-  <dd>按 iteration 调度：每生成一步，做完的请求离开，新请求马上补进来，不用等整批结束。像公交车每站上下客，而不是等全车人到终点才发下一班。读一次 weight 服务一整批请求，throughput 上去。</dd>
+  <dd>按 iteration 调度，每一步做完的请求离开，新请求马上补进来。static batching 要等整批里最长的请求结束，短请求的位置空转，还要 padding。读一次 weight 服务一整批请求，所以 throughput 高。</dd>
   <dt>Prompt / prefix caching</dt>
-  <dd>很多请求开头一样（system prompt、few-shot、tool 定义），这段的 KV cache 算一次存起来，后面的请求直接复用，只算新增部分。<span class="eg">例：Anthropic API 命中 cache 的 input token 默认按 0.1× 价格计费。</span></dd>
+  <dd>很多请求开头一样（system prompt、few-shot、tool 定义），这段的 KV cache 算一次存起来，后面的请求直接复用，只算新增部分。</dd>
   <dt>Speculative decoding</dt>
-  <dd>小 draft model 先猜 \(\gamma\) 个 token，大模型一次 forward 并行验证，猜对的都收下。像实习生先写草稿，主管一次批改。输出分布和只用大模型完全一样。</dd>
+  <dd>小 draft model 先猜 \(\gamma\) 个 token，大模型一次 forward 并行验证，猜对的都收下。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I'd measure cost and latency at fixed quality, then pull three levers. Tokens: trim the system prompt and few-shot examples, summarize long history, retrieve only the top chunks, cap output length, and put the static prefix first so prompt caching can reuse it. Model: route easy queries to a smaller model, distill, and quantize weights to INT8 or INT4, which speeds up decoding because decoding is memory-bandwidth-bound. Serving: KV cache, continuous batching with PagedAttention for throughput, prefix caching for shared system prompts, and speculative decoding, where a small draft model proposes several tokens and the large model verifies them in one pass without changing the output distribution.</p></div>
+<div class="answer"><p>I'd measure cost and latency at fixed quality, then pull three levers. Tokens: trim the system prompt and few-shot examples, summarize long history, retrieve only the top chunks, cap output length, and put the static prefix first so prompt caching can reuse it. Model: route easy queries to a smaller model, distill, and quantize weights to INT8 or INT4, which speeds up decoding because decoding is memory-bandwidth-bound. Serving: KV cache, continuous batching with PagedAttention for throughput, and speculative decoding, where a small draft model proposes several tokens and the large model verifies them in one pass without changing the output distribution.</p></div>
 
 <h2 id="levers">按 lever 分</h2>
 <table>
   <thead><tr><th>层</th><th>手段</th><th>省什么</th></tr></thead>
   <tbody>
     <tr><td class="nw">token</td><td>精简 system prompt、少放 few-shot；长 history 压成 summary；RAG 只放 rerank 后的 top chunk；限制输出长度</td><td>input / output token</td></tr>
-    <tr><td class="nw">token</td><td>prompt caching：不变的内容放最前面</td><td>重复前缀的 prefill</td></tr>
-    <tr><td class="nw">model</td><td>routing / cascade：简单请求给小模型，不够好再升级</td><td>大模型调用次数</td></tr>
-    <tr><td class="nw">model</td><td><a href="knowledge-distillation.html">distillation</a>；quantization（GPTQ、AWQ）</td><td>参数量、显存、decode 时间</td></tr>
-    <tr><td class="nw">serving</td><td><a href="kv-cache.html">KV cache</a>；<a href="mqa-gqa-mla.html">MQA / GQA</a> 缩小 KV cache</td><td>重复计算、KV 显存</td></tr>
+    <tr><td class="nw">token</td><td>prompt caching</td><td>重复前缀的 prefill</td></tr>
+    <tr><td class="nw">model</td><td>routing / cascade：简单请求给小模型</td><td>大模型调用次数</td></tr>
+    <tr><td class="nw">model</td><td><a href="knowledge-distillation.html">distillation</a>；quantization（GPTQ、AWQ）</td><td>参数量、GPU memory、decode 时间</td></tr>
+    <tr><td class="nw">serving</td><td><a href="kv-cache.html">KV cache</a>；<a href="mqa-gqa-mla.html">MQA / GQA</a> 缩小 KV cache</td><td>重复计算、KV cache 的 GPU memory</td></tr>
     <tr><td class="nw">serving</td><td>continuous batching + PagedAttention</td><td>throughput</td></tr>
     <tr><td class="nw">serving</td><td>speculative decoding</td><td>latency</td></tr>
   </tbody>
 </table>
 
-<h2 id="example">手算例子：7B 模型的显存和速度</h2>
+<h2 id="example">手算例子：7B 模型的 GPU memory 和速度</h2>
 <ul>
-  <li><strong>weight</strong>：fp16 是 \(7\times10^9\times 2\) B = 14 GB；INT8 7 GB；INT4 3.5 GB（每 128 个 weight 再存一个 fp16 scale，约 3.6 GB）。</li>
+  <li><strong>weight</strong>：fp16 是 \(7\times10^9\times 2\) B = 14 GB；INT8 7 GB；INT4 3.5 GB。</li>
   <li><strong>decode 下限</strong>（batch = 1，每个 token 读一遍 weight，带宽 1 TB/s）：fp16 14 ms/token（约 71 token/s），INT4 3.5 ms（约 285 token/s）。</li>
   <li><strong>KV cache</strong>：LLaMA-7B 每 token 512 KiB（<a href="transformer-complexity.html">怎么算</a>），4096 context × batch 8 = 16 GiB，比 weight 还大，batch size 被它卡住。</li>
 </ul>
@@ -66,30 +66,26 @@
   <li>先定指标：quality 不降的前提下比 cost、latency（首 token 时间、每 token 时间）、throughput</li>
   <li>三层 lever：token / model / serving</li>
   <li>decode 是 memory-bound → quantization、batching 有效；prefill 是 compute-bound</li>
-  <li>KV cache 显存卡住 batch size → GQA、PagedAttention</li>
+  <li>KV cache 的 GPU memory 卡住 batch size → GQA、PagedAttention</li>
   <li>speculative decoding 降 latency、不改输出分布，但不省 FLOPs</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>continuous batching 为什么能提高 throughput？</summary>
-  <p>static batching 要等整批里最长的请求结束，短请求的位置空转，还要 padding；按 iteration 调度每步都能换人。vLLM 再用 PagedAttention 像 OS 分页一样按 block 管 KV cache，显存接近零浪费，throughput 提高 2–4×（见 <a href="kv-cache.html">KV cache</a>）。</p>
-</details>
-<details>
   <summary>speculative decoding 为什么不改变输出分布？</summary>
-  <p>draft 给出 token \(x\)：\(q(x) \le p(x)\) 直接接受；否则以 \(1 - p(x)/q(x)\) 的概率拒绝，并从 \(\mathrm{norm}(\max(0, p - q))\) 重新采样，可以证明结果仍服从 \(p\)。\(\alpha\) 低，或 batch 已经大到 GPU 没有空闲算力时，就不划算。</p>
+  <p>draft 给出 token \(x\)：\(q(x) \le p(x)\) 直接接受；否则以 \(1 - p(x)/q(x)\) 的概率拒绝，并从 \(\mathrm{norm}(\max(0, p - q))\) 重新采样，结果仍服从 \(p\)。\(\alpha\) 低，或 batch 已经大到 GPU 没有空闲算力时，就不划算。</p>
 </details>
 <details>
   <summary>prompt caching 怎么用才能命中？</summary>
-  <p>只复用完全相同的前缀，所以 tools、system prompt、few-shot 放最前，user input、时间戳放后面。Anthropic API：5 分钟 cache 写入按 1.25× 计费，读取 0.1×（个别新模型更低）。vLLM 把共享前缀的 KV block 预先存好，prefill 只算 user input。</p>
+  <p>只复用完全相同的前缀，所以 tools、system prompt、few-shot 放最前，user input、时间戳放后面。Anthropic API 的 5 分钟 cache 写入按 1.25× 计费，读取 0.1×（个别新模型更低）。</p>
 </details>
 <details>
   <summary>W8A8 还是 W4A16？</summary>
-  <p>W8A8 把 weight 和 activation 都压成 INT8，矩阵乘本身变快，适合 prefill、大 batch；W4A16 只压 weight，省显存，主要加速 memory-bound 的 decode。bit 越低，直接 round-to-nearest 掉点越多（Llama-2-7B perplexity：FP16 5.47，INT4 5.73，INT3 6.66），所以用 GPTQ（用 Hessian 信息逐列量化，并更新还没量化的 weight 来补偿误差）或 AWQ（按 activation 找出约 1% 的 salient channel，放大后再量化），INT4 AWQ 是 5.60。</p>
+  <p>W8A8 把 weight 和 activation 都压成 INT8，矩阵乘本身变快，适合 prefill、大 batch。W4A16 只压 weight，省 GPU memory，主要加速 memory-bound 的 decode。bit 越低，round-to-nearest 掉点越多（Llama-2-7B perplexity：FP16 5.47，INT4 5.73，INT3 6.66），所以用 GPTQ（用 Hessian 信息逐列量化，并更新还没量化的 weight 补偿误差）或 AWQ（按 activation 找出约 1% 的 salient channel，放大后再量化，INT4 是 5.60）。</p>
 </details>
 <details>
   <summary>routing / cascade 怎么做？</summary>
-  <p>FrugalGPT：先让便宜模型回答，scorer 给答案打分，低于阈值再交给更贵的模型。论文里在达到 GPT-4 同等效果时，cost 最多降 98%。</p>
+  <p>FrugalGPT 先让便宜模型回答，scorer 给答案打分，低于阈值再交给更贵的模型。达到 GPT-4 同等效果时 cost 最多降 98%。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023, vLLM</a> §1（pp.1–2）、§2.2–2.3（p.3）、§4.4 Shared prefix（pp.7–8）· <a href="https://arxiv.org/abs/2211.17192">Leviathan et al. 2023</a> §2.3、§3.1 eq. 1、Thm 3.8、Thm 3.11（pp.3–4）· <a href="https://arxiv.org/abs/2210.17323">Frantar et al. 2023, GPTQ</a> abstract、§3（pp.3–5）· <a href="https://arxiv.org/abs/2306.00978">Lin et al. 2024, AWQ</a> §2（p.2）、§4.1（p.6）、§5.1 Table 4（p.7）· <a href="https://arxiv.org/abs/2305.05176">Chen et al. 2023, FrugalGPT</a> §3（pp.3–5）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023, LLaMA</a> Table 2（p.3）· <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic prompt caching</a>（Pricing）</p>

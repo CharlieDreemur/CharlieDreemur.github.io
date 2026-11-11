@@ -20,13 +20,13 @@
   <dt>Iterative refinement</dt>
   <dd>一条链。写一版，看反馈，改一版，一直改同一个 kernel。</dd>
   <dt>Beam search</dt>
-  <dd>每一轮只留最好的 K 个候选，再从它们往下改。</dd>
+  <dd>每轮只留最好的 K 个候选，再从它们往下改。</dd>
   <dt>Evolutionary search</dt>
-  <dd>养一个种群。每轮从里面挑 parent，让 LLM 改出 child，好的放回种群。<span class="eg">AlphaEvolve 把种群存在一个 program database 里。</span></dd>
+  <dd>养一个种群，每轮挑 parent 让 LLM 改出 child，好的放回种群。</dd>
   <dt>MCTS</dt>
-  <dd>把候选排成一棵树，按以往的结果决定下一次展开哪个节点。<span class="eg">Meta KernelEvolve 的节点可以继承父节点的历史、参考兄弟节点，或者清空重来。</span></dd>
+  <dd>把候选排成一棵树，按以往的结果决定下一次展开哪个节点。<span class="eg">KernelEvolve 的节点可以继承父节点的历史、参考兄弟节点，或清空重来。</span></dd>
   <dt>RL</dt>
-  <dd>不在推理时多试，而是把试错的经验训练进模型的参数（算法见 <a href="rlhf-dpo-grpo.html">PPO 和 GRPO</a>）。</dd>
+  <dd>把试错的经验训练进模型的参数（算法见 <a href="rlhf-dpo-grpo.html">PPO 和 GRPO</a>）。</dd>
 </dl>
 
 <h2 id="figs">看图：三种方法的形状</h2>
@@ -79,31 +79,31 @@
   <text class="m" x="507" y="122">更新参数</text>
   <text class="m" x="474" y="194" text-anchor="middle">推理便宜，训练贵且不稳</text>
 </svg>
-<figcaption>图 1：refinement 只有一个候选。search 同时留几个候选，token 花在多试上。RL 把试错放到训练里。图里的倍数是 speedup，只作示意。</figcaption>
+<figcaption>图 1：图里的倍数是 speedup，只作示意。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Refinement is one chain: generate, read the feedback, fix. It's cheap and direct, but it gets stuck on its first idea. Search keeps several candidates alive with beam, evolution or MCTS. It adds diversity without training, so it suits a one-off hot kernel, but it burns tokens and is better at finding holes in the harness. RL bakes the skill into the model, which pays off across many ops, but training is unstable and amplifies hacks. In practice you combine them: RL for the base skill, search at inference. All three need a harness the agent can't game, and FlashVector shipped with just a single chain.</p></div>
+<div class="answer"><p>Refinement is one chain: generate, read the feedback, fix. It's cheap and direct, but gets stuck on its first idea. Search keeps several candidates alive with beam, evolution or MCTS. It adds diversity without training, which suits a one-off hot kernel, but it burns tokens and is better at finding holes in the harness. RL bakes the skill into the model, which pays off across many ops, but training is unstable and amplifies hacks. In practice you combine them: RL for the base skill, search at inference. All three need a harness the agent can't game, and FlashVector shipped with just a single chain.</p></div>
 
 <h2 id="compare">三种方法对比</h2>
 <table>
-  <thead><tr><th>方法</th><th>优点和证据</th><th>风险</th><th>适合的场景</th></tr></thead>
+  <thead><tr><th>方法</th><th>优点和证据</th><th>风险</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Iterative<br>refinement</td><td>简单便宜，反馈直接。KernelBench 论文里 DeepSeek-R1 在 L2 的 fast_1 从 36% 升到 72%</td><td>困在第一个思路里；context 越滚越长</td><td>已有强模型，想快速出结果</td></tr>
-    <tr><td class="nw">Search</td><td>多样性高，不用训练。AlphaEvolve 让 Gemini 的训练时间少 1%；KernelEvolve 让 Meta 的 Andromeda 广告模型 inference throughput 提升 60% 以上</td><td>token 贵，CRFM 的一次实验约 7M，Houmao 约 1.9B；搜得越强，越容易找到 harness 的漏洞</td><td>一次性优化少数热点 kernel</td></tr>
-    <tr><td class="nw">RL</td><td>能力训进模型，op 多时每次推理便宜。CUDA Agent 对 torch.compile 的 faster rate 是 96.8%，同一个 agent loop 里 Opus 4.5 是 66.4%</td><td>训练不稳，CUDA Agent 最初 17 步就崩；hack 会被放大，CUDA-L1 有 32.8% 的 kernel 钻了计时漏洞</td><td>要覆盖很多 op，并压低单次推理的成本</td></tr>
+    <tr><td class="nw">Iterative<br>refinement</td><td>简单便宜，反馈直接。KernelBench 论文里 DeepSeek-R1 在 L2 的 fast_1 从 36% 升到 72%；Kevin 的论文里 serial refinement 比 parallel sampling 划算</td><td>困在第一个思路里；context 越滚越长</td></tr>
+    <tr><td class="nw">Search</td><td>多样性高，不用训练。AlphaEvolve 让 Gemini 的训练时间少 1%；KernelEvolve 让 Meta 的 Andromeda 广告模型 inference throughput 提升 60% 以上</td><td>token 贵，CRFM 的一次实验约 7M，Houmao 约 1.9B（μCUTLASS 按 speed of light 少给接近上限的 kernel，省 19–43%，保住至少 95% 的 geomean）；搜得越强，越容易找到 harness 的漏洞</td></tr>
+    <tr><td class="nw">RL</td><td>能力训进模型，op 多时每次推理便宜。CUDA Agent 对 torch.compile 的 faster rate 是 96.8%，同一个 agent loop 里 Opus 4.5 是 66.4%</td><td>训练不稳，CUDA Agent 最初 17 步就崩；hack 会被放大，CUDA-L1 有 32.8% 的 kernel 钻了计时漏洞</td></tr>
   </tbody>
 </table>
 
 <h2 id="combine">怎么选，怎么组合</h2>
 <ol>
-  <li>先做 refinement 加 profiler feedback，它最便宜</li>
-  <li>单链停滞，而且这个 kernel 值得花 token，再上 search</li>
+  <li>先做 refinement 加 profiler feedback，最便宜</li>
+  <li>单链停滞，这个 kernel 又值得花 token，再上 search</li>
   <li>op 很多，推理成本压不下来，再训 RL</li>
-  <li>三种可以叠起来用：RL 训基础能力，推理时再 search 和 refinement</li>
+  <li>三种可以叠用，RL 训基础能力，推理时再 search 和 refinement</li>
 </ol>
-<p>单链会困住有一个具体例子，是 Meta KernelAgent 的 matvec。torch.compile 是 2.09 ms。不给硬件反馈、顺序 prompt 8 轮只到 3.20 ms，比 baseline 还慢。用 Nsight Compute 的指标加 4 个并行 worker 跑 8 轮到 1.95 ms。原文的解释是，没有 profiling 时 LLM 一直沿着第一版 kernel 的写法改，没想过换一种切分方式。</p>
-<p>三种方法都要一个 agent 骗不了的 harness。没有它，搜索或 RL 越强，学到的作弊越多（见 <a href="reward-hacking.html">reward hacking</a>）。搜索的复杂度和进没进生产也没有正相关，四家系统的对照见<a href="kernel-agent-design.html#flashvector">设计 kernel agent</a>。</p>
+<p>单链困住的例子是 Meta KernelAgent 的 matvec。torch.compile 是 2.09 ms。不给硬件反馈、顺序 prompt 8 轮只到 3.20 ms，比 baseline 还慢。用 Nsight Compute 的指标加 4 个并行 worker 跑 8 轮到 1.95 ms。原文说没有 profiling 时 LLM 一直沿着第一版 kernel 的写法改。</p>
+<p>没有 agent 骗不了的 harness，搜索或 RL 越强，学到的作弊越多（见 <a href="reward-hacking.html">reward hacking</a>）。搜索复杂不等于进生产，四家系统的对照见<a href="kernel-agent-design.html#flashvector">设计 kernel agent</a>。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -118,23 +118,11 @@
 <h2>追问</h2>
 <details>
   <summary>多花 token 多试，能换来多少？</summary>
-  <p>METR 给每题约 20 美元的预算，8 路并行做 tree-style sampling，共 300 次尝试，平均 speedup 是 1.81x。原 KernelBench 的设置每题不到 1 美元，是 1.05x。METR 自己说提升主要来自 scaffold 和 prompt。</p>
-</details>
-<details>
-  <summary>Search 的预算怎么分给不同的 kernel？</summary>
-  <p>用 speed of light 估计每个 kernel 还剩多少提升空间，接近上限的少给。μCUTLASS 论文这样做省了 19–43% 的 token，同时保住至少 95% 的 geomean。</p>
-</details>
-<details>
-  <summary>Serial refinement 和 parallel sampling 哪个划算？</summary>
-  <p>Kevin 的论文里 serial refinement 更划算。它训练时两者都用，每题 16 条 trajectory，每条 4 个 refinement step。</p>
+  <p>METR 给每题约 20 美元的预算，8 路并行做 tree-style sampling 共 300 次尝试，平均 speedup 从 1.05x 到 1.81x（见 <a href="kernelbench.html">KernelBench</a>）。METR 自己说提升主要来自 scaffold 和 prompt。</p>
 </details>
 <details>
   <summary>RL 论文的数字能直接比吗？</summary>
-  <p>不能。CUDA Agent 批评 Kevin 和 CUDA-L1 在 KernelBench 上既训练又评测。CUDA Agent 自己的评测也还是原 KernelBench 协议，FP32 baseline 没有开 TF32。</p>
-</details>
-<details>
-  <summary>FlashVector 为什么不用更强的搜索？</summary>
-  <p>论文没有解释。它每轮随机抽一层，一轮只做一个改动，篇幅都在 verify 和交付上。这一条适合当反问。</p>
+  <p>不能。CUDA Agent 批评 Kevin 和 CUDA-L1 在 KernelBench 上既训练又评测。它自己的评测也还是原 KernelBench 协议，FP32 baseline 没开 TF32。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 23 题 · <a href="https://arxiv.org/html/2502.10517">KernelBench</a> · <a href="https://arxiv.org/html/2506.13131">AlphaEvolve</a> · <a href="https://engineering.fb.com/2026/04/02/developer-tools/kernelevolve-how-metas-ranking-engineer-agent-optimizes-ai-infrastructure/">Meta KernelEvolve</a> · <a href="https://pytorch.org/blog/kernelagent-hardware-guided-gpu-kernel-optimization-via-multi-agent-orchestration/">KernelAgent</a>（matvec）· <a href="https://arxiv.org/abs/2507.11948">Kevin</a> · <a href="https://arxiv.org/abs/2602.24286">CUDA Agent</a> · <a href="https://arxiv.org/html/2507.14111">CUDA-L1</a> · <a href="https://metr.org/blog/2025-02-14-measuring-automated-kernel-engineering/">METR 2025-02-14</a> · <a href="https://arxiv.org/abs/2603.29010">μCUTLASS</a> · token 用量：<a href="https://crfm.stanford.edu/2025/05/28/fast-kernels.html">CRFM</a>、<a href="https://arxiv.org/abs/2608.14560">Houmao</a> · 对比表整理自文献笔记第 6 节</p>

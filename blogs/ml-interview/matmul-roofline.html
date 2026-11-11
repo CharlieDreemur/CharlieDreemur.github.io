@@ -18,13 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>FLOPs：为什么是 2MNK</dt>
-  <dd>C 有 \(M\times N\) 个元素，每个是长度 \(K\) 的 dot product：\(K\) 次乘 + \(K\) 次加。像算 \(M\times N\) 张账单，每张把 \(K\) 行"单价 × 数量"加起来。<span class="eg">例：\(M=N=K=4096\) → \(2\cdot 4096^3\approx 1.37\times10^{11}\) FLOPs。</span></dd>
+  <dd>C 有 \(M\times N\) 个元素，每个是长度 \(K\) 的 dot product，\(K\) 次乘 + \(K\) 次加。<span class="eg">例：\(M=N=K=4096\) → \(2\cdot 4096^3\approx 1.37\times10^{11}\) FLOPs。</span></dd>
   <dt>Arithmetic intensity</dt>
-  <dd>每从 HBM 搬 1 byte 做几次 FLOP（基础见 <a href="gpu-numpy.html">GPU 与 NumPy</a>）。matmul 数据是 \(n^2\) 级、计算是 \(n^3\) 级，本来很高；但 naive kernel 每次乘加都去 HBM 现读两个数，FP32 只有 0.25 FLOP/B。</dd>
+  <dd>每从 HBM 搬 1 byte 做几次 FLOP（基础见 <a href="gpu-numpy.html">GPU 与 NumPy</a>）。matmul 数据是 \(n^2\) 级、计算是 \(n^3\) 级，本来很高。但 naive kernel 每次乘加都去 HBM 现读两个数，FP32 只有 0.25 FLOP/B。</dd>
   <dt>Tiling</dt>
-  <dd>把 C 切成 \(T\times T\) 小块，一个 thread block 负责一块。沿 K 每次把 A、B 各一个 tile 搬进 shared memory，里面每个数被用 \(T\) 次。像炒菜前先把一批菜搬到案板上，而不是每切一刀跑一趟冰箱。<span class="eg">例：FP32、\(T=32\)：intensity 从 0.25 涨到 8 FLOP/B。</span></dd>
+  <dd>把 C 切成 \(T\times T\) 小块，一个 thread block 负责一块。沿 K 每次把 A、B 各一个 tile 搬进 shared memory，里面每个数被用 \(T\) 次。<span class="eg">例：FP32、\(T=32\)：intensity 从 0.25 涨到 8 FLOP/B。</span></dd>
   <dt>Roofline 与 ridge point</dt>
-  <dd>性能上限 = min(峰值算力, intensity × bandwidth)：先是一条斜线（memory-bound），再是一条平线（compute-bound），拐点叫 ridge point。intensity 在它左边，加再多算力也没用。</dd>
+  <dd>性能上限 = min(峰值算力, intensity × bandwidth)。先是一条斜线（memory-bound），再是一条平线（compute-bound），拐点叫 ridge point，intensity 在它左边时加算力没用。</dd>
   <dt>Tensor Core</dt>
   <dd>专做小矩阵块乘加的单元，FP16 / BF16 输入、FP32 累加。<span class="eg">例：A100 的 BF16 Tensor Core 312 TFLOPS，普通 FP32 只有 19.5 TFLOPS。elementwise 运算用不上它。</span></dd>
 </dl>
@@ -32,11 +32,11 @@
 <h2 id="figs">看图：roofline 上谁卡在哪，tiling 怎么搬数据</h2>
 <figure class="fig">
 <svg viewBox="0 0 520 362" role="img" aria-label="A100 的 roofline：斜线是 HBM 带宽 2039 GB/s 乘 intensity，平线是 312 TFLOPS 峰值，拐点在 153 FLOP/B；elementwise add 和 GEMV 落在斜线上，4096 的 GEMM 落在平线上"><line x1="56" y1="30" x2="56" y2="318" class="grid"/><text x="56" y="334" text-anchor="middle" class="m">0.1</text><line x1="132" y1="30" x2="132" y2="318" class="grid"/><text x="132" y="334" text-anchor="middle" class="m">1</text><line x1="208" y1="30" x2="208" y2="318" class="grid"/><text x="208" y="334" text-anchor="middle" class="m">10</text><line x1="284" y1="30" x2="284" y2="318" class="grid"/><text x="284" y="334" text-anchor="middle" class="m">100</text><line x1="360" y1="30" x2="360" y2="318" class="grid"/><text x="360" y="334" text-anchor="middle" class="m">1000</text><line x1="436" y1="30" x2="436" y2="318" class="grid"/><text x="436" y="334" text-anchor="middle" class="m">10⁴</text><line x1="56" y1="318" x2="436" y2="318" class="grid"/><text x="50" y="322" text-anchor="end" class="m">0.1</text><line x1="56" y1="246" x2="436" y2="246" class="grid"/><text x="50" y="250" text-anchor="end" class="m">1</text><line x1="56" y1="174" x2="436" y2="174" class="grid"/><text x="50" y="178" text-anchor="end" class="m">10</text><line x1="56" y1="102" x2="436" y2="102" class="grid"/><text x="50" y="106" text-anchor="end" class="m">100</text><line x1="56" y1="30" x2="436" y2="30" class="grid"/><text x="50" y="34" text-anchor="end" class="m">1000</text><path d="M56,30.0 V318 H436.0" class="axis"/><text x="8" y="18" text-anchor="start" class="m">可达性能（TFLOPS，对数刻度）</text><text x="246" y="352" text-anchor="middle" class="m">arithmetic intensity I（FLOP/B，对数刻度）</text><path d="M56.0,295.7 L298.0,66.4" class="ln1"/><path d="M298.0,66.4 H436.0" class="ln2"/><line x1="298" y1="66.4" x2="298" y2="318" class="stale"/><text x="304" y="312" text-anchor="start">ridge ≈ 153</text><text x="302" y="56.4" text-anchor="start" class="c2">峰值 312 TFLOPS（BF16）</text><text x="215.2" y="132.5" text-anchor="middle" class="acc" transform="rotate(-43.5 215.2 132.5)">I × 2,039 GB/s（HBM）</text><text x="290" y="186" text-anchor="end" class="acc">memory-bound</text><text x="306" y="186" text-anchor="start" class="c2">compute-bound</text><circle cx="72.9" cy="279.7" r="4" class="ah1c"/><text x="82.9" y="297.7" text-anchor="start">elementwise add</text><text x="82.9" y="312.7" text-anchor="start" class="m">1/6 FLOP/B → 0.34 TFLOPS</text><circle cx="132" cy="223.7" r="4" class="ah1c"/><text x="142" y="237.7" text-anchor="start">GEMV（decode）</text><text x="142" y="252.7" text-anchor="start" class="m">≈ 1 FLOP/B → 2.0 TFLOPS</text><circle cx="370.3" cy="66.4" r="4" class="ah2c"/><text x="370.3" y="88.4" text-anchor="middle">4096³ GEMM</text><text x="370.3" y="103.4" text-anchor="middle" class="m">≈ 1365 FLOP/B</text></svg>
-<figcaption>图 1：A100 的 roofline，两个轴都是对数刻度。斜线（橙红）是 HBM 带宽 2,039 GB/s × intensity，平线（蓝）是 BF16 Tensor Core 峰值 312 TFLOPS，两条线在 I ≈ 153 FLOP/B 处相交，就是 ridge point。一个 kernel 最快只能到它那个 intensity 正上方的屋顶：elementwise add 和 GEMV 在 ridge 左边，卡在带宽上；\(4096^3\) 的 GEMM 在右边，能跑到峰值。</figcaption>
+<figcaption>图 1：A100 的 roofline。斜线（橙红）是 HBM bandwidth × intensity，平线（蓝）是 Tensor Core 峰值，交点是 ridge point。三个点是下面表里的操作。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 530 390" role="img" aria-label="shared memory tiling：一个 thread block 负责 C 的一个 T 乘 T 的 tile，沿 K 每一步把 A 和 B 各一个 tile 搬进 shared memory，累加到 register 里"><defs><marker id="mm-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="mm-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><rect x="10" y="10" width="160" height="160" rx="6" class="hot"/><text x="20" y="30" text-anchor="start" class="hd">shared memory</text><text x="20" y="46" text-anchor="start" class="m">SM 上的 SRAM</text><rect x="50" y="120" width="40" height="40" rx="3" class="f1"/><text x="70" y="145" text-anchor="middle">As</text><rect x="120" y="50" width="40" height="40" rx="3" class="f1"/><text x="140" y="75" text-anchor="middle">Bs</text><rect x="10" y="190" width="160" height="160" rx="4" class="box"/><text x="90" y="325" text-anchor="middle" class="m">A：M × K</text><rect x="190" y="10" width="160" height="160" rx="4" class="box"/><text x="230" y="145" text-anchor="middle" class="m">B：K × N</text><rect x="190" y="190" width="160" height="160" rx="4" class="box"/><text x="270" y="325" text-anchor="middle" class="m">C：M × N</text><rect x="10" y="230" width="40" height="40" rx="3" class="f2"/><rect x="270" y="10" width="40" height="40" rx="3" class="f2"/><rect x="50" y="230" width="40" height="40" rx="3" class="f1"/><rect x="270" y="50" width="40" height="40" rx="3" class="f1"/><rect x="90" y="230" width="40" height="40" rx="3" class="f2"/><rect x="270" y="90" width="40" height="40" rx="3" class="f2"/><rect x="130" y="230" width="40" height="40" rx="3" class="f2"/><rect x="270" y="130" width="40" height="40" rx="3" class="f2"/><rect x="270" y="230" width="40" height="40" rx="3" class="hot"/><text x="290" y="255" text-anchor="middle" class="acc">acc</text><path d="M270,70.0 H162" class="ln1" marker-end="url(#mm-ah1)"/><text x="230" y="64" text-anchor="middle" class="acc">搬进</text><path d="M70.0,230 V162" class="ln1" marker-end="url(#mm-ah1)"/><text x="76" y="184" text-anchor="start" class="acc">搬进</text><path d="M360,16 V164" class="ln" marker-end="url(#mm-ah)"/><text x="370" y="80" text-anchor="start">B 的列 strip</text><text x="370" y="96" text-anchor="start" class="m">k 往下走</text><path d="M16,362 H164" class="ln" marker-end="url(#mm-ah)"/><text x="90" y="380" text-anchor="middle" class="m">A 的行 strip：k 往右走</text><line x1="310" y1="250" x2="364" y2="250" class="ln"/><text x="370" y="246" text-anchor="start">C tile（T × T）</text><text x="370" y="262" text-anchor="start" class="m">一个 thread block 负责</text><text x="370" y="278" text-anchor="start" class="m">acc 在 register 里累加</text></svg>
-<figcaption>图 2：shared memory tiling。一个 thread block 负责 C 的一个 T × T tile（右下的 acc），要读 A 的一整条行 strip 和 B 的一整条列 strip（蓝色）。它沿 K 一步步走：每步把 A、B 各一个 T × T tile（橙红）搬进左上角的 shared memory（As、Bs），每个数在那里被用 T 次，乘积累加到 register 里的 acc。图里 K 方向分 4 步；FP32、T = 32 时 intensity 是 T/4 = 8 FLOP/B。</figcaption>
+<figcaption>图 2：一个 thread block 负责 C 的一个 T × T tile，要读 A 的一条行 strip 和 B 的一条列 strip（蓝色）。沿 K 每步把 A、B 各一个 tile（橙红）搬进 shared memory，乘积累加到 register 里的 acc。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
@@ -62,7 +62,7 @@
   <tbody>
     <tr><td>\(4096^3\) GEMM</td><td class="nw">≈ 1365</td><td class="nw">312 TFLOPS</td><td>compute</td></tr>
     <tr><td>GEMV（decode）</td><td class="nw">≈ 1</td><td class="nw">≈ 2.0 TFLOPS（0.65%）</td><td>memory</td></tr>
-    <tr><td>elementwise add</td><td class="nw">1/6</td><td class="nw">≈ 0.34 TFLOPS</td><td>memory → fusion</td></tr>
+    <tr><td>elementwise add</td><td class="nw">1/6</td><td class="nw">≈ 0.34 TFLOPS</td><td>memory → <a href="kernel-fusion.html">fusion</a></td></tr>
   </tbody>
 </table>
 
@@ -70,9 +70,9 @@
 <table>
   <thead><tr><th></th><th>CPU</th><th>GPU</th></tr></thead>
   <tbody>
-    <tr><td class="nw">并行</td><td>十来个强 core，每个用 SIMD（AVX）</td><td>上千 thread，32 个一组成 warp</td></tr>
+    <tr><td class="nw">并行</td><td>十来个强 core + SIMD（AVX）</td><td>上千 thread，32 个一组成 warp</td></tr>
     <tr><td class="nw">分块放哪</td><td>A 块放 L2，B 的窄条放 L1，C 的小块放 register</td><td>block tile 放 shared memory，thread tile 放 register</td></tr>
-    <tr><td class="nw">藏 latency</td><td>大 cache + prefetch</td><td>warp 等内存就切另一个 warp</td></tr>
+    <tr><td class="nw">藏 latency</td><td>大 cache + prefetch</td><td>warp 等 memory 时切另一个</td></tr>
   </tbody>
 </table>
 
@@ -102,29 +102,21 @@ __global__ void matmul(const float* A, const float* B, float* C,
   <li>naive 是 memory-bound；tiling 让每个数复用 \(T\) 次，intensity \(\propto T\)</li>
   <li>优化顺序：shared memory tiling → register tiling → vectorized load → double buffering → Tensor Core</li>
   <li>CPU：cache blocking + SIMD + 多线程；GPU：海量 thread、切 warp 藏 latency、Tensor Core</li>
-  <li>roofline：A100 ridge ≈ 153 FLOP/B；大 GEMM compute-bound，GEMV、LayerNorm、elementwise memory-bound</li>
+  <li>roofline：A100 ridge ≈ 153 FLOP/B；大 GEMM compute-bound，GEMV、LayerNorm、elementwise memory-bound，靠 fusion 少过 HBM（如 <a href="flashattention.html">FlashAttention</a>）</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>tile 是不是越大越好？</summary>
-  <p>不是。tile 越大复用越多，但占的 shared memory、register 越多。矩阵不大时 tile 数太少，填不满 108 个 SM。cuBLAS 用 heuristic 按 shape 挑 tile。</p>
-</details>
-<details>
   <summary>shared memory tiling 之后还能怎么优化？</summary>
-  <p>register tiling：每个 thread 算一小块（如 8×8）C，从 shared memory 读一次用多次。float4 一次读 16 bytes。double buffering 让下一块的搬运和这一块的计算 overlap。最后换 Tensor Core（WMMA / MMA），FP16 维度取 8 的倍数（A100 上最好 64）。</p>
+  <p>register tiling 让每个 thread 算一小块 C（如 8×8）。float4 一次读 16 bytes，double buffering 让下一块的搬运和这一块的计算 overlap。Tensor Core（WMMA / MMA）的 FP16 维度取 8 的倍数（A100 上最好 64）。</p>
 </details>
 <details>
   <summary>有比 \(O(n^3)\) 更快的算法吗？</summary>
-  <p>Strassen 是 \(O(n^{\log_2 7})\approx O(n^{2.81})\)，代价是很多额外的矩阵加法和临时矩阵。面试答标准算法 + tiling 即可，cuBLAS 的 GEMM 也按 \(2MNK\) 计 FLOPs。</p>
+  <p>Strassen 是 \(O(n^{\log_2 7})\approx O(n^{2.81})\)，代价是很多额外的矩阵加法和临时矩阵。cuBLAS 的 GEMM 仍按 \(2MNK\) 计 FLOPs。</p>
 </details>
 <details>
   <summary>怎么判断一个 kernel 卡在哪？</summary>
-  <p>算 achieved FLOP/s 和 achieved bandwidth 各占峰值多少，接近上限的那个就是瓶颈。Nsight Compute 能直接画出 kernel 在 roofline 上的位置。</p>
-</details>
-<details>
-  <summary>LayerNorm、softmax 慢怎么办？</summary>
-  <p>它们 intensity 远低于 153，卡在 HBM bandwidth，加算力没用。办法是 kernel fusion，少读写一次 HBM。<a href="flashattention.html">FlashAttention</a> 就是把 softmax 和两个 matmul 融进一个 kernel。</p>
+  <p>算 achieved FLOP/s 和 achieved bandwidth 各占峰值多少，接近上限的那个就是瓶颈。Nsight Compute 能画出 kernel 在 roofline 上的位置。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html">NVIDIA Matrix Multiplication Background</a> §2、§2.1–2.3 · <a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html">NVIDIA GPU Performance Background</a> §2、§4 · <a href="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf">A100 datasheet</a>（p.1）· <a href="https://doi.org/10.1145/1498765.1498785">Williams et al., CACM 2009</a>（p.67）· <a href="https://www.cs.utexas.edu/~flame/pubs/GotoTOMS_revision.pdf">Goto &amp; van de Geijn 2008</a> §4、§6.1 · <a href="https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html">Nsight Compute Profiling Guide</a> §2.9</p>

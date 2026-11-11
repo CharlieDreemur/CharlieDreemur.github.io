@@ -18,40 +18,40 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Co-adaptation</dt>
-  <dd>neuron 之间互相依赖。A 只有和 B 一起出现才有用，像团队里有人只会"配合某个同事"，那人一请假就全崩。这种依赖往往是在记训练集的噪声，也就是 overfitting。</dd>
+  <dd>neuron 之间互相依赖，A 只有和 B 一起出现才有用。这往往是在记训练集的噪声，也就是 overfitting。</dd>
   <dt>Dropout</dt>
-  <dd>训练时每一步随机让一部分 neuron "请假"（输出置 0），谁都不能指望别人在场，只能学会独立有用的 feature。每种丢法是一个共享 weight 的子网络，所以也可以看成 \(2^n\) 个子网络的 ensemble。<span class="eg">例：p = 0.5，4 个 neuron 平均关掉 2 个；4 个 neuron 有 \(2^4 = 16\) 个子网络。</span></dd>
+  <dd>训练时每一步随机把一部分 neuron 的输出置 0，谁都不能指望别人在场。每种丢法是一个共享 weight 的子网络，所以也可以看成 \(2^n\) 个子网络的 ensemble。</dd>
   <dt>Mask</dt>
-  <dd>和 activation 同形状的 0/1 随机矩阵，1 = 保留（概率 \(1-p\)），0 = 丢掉（概率 \(p\)）。每个 batch、每个样本都重新抽。<span class="eg">例：\(h = (1, 2, 3, 4)\)，mask \(= (1, 0, 1, 0)\)。</span></dd>
+  <dd>和 activation 同形状的 0/1 随机矩阵，1 = 保留（概率 \(1-p\)）。每个 batch、每个样本都重新抽。</dd>
   <dt>Inverted dropout</dt>
-  <dd>保留下来的值放大 \(1/(1-p)\)，把丢掉的那部分补回来，让期望不变，像少了一半人干活、每人干双份。<span class="eg">例：p = 0.5，\((1, 2, 3, 4)\) → \((2, 0, 6, 0)\)；抽很多次取平均 ≈ \((1, 2, 3, 4)\)。</span></dd>
+  <dd>保留下来的值放大 \(1/(1-p)\)，把丢掉的那部分补回来，让期望不变。</dd>
   <dt>train / eval mode</dt>
-  <dd>训练时随机丢、放大；推理时全员上岗，dropout 层什么都不做，近似于对所有子网络取平均。PyTorch 里用 <code>model.train()</code> / <code>model.eval()</code> 切换，忘了切是常见 bug。</dd>
+  <dd>训练时随机丢、放大，推理时 dropout 层什么都不做。PyTorch 里用 <code>model.train()</code> / <code>model.eval()</code> 切换。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Dropout is a regularizer. During training, each unit is zeroed independently with probability p, so the network can't rely on any particular unit and units can't co-adapt. It's like training an ensemble of exponentially many sub-networks that share weights. With inverted dropout we divide the kept units by 1 − p during training, so the expected activation is unchanged; at inference we turn dropout off and use the full network as is, which approximates averaging the ensemble. The original paper scaled the weights at test time instead, which is equivalent in expectation. The backward pass reuses the same mask.</p></div>
+<div class="answer"><p>Dropout is a regularizer. During training, each unit is zeroed independently with probability p, so the network can't rely on any particular unit and units can't co-adapt. It's like training an ensemble of exponentially many sub-networks that share weights. With inverted dropout we divide the kept units by 1 − p during training, so the expected activation is unchanged; at inference we turn dropout off and use the full network as is, which approximates averaging the ensemble. The backward pass reuses the same mask.</p></div>
 
 <h2>推导 / 关键公式</h2>
 <div class="deriv">
   <h3 id="expectation">为什么乘 \(1/(1-p)\)</h3>
   \[ m_i \sim \mathrm{Bernoulli}(1-p),\qquad \tilde h_i = \frac{m_i\, h_i}{1-p} \]
   \[ \mathbb{E}[\tilde h_i] = \frac{(1-p)\,h_i}{1-p} = h_i \]
-  <p>期望和不加 dropout 时一样，所以推理时直接用完整网络、不用再缩放。代价是多了 noise：</p>
+  <p>期望和不加 dropout 时一样，所以推理时不用再缩放。代价是多了 noise：</p>
   \[ \mathrm{Var}[\tilde h_i] = \frac{p}{1-p}\,h_i^2 \]
   <h3 id="backward">backward</h3>
   \[ \frac{\partial L}{\partial h_i} = \frac{m_i}{1-p}\cdot\frac{\partial L}{\partial \tilde h_i} \]
   <p>用 forward 时的同一个 mask，所以被丢掉的位置 gradient 也是 0。</p>
   <h3 id="original">原论文的写法</h3>
-  <p>原论文的 \(p\) 是<strong>保留</strong>概率。训练时不缩放，test 时把 weight 乘上保留概率，\(W_{\text{test}} = pW\)。两种写法下一层收到的输入期望相同。</p>
+  <p>原论文的 \(p\) 是<strong>保留</strong>概率，PyTorch 的是丢弃概率。原论文训练时不缩放，test 时 \(W_{\text{test}} = pW\)，期望相同。inverted 把缩放挪到训练时，推理代码不用改，所以框架都这么实现。</p>
 </div>
 
 <h2 id="example">手算例子</h2>
 <p>\(h = (1, 2, 3, 4)\)，\(p = 0.5\)，抽到 mask \((1, 0, 1, 0)\)：</p>
 <ul>
-  <li>train：\((1, 0, 3, 0) \div 0.5 = (2, 0, 6, 0)\)，下一层看到的和是 8；对所有 mask 取期望，和是 10</li>
+  <li>train：\((1, 0, 3, 0) \div 0.5 = (2, 0, 6, 0)\)，和是 8；对所有 mask 取期望，和是 10</li>
   <li>eval：原样 \((1, 2, 3, 4)\)，和是 10，和训练时的期望对得上</li>
-  <li>如果训练时不除以 \(1-p\)：训练时平均只有 5，推理时却是 10，下一层的输入尺度对不上</li>
+  <li>训练时不除以 \(1-p\)：平均只有 5，推理时却是 10，下一层的输入尺度对不上</li>
 </ul>
 
 <h2 id="code">手撕代码（NumPy）</h2>
@@ -80,16 +80,12 @@ def dropout_backward(dout, mask):
 
 <h2>追问</h2>
 <details>
-  <summary>原论文是 test 时乘 p，和 inverted dropout 有什么区别？</summary>
-  <p>期望一样，只是缩放放在哪一步。inverted 把缩放挪到训练时，推理代码完全不用改，所以框架都这么实现。注意原论文的 \(p\) 是保留概率，PyTorch 的 \(p\) 是丢弃概率。</p>
-</details>
-<details>
   <summary>p 取多少？</summary>
-  <p>原论文：hidden layer 保留概率 0.5–0.8（即丢 0.2–0.5），实数输入保留 0.8 左右。Transformer base 和 BERT 都用丢弃率 0.1。</p>
+  <p>原论文 hidden layer 保留概率 0.5–0.8（即丢 0.2–0.5），实数输入保留 0.8 左右。Transformer base 和 BERT 都用丢弃率 0.1。</p>
 </details>
 <details>
   <summary>dropout 放在哪？</summary>
-  <p>MLP 放在 hidden layer 的 activation 之后；Transformer 放在每个 sub-layer 输出加 residual 之前，以及 embedding + positional encoding 之后。CNN 相邻 pixel 强相关，丢单个 pixel 没用，改用 SpatialDropout 整个 channel 一起丢。</p>
+  <p>MLP 放在 hidden layer 的 activation 之后。Transformer 放在每个 sub-layer 输出加 residual 之前，以及 embedding + positional encoding 之后。CNN 相邻 pixel 强相关，改用 SpatialDropout 整个 channel 一起丢。</p>
 </details>
 <details>
   <summary>和 L2 regularization 有什么区别？</summary>
@@ -97,7 +93,7 @@ def dropout_backward(dout, mask):
 </details>
 <details>
   <summary>和 BatchNorm 一起用有什么问题？</summary>
-  <p>dropout 让 unit 的 variance 在 train 和 eval 之间不一样，而 BN 在 eval 用的是训练时的 running variance，对不上，叫 variance shift。dropout 放在 BN 前面时最明显，所以常见做法是只在最后一个 BN 之后（比如分类头前）用 dropout。</p>
+  <p>dropout 让 unit 的 variance 在 train 和 eval 之间不一样，BN 在 eval 用的 running variance 就对不上，叫 variance shift。所以常见做法是只在最后一个 BN 之后用 dropout。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://jmlr.org/papers/v15/srivastava14a.html">Srivastava et al., JMLR 2014</a> §1（pp.1930–1931）、§4（pp.1933–1934）、§9.1（p.1950）、Appendix A.4（p.1953）· <a href="https://www.deeplearningbook.org/contents/regularization.html">Goodfellow et al., Deep Learning</a> §7.12（pp.255–265）· <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §13.5.4（pp.455–457）· <a href="https://d2l.ai/chapter_multilayer-perceptrons/dropout.html">Dive into Deep Learning</a> §5.6 eq. 5.6.1 · <a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §5.4（p.8）· <a href="https://arxiv.org/abs/1801.05134">Li et al. 2018</a>（variance shift）· <a href="https://arxiv.org/abs/1411.4280">Tompson et al. 2015</a> §3.2（p.3，SpatialDropout）</p>

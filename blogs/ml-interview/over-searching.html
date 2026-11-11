@@ -18,19 +18,19 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Over-searching</dt>
-  <dd>不需要搜的时候也去搜，检索结果对回答没有帮助。它浪费计算，还可能带进无关内容，引出 hallucination。</dd>
+  <dd>不需要搜的时候也去搜，检索结果对回答没有帮助，还可能引出 hallucination。</dd>
   <dt>Unanswerable question</dt>
   <dd>数据里没有答案的问题。<span class="eg">例：问酒店确认号，但从没收到过确认邮件。</span></dd>
   <dt>Abstention</dt>
   <dd>说“没找到”，而不是猜一个。</dd>
   <dt>Distractor</dt>
-  <dd>检索回来的、看着相关但不含答案的内容。像考试时翻到一页相似的笔记，反而更容易写错。</dd>
+  <dd>检索回来的、看着相关但不含答案的内容。</dd>
   <dt>Tokens Per Correctness</dt>
-  <dd>这篇论文提出的指标，衡量 performance 和 cost 的 trade-off。摘要没有给公式，面试时说它是“每得到一个正确答案花多少 token”这个思路即可，并说明这是你的理解。</dd>
+  <dd>这篇论文提出的指标，衡量 performance 和 cost 的 trade-off。摘要没有给公式，面试时说“每得到一个正确答案花多少 token”这个思路，并说明是你的理解。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>No. Search helps when the answer is in the data, but it costs latency and tokens, and loosely related results can mislead the model. Apple's Over-Searching paper found that search improves accuracy on answerable questions but hurts abstention on unanswerable ones, and noisy retrieval makes it worse. So I'd measure the two groups separately: accuracy on answerable questions, abstention rate on unanswerable ones, plus cost per correct answer. To reduce it: let the model decide whether to search at all, cap the number of searches, stop when results add nothing new, and require every answer to be supported by evidence.</p></div>
+<div class="answer"><p>No. Search helps when the answer is in the data, but it costs latency and tokens, and loosely related results can mislead the model. Apple's Over-Searching paper found that search improves accuracy on answerable questions but hurts abstention on unanswerable ones, and noisy retrieval makes it worse. So I'd measure the two groups separately: accuracy on answerable questions, abstention rate on unanswerable ones, plus cost per correct answer. To reduce it: let the model decide whether to search, cap the number of searches, stop when results add nothing new, and require evidence for every answer.</p></div>
 
 <h2 id="types">三类问题分开看</h2>
 <table>
@@ -41,32 +41,28 @@
     <tr><td class="nw">数据里没有</td><td>搜了更容易硬答</td><td>abstention rate、错误回答率</td></tr>
   </tbody>
 </table>
-<p><strong>论文的其他结论</strong>：over-searching 在复杂的 reasoning model 和 deep research 系统里更严重，会在多轮对话里累积。检索结果的构成有影响，结果里包含 negative evidence 时 abstention 会变好。缓解方法分 query 层和 retrieval 层两类。</p>
+<p><strong>论文的其他结论</strong>：over-searching 在复杂的 reasoning model 和 deep research 系统里更严重，会在多轮对话里累积。检索结果里包含 negative evidence 时 abstention 会变好。缓解方法分 query 层和 retrieval 层两类。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>search 有成本：latency、token、distractor</li>
   <li>answerable 和 unanswerable 分开统计</li>
   <li>Apple 的结论：search 提高 answerable 的 accuracy，损害 unanswerable 的 abstention</li>
-  <li>对策：先判断要不要搜、限制次数、没有新信息就停、答案必须有 evidence</li>
+  <li>对策：先判断要不要搜、限制次数（见<a href="search-loop.html">多步 search loop</a>）、没有新信息就停、答案必须有 evidence</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>只优化 abstention 会怎样？</summary>
-  <p>模型会什么都说“没找到”（over-refusal）。所以 answerable 的回答率和 unanswerable 的拒答率要一起看，或者画一条曲线：回答率从低到高时，答对率怎么变。</p>
+  <p>模型会什么都说“没找到”（over-refusal）。所以 answerable 的回答率和 unanswerable 的拒答率一起看，或者画回答率从低到高时答对率的曲线。</p>
 </details>
 <details>
   <summary>怎么让模型知道“确实没有”？</summary>
-  <p>tool 明确返回 0 条结果，而不是返回一堆不太相关的内容。训练和评测数据里放进 unanswerable 的题。verifier 检查答案是否有 evidence，没有就不让它出去。</p>
+  <p>tool 明确返回 0 条结果，而不是一堆不太相关的内容。训练和评测数据里放 unanswerable 的题。verifier 检查答案有没有 evidence，没有就不放行。</p>
 </details>
 <details>
   <summary>personal search 里，什么问题不该去搜个人数据？</summary>
-  <p>常识类问题。前面放一个 router 判断问题是否涉及 personal context，不涉及就不搜。</p>
-</details>
-<details>
-  <summary>搜几次合适？</summary>
-  <p>设一个上限，再加“没有新信息就停”。上限按问题的跳数定，见<a href="search-loop.html">多步 search loop</a>。</p>
+  <p>常识类问题。用 router 判断问题是否涉及 personal context，不涉及就不搜。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2601.05503">Over-Searching in Search-Augmented Large Language Models（Apple，EACL 2026）</a> abstract</p>

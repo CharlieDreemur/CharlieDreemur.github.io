@@ -18,19 +18,17 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>RNN（LSTM / GRU）</dt>
-  <dd>一个 token 一个 token 往后读，每步把读到的东西压进固定大小的 hidden state：\(h_t = f(h_{t-1}, x_t)\)。像传话游戏，信息一站一站往后传。</dd>
+  <dd>逐个 token 往后读，每步把读到的东西压进固定大小的 hidden state \(h_t = f(h_{t-1}, x_t)\)，像传话游戏。</dd>
   <dt>Sequential operations（串行步数）</dt>
-  <dd>必须一步接一步算的步数。RNN 算 \(h_t\) 要等 \(h_{t-1}\)，n 个 token 就是 n 步，GPU 再多也只能排队；self-attention 一层里所有位置同时算。</dd>
+  <dd>必须一步接一步算的步数。RNN 算 \(h_t\) 要等 \(h_{t-1}\)，n 个 token 就是 n 步。</dd>
   <dt>Path length（路径长度）</dt>
-  <dd>第 1 个 token 的信息传到第 n 个要经过几步。<span class="eg">例：n = 1000，RNN 要传 999 步，gradient 一路连乘，容易 vanishing；attention 1 步直达。</span></dd>
-  <dt>Per-layer complexity</dt>
-  <dd>RNN 每步做一次 \(d\times d\) 矩阵乘，共 \(O(nd^2)\)；self-attention 每对 token 做一次 d 维点积，共 \(O(n^2d)\)。谁大看 n 和 d 谁大。</dd>
+  <dd>第 1 个 token 的信息传到第 n 个要经过几步。<span class="eg">例：n = 1000，RNN 要传 999 步，attention 1 步直达。</span></dd>
   <dt>Inductive bias</dt>
-  <dd>模型自带的假设。RNN 天生按顺序、偏重近处；Transformer 几乎不假设，顺序要靠 positional encoding，需要更多数据，但更能 scale。</dd>
+  <dd>模型自带的假设。RNN 天生按顺序、偏重近处，Transformer 几乎不假设。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>An RNN reads tokens one by one and compresses the past into a fixed-size hidden state. Training is sequential, O(n) steps that can't be parallelized across time, and a signal between distant tokens passes through O(n) steps, so gradients tend to vanish; LSTM gating only mitigates this. Self-attention connects every pair of tokens directly: O(1) sequential operations and O(1) path length, so it trains in parallel on GPUs and captures long-range dependencies. The cost is O(n²·d) per layer versus O(n·d²), and at inference a KV cache that grows with length, while an RNN keeps constant memory per step. Transformers also need positional encodings and more data, but scale much better.</p></div>
+<div class="answer"><p>An RNN reads tokens one by one and compresses the past into a fixed-size hidden state. Training takes O(n) sequential steps that can't be parallelized, and a signal between distant tokens passes through O(n) steps, so gradients tend to vanish; LSTM gating only mitigates this. Self-attention connects every pair of tokens directly: O(1) sequential operations and O(1) path length, so it trains in parallel and captures long-range dependencies. The cost is O(n²·d) per layer versus O(n·d²), and at inference a KV cache that grows with length, while an RNN keeps constant memory. Transformers also need positional encodings and more data, but scale much better.</p></div>
 
 <h2>对比（前三行是 Vaswani et al. Table 1）</h2>
 <table>
@@ -40,7 +38,7 @@
     <tr><td class="nw">串行步数</td><td class="nw">\(O(n)\)：不能沿时间并行</td><td class="nw">\(O(1)\)：所有位置并行</td></tr>
     <tr><td class="nw">最长路径</td><td class="nw">\(O(n)\)</td><td class="nw">\(O(1)\)</td></tr>
     <tr><td class="nw">推理每个 token</td><td>每层 \(O(d^2)\)，state 大小固定</td><td>每层 \(O(nd + d^2)\)，<a href="kv-cache.html">KV cache</a> 随长度线性涨</td></tr>
-    <tr><td class="nw">位置信息</td><td>顺序计算天然带</td><td>要 positional encoding（如 <a href="rope.html">RoPE</a>）</td></tr>
+    <tr><td class="nw">位置信息</td><td>顺序计算天然带</td><td>要 <a href="positional-encoding.html">positional encoding</a>（如 <a href="rope.html">RoPE</a>）</td></tr>
     <tr><td class="nw">数据</td><td>bias 强，小数据可能够用</td><td>bias 弱，要大数据，scaling 更好</td></tr>
   </tbody>
 </table>
@@ -49,19 +47,19 @@
 <div class="deriv">
   <h3 id="path">为什么 RNN 学不到远距离依赖</h3>
   \[ \frac{\partial h_n}{\partial h_1} = \prod_{t=2}^{n} \frac{\partial h_t}{\partial h_{t-1}} \]
-  <p>n − 1 个 Jacobian 连乘，范数小于 1 就指数衰减（<a href="vanishing-gradient.html">vanishing gradient</a>）。attention 里第 n 个 token 直接对第 1 个算 score，路径长度 1。</p>
+  <p>n − 1 个 Jacobian 连乘，范数小于 1 就指数衰减（<a href="vanishing-gradient.html">vanishing gradient</a>）。</p>
   <h3 id="cost">谁更省算力</h3>
-  <p>只比 Table 1 的主项：\(n^2 d\) 对 \(nd^2\)，\(n &lt; d\) 时 self-attention 更便宜。完整的 FLOPs 推导见 <a href="transformer-complexity.html">Transformer 复杂度</a>。</p>
+  <p>RNN 每步做一次 \(d\times d\) 矩阵乘，共 \(O(nd^2)\)。self-attention 每对 token 做一次 d 维点积，共 \(O(n^2d)\)。\(n &lt; d\) 时 self-attention 更便宜。FLOPs 推导和长序列的办法见 <a href="transformer-complexity.html">Transformer 复杂度</a>。</p>
 </div>
 <p>Transformer base 的 \(d = 512\)：</p>
 <ul>
   <li>\(n = 100\) 的句子：\(n^2d \approx 5.1\)M，\(nd^2 \approx 26.2\)M，attention 便宜约 5 倍</li>
-  <li>\(n = 4096\)：\(n^2d \approx 8.6\)G，\(nd^2 \approx 1.07\)G，attention 贵 8 倍；长序列的瓶颈在 \(n^2\)</li>
+  <li>\(n = 4096\)：\(n^2d \approx 8.6\)G，\(nd^2 \approx 1.07\)G，attention 贵 8 倍</li>
 </ul>
 
 <h2>必答点</h2>
 <ul>
-  <li>RNN 顺序算 \(h_t\)，训练不能沿时间并行；Transformer 所有位置并行，训练快、能 scale</li>
+  <li>RNN 顺序算 \(h_t\)，训练不能沿时间并行；Transformer 所有位置并行</li>
   <li>long-range：RNN 路径 \(O(n)\)，gradient 连乘会 vanishing，LSTM gating 只缓解；attention 路径 \(O(1)\)</li>
   <li>每层 compute：RNN \(O(nd^2)\)，attention \(O(n^2d)\)；序列长时 \(n^2\) 是瓶颈</li>
   <li>inference：RNN 每步常数开销、state 固定；Transformer 的 KV cache 随长度线性涨</li>
@@ -71,23 +69,15 @@
 <h2>追问</h2>
 <details>
   <summary>LSTM 不是解决了 vanishing gradient 吗？</summary>
-  <p>只是缓解。cell state 加法更新，直接路径上只乘 forget gate（见 <a href="vanishing-gradient.html#additive">vanishing gradient</a>）。但路径还是 \(O(n)\)，训练也还是串行。</p>
+  <p>只是缓解。cell state 是加法更新，直接路径上只乘 forget gate（见 <a href="vanishing-gradient.html#additive">vanishing gradient</a>），但路径还是 \(O(n)\)，训练也还是串行。</p>
 </details>
 <details>
   <summary>Transformer 生成时也是一个一个 token，并行在哪？</summary>
-  <p>在训练：整句已知，用 causal mask 一次算出所有位置的 loss。RNN 训练和推理都得逐步算。</p>
-</details>
-<details>
-  <summary>为什么 Transformer 需要 positional encoding，RNN 不需要？</summary>
-  <p>self-attention 对输入顺序是 permutation equivariant：打乱 token，输出只是跟着打乱。RNN 按顺序计算，顺序已经在计算里。</p>
-</details>
-<details>
-  <summary>序列很长时 Transformer 怎么办？</summary>
-  <p>Table 1 里的 restricted self-attention 只看附近 \(r\) 个 token，所以每层 \(O(rnd)\)，代价是路径变成 \(O(n/r)\)。其他办法见 <a href="transformer-complexity.html">复杂度页</a>。</p>
+  <p>在训练。整句已知，用 causal mask 一次算出所有位置的 loss，RNN 训练和推理都得逐步算。</p>
 </details>
 <details>
   <summary>RNN 现在还有用吗？</summary>
-  <p>推理时 state 固定、每 token 常数开销，这个优点没变。Mamba 这类 selective SSM 训练能并行、推理像 RNN，论文报告推理 throughput 是 Transformer 的 5 倍，对序列长度线性。</p>
+  <p>推理时 state 固定、每 token 常数开销的优点没变。Mamba 这类 selective SSM 训练能并行、推理像 RNN，论文报告推理 throughput 是 Transformer 的 5 倍。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §1（p.2）、§3.1（p.3）、Table 1 与 §4（pp.6–7）· <a href="https://arxiv.org/abs/2312.00752">Gu &amp; Dao 2023, Mamba</a> Abstract</p>

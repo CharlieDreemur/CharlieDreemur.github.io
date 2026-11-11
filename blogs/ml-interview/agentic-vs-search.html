@@ -18,19 +18,19 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Baseline</dt>
-  <dd>同一个 retrieval 系统，放在普通 search 界面后面：返回结果列表，不生成答案，也不多步搜索。</dd>
+  <dd>同一个 retrieval 系统放在普通 search 界面后面，只返回结果列表，不生成答案，也不多步搜索。</dd>
   <dt>Ablation</dt>
   <dd>一次只改一样东西。只加“生成答案”，只加“多步”，分别看各自带来多少增量。</dd>
   <dt>Slice</dt>
-  <dd>按 query 类型分组看结果。平均数会把差异盖住，因为 agent 的优势应该集中在某几类 query 上。</dd>
+  <dd>按 query 类型分组看结果。平均数会把差异盖住，因为 agent 的优势集中在某几类 query 上。</dd>
   <dt>Guardrail metric</dt>
-  <dd>不能变差的指标，比如 latency、cost、错误回答率。主指标涨了，guardrail 破了，也不能上线。</dd>
+  <dd>不能变差的指标，比如 latency、cost、错误回答率。它破了，主指标涨了也不能上线。</dd>
   <dt>A/B test</dt>
-  <dd>线上把用户随机分成两组，一组用新版，一组用旧版，比较行为指标。</dd>
+  <dd>线上把用户随机分成两组，分别用新版和旧版，比较行为指标。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I'd hold the retrieval system fixed and compare the two interfaces, so the difference is the agent, not the index. Offline, I'd run both on the same queries, sliced by type: simple lookup, multi-hop, aggregate, and unanswerable. I expect the agent to win on multi-hop and aggregate and tie on simple lookups, and I need to check it doesn't lose on unanswerable ones by making things up. I'd report task success together with latency and cost. Online, I'd run an A/B test on signals like reformulation rate, with guardrails on latency and wrong answers. If it only wins on some slices, I'd route only those to the agent.</p></div>
+<div class="answer"><p>I'd hold the retrieval system fixed and compare the two interfaces, so the difference is the agent, not the index. Offline, I'd run both on the same queries, sliced by type: simple lookup, multi-hop, aggregate, and unanswerable. I expect the agent to win on multi-hop and aggregate, tie on simple lookups, and risk losing on unanswerable ones by making things up. I'd report task success together with latency and cost. Online, I'd run an A/B test on reformulation rate, with guardrails on latency and wrong answers. If it only wins on some slices, I'd route only those to the agent.</p></div>
 
 <h2 id="slices">按 slice 看</h2>
 <table>
@@ -42,7 +42,7 @@
     <tr><td class="nw">Unanswerable</td><td>风险最大</td><td>错误回答率、abstention rate</td></tr>
   </tbody>
 </table>
-<p><strong>公平比较</strong>：同一个 index、同一批 query、配对检验（见 <a href="agentic-search-eval.html">offline eval</a>）。两种界面的原生指标不同，一个是结果列表，一个是答案，所以要统一到任务层面，看这个问题有没有被正确解决，用户花了多少步。</p>
+<p><strong>公平比较</strong>：同一个 index、同一批 query、配对检验（见 <a href="agentic-search-eval.html">offline eval</a>）。一个返回结果列表，一个返回答案，原生指标不同，所以统一成 task success。普通 search 的 gold 文档在前 k 条里就算成功，agent 要答案正确并且有依据。再加一个用户成本指标，比如拿到答案前的操作步数。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -55,12 +55,8 @@
 
 <h2>追问</h2>
 <details>
-  <summary>一个返回列表，一个返回答案，指标不一样怎么比？</summary>
-  <p>统一成 task success。对普通 search：gold 文档在前 k 条里，就算用户能自己找到答案。对 agent：答案正确并且有依据。再加一个用户成本的指标，比如到拿到答案为止的操作步数。</p>
-</details>
-<details>
-  <summary>agent 质量更好，但慢很多、贵很多，怎么办？</summary>
-  <p>不做全量替换。前面加一个 router 判断 query 类型，简单 lookup 走普通 search，多跳和聚合类才走 agent。router 自己也要评，看分错的代价是多少。</p>
+  <summary>agent 在哪里没有价值？质量更好但慢很多、贵很多，怎么办？</summary>
+  <p>一次检索就能答的问题，多步只增加 latency 和出错机会。所以不做全量替换，用 router 只把多跳和聚合类送给 agent。router 自己也要评，看分错的代价。</p>
 </details>
 <details>
   <summary>online 看什么指标？</summary>
@@ -68,11 +64,7 @@
 </details>
 <details>
   <summary>A/B 刚上线时新版指标很好，过两周回落，为什么？</summary>
-  <p>novelty effect：用户对新界面好奇，多用了几次。实验要跑到指标稳定，看稳定之后的数。</p>
-</details>
-<details>
-  <summary>agent 在哪些地方其实没有价值？</summary>
-  <p>一次检索就能答的问题。这时多步只增加 latency 和出错机会。能用确定性的代码解决的步骤，也不要交给模型。</p>
+  <p>这是 novelty effect，用户对新界面好奇，多用了几次。实验要跑到指标稳定再看。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub：Design an Agentic Search Experience</a>（题面要求说明 agent 在哪里有价值、哪里用确定性 search 就够）· <a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">Apple JD 200670397</a></p>

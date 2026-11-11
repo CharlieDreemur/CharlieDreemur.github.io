@@ -18,27 +18,25 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Overfitting</dt>
-  <dd>像死记硬背的学生：练习题全对，换一道题就不会。模型连训练数据里的 noise 也背下来了。
-    <span class="eg">例：10 个点用 9 次多项式，train MSE = 0，test MSE = 0.69。</span></dd>
+  <dd>模型把训练数据里的 noise 也背下来了，像死记硬背的学生，换一道题就不会。</dd>
   <dt>Underfitting</dt>
-  <dd>像只背了一句口诀的学生：练习和考试都不行。模型太简单，train、validation error 都高。
-    <span class="eg">例：用直线拟合 sin 曲线，train 0.34、test 0.33。</span></dd>
+  <dd>模型太简单，train、validation error 都高。</dd>
   <dt>Bias</dt>
-  <dd>射箭比喻：换很多批训练数据、各训练一次，箭的<strong>平均落点</strong>离靶心多远。模型假设太死，平均就是偏的。</dd>
+  <dd>换很多批训练数据各训练一次，<strong>平均预测</strong>离真值多远。模型假设太死，平均就是偏的。</dd>
   <dt>Variance</dt>
-  <dd>同一个比喻里，箭<strong>彼此散得多开</strong>：换一批训练数据，预测变多少。模型太灵活，就会跟着每批数据的 noise 跑。</dd>
+  <dd>换一批训练数据，预测<strong>变多少</strong>。模型太灵活，会跟着每批数据的 noise 跑。</dd>
   <dt>Learning curve</dt>
-  <dd>train / validation error 随训练样本数变化的曲线。两者之差叫 generalization gap，用来判断问题出在 bias 还是 variance。</dd>
+  <dd>train / validation error 随训练样本数变化的曲线，两者之差叫 generalization gap。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Overfitting means the model fits the training noise: low training error, much higher validation error. Underfitting means it's too simple, so both errors are high. For squared loss, expected test error = bias² + variance + irreducible noise. Bias is how far the average prediction over training sets is from the truth; variance is how much the prediction moves when the training set changes. More capacity lowers bias and raises variance, so overfitting is high variance and underfitting is high bias. To fix overfitting: more data or augmentation, L1/L2 or dropout, early stopping, a smaller model, or bagging. To fix underfitting: a bigger model, better features, less regularization.</p></div>
+<div class="answer"><p>Overfitting means the model fits training noise: low training error, much higher validation error. Underfitting means it's too simple, so both errors are high. For squared loss, expected test error = bias² + variance + noise. Bias is how far the average prediction over training sets is from the truth; variance is how much the prediction moves when the training set changes. More capacity lowers bias and raises variance, so overfitting is high variance and underfitting is high bias. To fix overfitting: more data, L1/L2 or dropout, early stopping, a smaller model, or bagging. To fix underfitting: a bigger model, better features, less regularization.</p></div>
 
 <h2>推导：bias-variance decomposition</h2>
 <div class="deriv">
   <p>设 \(y = f(x) + \varepsilon\)，\(\operatorname{Var}(\varepsilon) = \sigma^2\)，\(\bar f = \mathbb E_D[\hat f(x)]\) 是换遍训练集的平均预测。把 \(y - \hat f\) 拆成 \((f - \bar f) + (\bar f - \hat f) + \varepsilon\)，平方取期望，交叉项都是 0：</p>
   \[ \mathbb E\big[(y - \hat f)^2\big] = \underbrace{(f - \bar f)^2}_{\text{bias}^2} + \underbrace{\mathbb E_D\big[(\hat f - \bar f)^2\big]}_{\text{variance}} + \underbrace{\sigma^2}_{\text{noise}} \]
-  <p>noise 是任何模型都消不掉的下限。capacity 越大，bias 越小、variance 越大，test error 呈 U 形。</p>
+  <p>noise 是任何模型都消不掉的下限，test error 随 capacity 呈 U 形。</p>
 </div>
 
 <h2 id="example">实测：多项式回归</h2>
@@ -56,13 +54,12 @@
 <p>每一行都满足 test ≈ bias² + variance + 0.09。</p>
 
 <h2 id="diagnose">怎么判断是 overfit 还是 underfit</h2>
-<p><strong>一句话：比较 train error 和 validation error。</strong></p>
 <ol>
-  <li>train error 离 noise 下限（实际里用人类水平或 baseline）很远 → underfit（high bias）。</li>
+  <li>train error 离 noise 下限（实际用人类水平或 baseline）很远 → underfit（high bias）。</li>
   <li>train error 低，validation error 高很多 → overfit（high variance）。</li>
-  <li>拿不准就画 learning curve：加数据后 gap 持续缩小 → variance，加数据有用；两条线贴在一起、停在高处 → bias，要换更强的模型。</li>
+  <li>拿不准就画 learning curve。加数据后 gap 持续缩小是 variance，两条线贴在一起停在高处是 bias。</li>
 </ol>
-<p>例：上面的实验，训练点数 \(N\) 从 10 加到 100：</p>
+<p>同一实验，\(N\) 从 10 加到 100：</p>
 <table>
   <thead><tr><th>N</th><th>10</th><th>20</th><th>50</th><th>100</th></tr></thead>
   <tbody>
@@ -70,37 +67,29 @@
     <tr><td class="nw">1 次：train / test</td><td>0.34 / 0.33</td><td>0.31 / 0.30</td><td>0.30 / 0.29</td><td>0.29 / 0.29</td></tr>
   </tbody>
 </table>
-<p>9 次的 gap 从 0.69 缩到 0.02，加数据治好了 overfit。直线停在 0.29，远高于 0.09，数据加 10 倍也没用，所以这是 underfit。</p>
+<p>9 次的 gap 从 0.69 缩到 0.02，加数据有用。直线停在 0.29，远高于 0.09，加数据没用，要换更强的模型。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>overfit：train 低、validation 高 → high variance；underfit：两个都高 → high bias</li>
   <li>test MSE = bias² + variance + noise；capacity 越大，bias ↓、variance ↑</li>
   <li>判断：train vs validation error，拿不准就画 learning curve</li>
-  <li>解决 overfit：more data / augmentation、L1 / L2（见 <a href="regularization-l1-l2.html">L1 vs L2</a>）、dropout、early stopping、减 capacity、bagging</li>
+  <li>解决 overfit：more data / augmentation、L1 / L2（见 <a href="regularization-l1-l2.html">L1 vs L2</a>）、<a href="dropout.html">dropout</a>、early stopping、减 capacity、<a href="bagging-boosting.html">bagging</a></li>
   <li>解决 underfit：增大 capacity、加 feature、减弱 regularization、训练更久</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>Regularization 为什么能防 overfitting？</summary>
-  <p>限制 weight 就是限制有效 capacity，用一点 bias 换 variance 大幅下降。上表 \(\lambda = 10^{-4}\) 把 variance 从 0.60 压到 0.04。\(\lambda\) 太大又会 underfit，所以用 cross-validation 选。</p>
+  <p>限制 weight 就是限制有效 capacity，用一点 bias 换 variance 大幅下降，上表 \(\lambda = 10^{-4}\) 把 variance 从 0.60 压到 0.04。</p>
 </details>
 <details>
   <summary>Early stopping 为什么也算 regularization？</summary>
-  <p>validation error 开始上升就停，限制了参数离初始值能走多远。线性模型 + squared loss + gradient descent 时，它等价于 L2（Goodfellow §7.8）。</p>
-</details>
-<details>
-  <summary>Dropout 为什么能防 overfitting？</summary>
-  <p>训练时随机关掉一部分 unit，相当于训练很多共享参数的子网络再取平均，近似 bagging（Goodfellow §7.12），也避免 unit 之间 co-adaptation。</p>
-</details>
-<details>
-  <summary>Bagging 和 boosting 分别降什么？</summary>
-  <p>Bagging 对多个 high-variance 模型（比如深树）取平均，降 variance；boosting 串行地修正前一轮的错误，降 bias（Murphy §18.5）。</p>
+  <p>validation error 开始上升就停，限制了参数离初始值能走多远。线性模型 + squared loss + gradient descent 时等价于 L2（Goodfellow §7.8）。</p>
 </details>
 <details>
   <summary>参数远多于样本，为什么不一定 overfit？</summary>
-  <p>参数数 \(P &gt; N\) 之后 test error 会再次下降，叫 double descent。模型能用更平滑的函数穿过全部训练点（Murphy §13.5.7）。</p>
+  <p>\(P &gt; N\) 之后 test error 会再次下降，叫 double descent，因为模型能用更平滑的函数穿过全部训练点（Murphy §13.5.7）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §1.2.3（pp.12–13）、§4.5（pp.120–127）、§4.7.6.3（p.161）、§13.5.7（p.459）、§18.5（p.612）· <a href="https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf">Bishop, PRML</a> §1.1（p.9）、§3.2（pp.147–151）· <a href="https://www.deeplearningbook.org/contents/ml.html">Goodfellow et al., Deep Learning, Ch.5</a> §5.2、§5.4.4（pp.108–113、127–128）· <a href="https://www.deeplearningbook.org/contents/regularization.html">Ch.7</a> §7.8、§7.12（pp.241–247、255）</p>

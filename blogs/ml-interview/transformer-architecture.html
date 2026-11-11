@@ -18,32 +18,32 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Encoder 与 decoder</dt>
-  <dd>像同声传译：encoder 先把整句原文听完，每个词都能看到所有词（双向）；decoder 逐词说出译文，用 causal mask 只能看自己和前面已经说出的词。<span class="eg">例：原版 encoder、decoder 各 6 层，\(d_{\text{model}} = 512\)，8 个 head。</span></dd>
+  <dd>像同声传译。encoder 先听完整句，每个词都能看到所有词。decoder 逐词说出译文，causal mask 让它只看自己和前面的词。<span class="eg">例：原版 encoder、decoder 各 6 层，\(d_{\text{model}} = 512\)，8 个 head。</span></dd>
   <dt>Cross-attention</dt>
-  <dd>decoder 里的第二个 attention：Q 来自 decoder，K、V 来自 encoder 的输出。相当于译员边说边回头查原文。</dd>
+  <dd>decoder 里的第二个 attention，相当于译员边说边查原文。</dd>
   <dt>Residual + LayerNorm</dt>
-  <dd>每个 sub-layer 的输出加回输入，\(x + F(x)\)：给信号修了一条直达通道，gradient 能直接流回浅层。LayerNorm 再把每个 token 的向量拉回 mean 0、variance 1。</dd>
+  <dd>每个 sub-layer 的输出加回输入 \(x + F(x)\)，gradient 能沿这条直达通道流回浅层。LayerNorm 把每个 token 的向量拉回 mean 0、variance 1。</dd>
   <dt>Post-LN 与 pre-LN</dt>
-  <dd>LayerNorm 放在 residual 相加之后（post，原版）还是放进分支里、在 \(F\) 之前（pre）。pre-LN 的直达通道上没有 LN，深层训练更稳。</dd>
+  <dd>LayerNorm 放在 residual 相加之后是 post（原版），放进分支里、在 \(F\) 之前是 pre。pre-LN 的直达通道上没有 LN。</dd>
   <dt>FFN（position-wise）</dt>
-  <dd>两层 MLP，对每个 token 单独做、所有位置共享参数。attention 负责 token 之间交换信息，FFN 负责每个 token 自己"消化"。<span class="eg">例：512 → 2048 → 512。</span></dd>
+  <dd>两层 MLP，对每个 token 单独做，所有位置共享参数，占每层约 2/3 的参数。attention 在 token 之间交换信息，FFN 给每个 token 加非线性变换。<span class="eg">例：512 → 2048 → 512。</span></dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>The original Transformer is an encoder-decoder. Each encoder layer has multi-head self-attention and a position-wise feed-forward network, two linear layers with a ReLU and a hidden size of 4·d_model. Every sub-layer is wrapped in a residual connection followed by LayerNorm. The decoder adds two things: its self-attention is causally masked, and a cross-attention sub-layer takes queries from the decoder and keys and values from the encoder output. Positional encodings are added to the input embeddings. Modern LLMs are decoder-only and use pre-LN, normalizing the input of each sub-layer, which keeps gradients stable without warm-up, plus RMSNorm, SwiGLU, RoPE and grouped-query attention.</p></div>
+<div class="answer"><p>The original Transformer is an encoder-decoder. Each encoder layer has multi-head self-attention and a position-wise feed-forward network with hidden size 4·d_model, each wrapped in a residual connection followed by LayerNorm. The decoder adds a causal mask on its self-attention and a cross-attention sub-layer that takes queries from the decoder and keys and values from the encoder output. Positional encodings are added to the input embeddings. Modern LLMs are decoder-only and use pre-LN, which keeps gradients stable without warm-up, plus RMSNorm, SwiGLU, RoPE and grouped-query attention.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
   <h3 id="ln">Post-LN vs pre-LN（\(F\) = attention 或 FFN）</h3>
   \[ \text{post-LN:}\quad x_{l+1} = \mathrm{LN}\big(x_l + F(x_l)\big) \]
   \[ \text{pre-LN:}\quad x_{l+1} = x_l + F\big(\mathrm{LN}(x_l)\big) \]
-  <p>pre-LN 在最后一层后再加一个 LN。post-LN 初始化时靠近输出层的 gradient 很大，要靠 learning-rate warm-up；pre-LN 的 gradient 被 \(1/\sqrt{L}\) 压住，可以去掉 warm-up。GPT-2 已经用 pre-LN。</p>
+  <p>pre-LN 在最后一层后再加一个 LN，GPT-2 已经在用。Xiong et al. 证明 post-LN 初始化时靠近输出层的 gradient 很大，要靠 learning-rate warm-up。pre-LN 的 gradient 被 \(1/\sqrt{L}\) 压住，可以去掉 warm-up。</p>
   <h3 id="ffn">FFN 与 cross-attention</h3>
   \[ \mathrm{FFN}(x) = \max(0,\, xW_1 + b_1)\,W_2 + b_2 \]
   \[ \mathrm{Cross}(H_{\text{dec}}, H_{\text{enc}}) = \mathrm{softmax}\Big(\frac{QK^\top}{\sqrt{d_k}}\Big)V \]
-  <p>\(W_1\)：\(d\times 4d\)，\(W_2\)：\(4d\times d\)。cross-attention 里 \(Q = H_{\text{dec}}W_Q\)，\(K, V\) 由 \(H_{\text{enc}}\) 投影得到。</p>
+  <p>\(W_1\) 是 \(d\times 4d\)，\(W_2\) 是 \(4d\times d\)。\(Q = H_{\text{dec}}W_Q\)，\(K, V\) 由 \(H_{\text{enc}}\) 投影得到。</p>
 </div>
-<p><strong>Parameter count</strong>：每层 ≈ \(12d^2\)（attention \(4d^2\) + FFN \(8d^2\)），decoder 层多一个 cross-attention，是 \(16d^2\)。怎么算见 <a href="transformer-complexity.html">Transformer 复杂度速查</a>。</p>
+<p><strong>Parameter count</strong>：每层 ≈ \(12d^2\)（attention \(4d^2\) + FFN \(8d^2\)），decoder 层多一个 cross-attention，是 \(16d^2\)。算法见 <a href="transformer-complexity.html">Transformer 复杂度</a>。</p>
 
 <h2 id="modern">原版 vs 现代 LLM</h2>
 <table>
@@ -53,7 +53,7 @@
     <tr><td class="nw">Norm</td><td>post-LN，LayerNorm</td><td>pre-LN，RMSNorm（不减 mean，只除以 RMS）</td></tr>
     <tr><td class="nw">FFN</td><td>ReLU，hidden \(4d\)</td><td>SwiGLU，3 个矩阵，hidden \(\tfrac23\cdot 4d\)，参数量不变</td></tr>
     <tr><td class="nw">位置</td><td>sinusoidal，加在输入</td><td>RoPE，每层旋转 q、k</td></tr>
-    <tr><td class="nw">Attention</td><td>MHA</td><td>GQA：几个 query head 共享一组 K、V，KV cache 变小</td></tr>
+    <tr><td class="nw">Attention</td><td>MHA</td><td><a href="mqa-gqa-mla.html">GQA</a>：几个 query head 共享一组 K、V，KV cache 变小</td></tr>
   </tbody>
 </table>
 
@@ -68,24 +68,16 @@
 
 <h2>追问</h2>
 <details>
-  <summary>为什么 post-LN 需要 warm-up，pre-LN 不需要？</summary>
-  <p>Xiong et al. 证明，post-LN 初始化时最后几层参数的 gradient 期望很大，直接用大 learning rate 会不稳；pre-LN 进入最后那个 LN 的输入随层数 \(L\) 线性变大，gradient 被 \(\sqrt{L}\) 归一化，所以可以去掉 warm-up。</p>
-</details>
-<details>
   <summary>为什么用 LayerNorm 不用 BatchNorm？</summary>
-  <p>文本序列长短不一，batch 统计量不稳；LayerNorm 对每个 token 自己的 \(d\) 维算统计量，train 和 eval 一样。见 <a href="batchnorm-layernorm.html">BatchNorm vs LayerNorm 速查</a>。</p>
+  <p>文本长短不一，batch 统计量不稳，LayerNorm 只用每个 token 自己的 \(d\) 维。见 <a href="batchnorm-layernorm.html">BatchNorm vs LayerNorm</a>。</p>
 </details>
 <details>
-  <summary>FFN 有什么用？SwiGLU 为什么 hidden 取 \(\tfrac23\cdot 4d\)？</summary>
-  <p>attention 输出是 V 的加权平均，FFN 给每个 token 加非线性变换，占每层约 2/3 的参数。SwiGLU 有 3 个 \(d\times h\) 矩阵，\(h = \tfrac83 d\) 时 \(3dh = 8d^2\)，和 ReLU FFN 参数量相同。</p>
+  <summary>SwiGLU 为什么 hidden 取 \(\tfrac23\cdot 4d\)？</summary>
+  <p>SwiGLU 有 3 个 \(d\times h\) 矩阵，\(h = \tfrac83 d\) 时 \(3dh = 8d^2\)，和 ReLU FFN 参数量相同。</p>
 </details>
 <details>
   <summary>encoder-only、decoder-only、encoder-decoder 分别用在哪？</summary>
-  <p>encoder-only（BERT）双向看全句，做理解、分类。decoder-only（GPT）做生成。encoder-decoder（原版、T5）做翻译、摘要这类 seq2seq。</p>
-</details>
-<details>
-  <summary>为什么现在的 LLM 几乎都是 decoder-only？</summary>
-  <p>一个 stack 结构简单，next-token prediction 每个 token 都有 loss，生成时 KV cache 能直接复用。BigScience 的对比实验里，预训练完直接做 zero-shot，causal decoder-only 最好。</p>
+  <p>encoder-only（BERT）做理解、分类，decoder-only（GPT）做生成，encoder-decoder（原版、T5）做翻译、摘要这类 seq2seq。LLM 为什么都是 decoder-only 见 <a href="bert-vs-gpt.html#why-decoder">BERT vs GPT</a>。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.1（p.3）、§3.2.3、§3.3（p.5）· <a href="https://arxiv.org/abs/2002.04745">Xiong et al. 2020</a> Abstract、§3.3 Theorem 1、Lemma 2–3（pp.5–6）· <a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">Radford et al. 2019（GPT-2）</a> §2.3（p.4）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023（LLaMA）</a> §2.2（p.3）· <a href="https://arxiv.org/abs/1910.07467">Zhang &amp; Sennrich 2019（RMSNorm）</a> · <a href="https://arxiv.org/abs/2002.05202">Shazeer 2020（SwiGLU）</a> §2 eq. 6（p.2） · <a href="https://arxiv.org/abs/2305.13245">Ainslie et al. 2023（GQA）</a> · <a href="https://arxiv.org/abs/2211.05100">BigScience 2022（BLOOM）</a> §3.2.2（p.15）· <a href="https://d2l.ai/chapter_attention-mechanisms-and-transformers/transformer.html">Dive into Deep Learning</a> §11.7.1–11.7.3</p>

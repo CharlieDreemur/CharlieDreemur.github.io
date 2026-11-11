@@ -18,9 +18,9 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Single-shot RAG</dt>
-  <dd>检索一次就回答，像只查一次字典。</dd>
+  <dd>检索一次就回答。</dd>
   <dt>Multi-hop question</dt>
-  <dd>答案要串起多条数据，而且后一次 search 的 query 依赖前一次的结果。<span class="eg">Apple 官方的例子：先从 message 里找到亲戚想一起做家传菜，再去 email 里找那份菜谱。不知道是哪道菜，就搜不到菜谱。</span></dd>
+  <dd>答案要串起多条数据，后一次 search 的 query 依赖前一次的结果。<span class="eg">Apple 官方的例子：先从 message 里找到亲戚想一起做家传菜，再去 email 里找那份菜谱。</span></dd>
   <dt>Query decomposition</dt>
   <dd>把一个问题拆成几个子问题，逐个检索。</dd>
   <dt>Stop condition</dt>
@@ -30,19 +30,19 @@
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Single-shot retrieval fails when the second query depends on the first result, which is a multi-hop question. So the model runs a loop: decompose the question, search, read the results, and decide whether it has enough evidence or needs another query. It stops when the answer is supported by evidence, when new searches return nothing new, or when it hits a step or latency budget. If it stops without evidence, it says what it searched and that it couldn't find the answer, instead of guessing. Not every query needs the loop: simple lookups should take the cheap single-shot path.</p></div>
+<div class="answer"><p>Single-shot retrieval fails on multi-hop questions, where the second query depends on the first result. So the model runs a loop: decompose the question, search, read the results, and decide whether it needs another query. It stops when the answer is supported by evidence, when new searches return nothing new, or when it hits a step or latency budget. Without evidence, it says what it searched and abstains instead of guessing. Simple lookups should skip the loop and take the cheap single-shot path.</p></div>
 
 <h2 id="stop">什么时候停</h2>
 <table>
   <thead><tr><th>Stop condition</th><th>信号</th><th>停下之后</th></tr></thead>
   <tbody>
-    <tr><td class="nw">证据够了</td><td>每个子问题都有 evidence 支持</td><td>生成 grounded 回答</td></tr>
+    <tr><td class="nw">证据够了</td><td>每个子问题都有 evidence，verifier 查过答案里的 claim</td><td>生成 grounded 回答</td></tr>
     <tr><td class="nw">没有新信息</td><td>连续几次 search 返回重复或空结果</td><td>说明查过什么，然后 abstain</td></tr>
     <tr><td class="nw">Budget 用完</td><td>步数、token 或 latency 到上限</td><td>用已有 evidence 回答并说明不完整，或退回普通 search 结果</td></tr>
     <tr><td class="nw">需要澄清</td><td>有歧义，比如两个 Tim</td><td>只问会改变结果的问题</td></tr>
   </tbody>
 </table>
-<p><strong>Workflow 还是 agent</strong>：路径固定的用代码串起来（workflow），便宜又稳定；路径要由模型决定的才用 agent。前面放一个 router，简单 lookup 走 single-shot。</p>
+<p><strong>Workflow 还是 agent</strong>：路径固定的用代码串起来（workflow），便宜又稳定。路径要由模型决定的才用 agent。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -56,15 +56,11 @@
 <h2>追问</h2>
 <details>
   <summary>子问题一次拆完，还是边搜边拆？</summary>
-  <p>一次拆完（plan-then-execute）省模型调用，适合子问题互相独立的情况。后一跳依赖前一跳的结果时，只能边搜边拆（ReAct 风格），因为拆的时候还不知道要搜什么。</p>
+  <p>子问题互相独立时一次拆完（plan-then-execute），省模型调用。后一跳依赖前一跳的结果时只能边搜边拆（ReAct 风格）。</p>
 </details>
 <details>
   <summary>多一步的代价是什么？</summary>
   <p>latency 和 token 随步数线性涨，错误还会累积。每一步有 90% 做对，4 步全对的概率是 \(0.9^4 \approx 66\%\)。</p>
-</details>
-<details>
-  <summary>怎么判断“证据够了”？</summary>
-  <p>让模型逐个子问题对上 evidence。再用 verifier 检查答案里的 claim 是否都有 evidence。判断不准时，宁可追问或 abstain。</p>
 </details>
 <details>
   <summary>用户中途放宽了一个条件，怎么办？</summary>
@@ -72,7 +68,7 @@
 </details>
 <details>
   <summary>检索到的内容里有一句写给 assistant 的指令，怎么办？</summary>
-  <p>检索内容是数据，不是指令。用 delimiter 标出来，不让它触发 tool。有副作用的操作要用户确认（见 <a href="rag.html">RAG</a> 的 prompt injection）。</p>
+  <p>检索内容是数据，不是指令，不让它触发 tool。有副作用的操作要用户确认（见 <a href="rag.html">RAG</a> 的 prompt injection）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.apple.com/newsroom/2026/09/siri-ai-a-profoundly-more-capable-and-personal-assistant-is-here/">Apple Newsroom 2026-09</a>（family recipe 例子）· <a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub：Design an Agentic Search Experience</a>（追问含“用户中途放宽条件”和“记录里含有给 assistant 的指令”）· <a href="https://arxiv.org/abs/2503.09516">Search-R1</a> Appendix B.2</p>

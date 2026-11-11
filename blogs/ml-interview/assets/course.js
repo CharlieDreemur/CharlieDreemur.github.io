@@ -3,18 +3,20 @@
 //   - 各课页面：顶部加"课程目录 + 第几课 + 上一课/下一课"，底部加上一课/下一课，键盘 ← → 翻页
 (function () {
   var LESSONS = [
-    ["infra-l0", "GPU 只关心两件事：算得多快、搬得多快", "compute-bound vs memory-bound、roofline、kernel fusion"],
-    ["infra-l1", "v0 单卡：一个 training step 花多少 compute 和 memory", "6ND、MFU、16 bytes/param、activation"],
-    ["infra-l2", "v1 单卡上的三招：BF16、activation checkpointing、FlashAttention", "省 activation、提速，但 model state 一点没少"],
-    ["infra-l3", "通信 101：GPU 之间怎么传数据", "all-reduce、reduce-scatter、all-gather、all-to-all、ring"],
-    ["infra-l4", "v2 → v3：DDP 到 ZeRO / FSDP", "你在 TikTok 用的 DeepSpeed 就在这一课"],
-    ["infra-l5", "v4：Tensor Parallel 与 Sequence Parallel", "Megatron 的核心，NVIDIA 原题"],
-    ["infra-l6", "v5：Pipeline Parallel", "按层切、bubble、1F1B、interleaved"],
-    ["infra-l7", "v6：长序列和 MoE：Context Parallel 与 Expert Parallel", "ring attention、router、all-to-all"],
-    ["infra-l8", "v7：拼成完整配置、跑快、出问题怎么查", "选 parallelism、overlap、FP8、慢和 hang"],
-    ["infra-l9", "Megatron Core 代码地图与 RL 训推", "每个概念在哪个文件；verl 的训推权重同步"],
-    ["infra-l10", "手写题和项目故事", "KV cache、MoE、TP Linear、INT8、autograd；TikTok SFT 怎么讲"]
+    ["infra-l0", "GPU 只关心两件事：算得多快、搬得多快", "compute-bound vs memory-bound、roofline、kernel fusion", ["GPU 与性能"]],
+    ["infra-l1", "v0 单卡：一个 training step 花多少 compute 和 memory", "6ND、MFU、16 bytes/param、activation", ["训练系统", "GPU 与性能"]],
+    ["infra-l2", "v1 单卡上的三招：BF16、activation checkpointing、FlashAttention", "省 activation、提速，但 model state 一点没少", ["训练系统", "训练与优化"]],
+    ["infra-l3", "通信 101：GPU 之间怎么传数据", "all-reduce、reduce-scatter、all-gather、all-to-all、ring", ["分布式训练"]],
+    ["infra-l4", "v2 → v3：DDP 到 ZeRO / FSDP", "你在 TikTok 用的 DeepSpeed 就在这一课", ["分布式训练", "训练系统"]],
+    ["infra-l5", "v4：Tensor Parallel 与 Sequence Parallel", "Megatron 的核心，NVIDIA 原题", ["分布式训练"]],
+    ["infra-l6", "v5：Pipeline Parallel", "按层切、bubble、1F1B、interleaved", ["分布式训练"]],
+    ["infra-l7", "v6：长序列和 MoE：Context Parallel 与 Expert Parallel", "ring attention、router、all-to-all", ["分布式训练"]],
+    ["infra-l8", "v7：拼成完整配置、跑快、出问题怎么查", "选 parallelism、overlap、FP8、慢和 hang", ["分布式训练", "训练系统"]],
+    ["infra-l9", "Megatron Core 代码地图与 RL 训推", "每个概念在哪个文件；verl 的训推权重同步", ["训练系统", "LLM 训练"]],
+    ["infra-l10", "手写题和项目故事", "KV cache、MoE、TP Linear、INT8、autograd；TikTok SFT 怎么讲", ["训练系统"]]
   ];
+
+  window.COURSE_LESSONS = LESSONS;   // nav.js 用它把每一课列进目录
 
   function el(tag, attrs, text) {
     var e = document.createElement(tag);
@@ -51,6 +53,13 @@
     if (next) side.appendChild(link(next, "下一课"));
     bar.appendChild(side);
     main.insertBefore(bar, main.firstChild);
+
+    // 本课的标签：点了回到目录并按它筛选
+    var tags = el("p", { class: "kp-tags" });
+    (LESSONS[i][3] || []).forEach(function (k) { tags.appendChild(el("a", { class: "tg tg-k", href: "index.html#k=" + encodeURIComponent(k), title: "知识分类" }, k)); });
+    tags.appendChild(el("a", { class: "tg tg-prep", href: "index.html#co=NVIDIA", title: "在这家的备考清单里" }, "NVIDIA"));
+    tags.appendChild(el("a", { class: "tg tg-src", href: "index.html#co=" + encodeURIComponent("速成课"), title: "来自这个专题" }, "速成课"));
+    main.insertBefore(tags, bar.nextSibling);
 
     var pager = el("nav", { class: "pager", "aria-label": "上一课和下一课" });
     pager.appendChild(prev ? link(prev, "← 第 " + (i - 1) + " 课 " + prev[1]) : el("a", { href: "index.html#infra-course" }, "← 课程目录"));

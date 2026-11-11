@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Occupancy</dt>
-  <dd>SM 上活跃的 warp 数，除以这个 SM 最多能放的 warp 数。像车间里开工的班组占工位的比例。<span class="eg">H100 的一个 SM 最多放 64 个 warp，放了 32 个就是 50%。</span></dd>
+  <dd>SM 上活跃的 warp 数，除以这个 SM 最多能放的 warp 数。</dd>
   <dt>Latency hiding</dt>
   <dd>一个 warp 在等 memory 时，SM 切到别的 warp 继续发指令。warp 越多，越不容易全都在等。</dd>
-  <dt>Register file</dt>
-  <dd>每个 SM 有 65,536 个 register，SM 上所有 thread 一起分。每个 thread 用得越多，放得下的 thread 越少。</dd>
   <dt>Limiter</dt>
-  <dd>register、shared memory、thread 数三个上限里最紧的那个。occupancy 由它决定。</dd>
+  <dd>register、shared memory、thread 数三个上限里最紧的那个，occupancy 由它决定。</dd>
   <dt>Register spill</dt>
-  <dd>register 不够用时，compiler 把值放到 local memory。local memory 在 HBM 上，和 global memory 一样慢。</dd>
+  <dd>register 不够用时，compiler 把值放到 local memory，它在 HBM 上，和 global memory 一样慢。</dd>
 </dl>
 
 <h2 id="figs">看图：三个上限，取最紧的</h2>
@@ -68,32 +66,27 @@
   <text class="acc" x="466" y="178">4 个，最紧</text>
   <text class="acc" x="14" y="230">occupancy = 4 × 8 ÷ 64 = 50%，limiter 是 shared memory</text>
 </svg>
-<figcaption>图 1：示意的 kernel，每个 block 256 个 thread，每个 thread 48 个 register，每个 block 48 KB shared memory，上限按 H100 算。一个小格是一个 block，虚线格是这个上限下放不进去的。三个上限各允许 8、5、4 个 block，取最小的 4 个。</figcaption>
+<figcaption>图 1：示意的 kernel，每个 block 256 个 thread、48 KB shared memory，每个 thread 48 个 register，上限按 H100 算。虚线格是放不进去的 block，三个上限取最小的 4 个。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Occupancy is the number of active warps on an SM divided by the maximum it can hold. It matters because when one warp is waiting on memory, the SM switches to another, which hides the latency. It's capped by whichever runs out first: registers per thread, shared memory per block, or the block size. Higher isn't always better. Once there are enough warps to keep the SM busy, more don't help, and squeezing registers to get there can cause spills. A GEMM that gives each thread more registers to reuse data often runs faster at lower occupancy. So low occupancy is a warning sign, but I judge by measured time.</p></div>
+<div class="answer"><p>Occupancy is the number of active warps on an SM divided by the maximum it can hold. When one warp waits on memory, the SM switches to another, hiding the latency. It's capped by whichever runs out first: registers per thread, shared memory per block, or the block size. Higher isn't always better. Once there are enough warps to keep the SM busy, more don't help, and squeezing registers can cause spills. A GEMM that gives each thread more registers to reuse data often runs faster at lower occupancy. So low occupancy is a warning sign, but I judge by measured time.</p></div>
 
 <h2 id="limits">三个上限，手算一遍</h2>
-<p>H100 的一个 SM 最多放 2,048 个 thread（64 个 warp），有 65,536 个 register 和最多 228 KB shared memory（见 <a href="gpu-memory-hierarchy.html#limits">thread 上限</a>）。图里的 kernel 这样算。</p>
-<ul>
-  <li><strong>thread 数</strong>：2,048 ÷ 256 = 8 个 block</li>
-  <li><strong>register</strong>：一个 block 要 256 × 48 = 12,288 个，65,536 ÷ 12,288 取整是 5 个 block</li>
-  <li><strong>shared memory</strong>：228 ÷ 48 取整是 4 个 block</li>
-</ul>
-<p>取最小的 4 个 block，也就是 32 个 warp，occupancy 是 32 ÷ 64 = 50%。把每个 block 的 shared memory 减到 32 KB，这一项放宽到 7 个 block。这时 limiter 换成 register，能放 5 个 block，occupancy 是 62.5%。要到 100%，每个 thread 最多用 65,536 ÷ 2,048 = 32 个 register。</p>
+<p>H100 的一个 SM 最多放 2,048 个 thread（64 个 warp），有 65,536 个 register 和最多 228 KB shared memory（见 <a href="gpu-memory-hierarchy.html#limits">thread 上限</a>）。图 1 的 kernel 被 shared memory 限制在 4 个 block，occupancy 是 50%。</p>
+<p>把每个 block 的 shared memory 减到 32 KB，这一项放宽到 7 个 block，limiter 换成 register，能放 5 个 block，occupancy 是 62.5%。要到 100%，每个 thread 最多用 65,536 ÷ 2,048 = 32 个 register。</p>
 
 <h2 id="higher">是不是越高越好</h2>
-<p>不是。occupancy 太低一定不好，够用之后再高没有收益，硬提上去还可能更慢。</p>
+<p>太低一定不好，但不是越高越好。</p>
 <ol>
-  <li>它的作用只是 latency hiding。warp 已经多到 SM 每个 cycle 都有指令可发，再加也不会更快。NVIDIA 的文档说从 66% 提到 100% 通常得不到成比例的加速</li>
-  <li>提高它的办法是压 register 或 shared memory。register 压过头会 spill，shared memory 小了 tile 就小，数据复用变少</li>
-  <li>GEMM 反过来做。每个 thread 多占 register，一次算一小块，occupancy 低了，实际更快（见 <a href="matmul-roofline.html">matmul</a> 的 register tiling）</li>
+  <li>warp 已经多到 SM 每个 cycle 都有指令可发时，再加也不会更快。NVIDIA 的文档说从 66% 提到 100% 通常得不到成比例的加速</li>
+  <li>提高它要压 register 或 shared memory。register 压过头会 spill，shared memory 小了 tile 就小，数据复用变少</li>
+  <li>GEMM 反过来做，每个 thread 多占 register，occupancy 低了，实际更快（见 <a href="matmul-roofline.html">matmul</a> 的 register tiling）</li>
 </ol>
 <table>
   <thead><tr><th>要做的事</th><th>办法</th></tr></thead>
   <tbody>
-    <tr><td class="nw">看 occupancy 和 limiter</td><td>ncu 的 Occupancy 一节，报 theoretical 和 achieved occupancy，以及被 register、shared memory、thread 数里的哪个限制</td></tr>
+    <tr><td class="nw">看 occupancy 和 limiter</td><td>ncu 的 Occupancy 一节，报 theoretical 和 achieved occupancy，以及 limiter 是哪个</td></tr>
     <tr><td class="nw">看 register 用量</td><td>编译时加 <code>-Xptxas -v</code>；ncu 的 Launch Statistics 也报每个 thread 的 register 数</td></tr>
     <tr><td class="nw">调</td><td><code>__launch_bounds__</code> 限制 register；block size 取 32 的倍数，从 128 到 256 试起；每个 block 少用 shared memory</td></tr>
   </tbody>
@@ -112,19 +105,15 @@
 <h2>追问</h2>
 <details>
   <summary>怎么知道 occupancy 是不是这个 kernel 的瓶颈？</summary>
-  <p>在 ncu 里 memory 和 compute throughput 都低、warp 大量时间在 stall 时才怀疑它（见 <a href="nsight-profiling.html#bound">Nsight profiling</a>）。NVIDIA 的文档还给了一个试法：kernel 不改，把 dynamic shared memory 调大，人为压低 occupancy，看时间变不变。</p>
+  <p>ncu 里 memory 和 compute throughput 都低时才怀疑它（见 <a href="nsight-profiling.html#bound">Nsight profiling</a>）。NVIDIA 文档的试法是把 dynamic shared memory 调大来压低 occupancy，看时间变不变。</p>
 </details>
 <details>
   <summary><code>__launch_bounds__</code> 是什么意思？</summary>
-  <p>写在 kernel 上的声明，告诉 compiler 每个 block 最多多少 thread，还可以加上每个 SM 至少放几个 block。compiler 据此限制 register 用量。快手校招问过 launch bound 的含义，出处是 AIInfraGuide 的二手整理。</p>
+  <p>kernel 上的声明，告诉 compiler 每个 block 最多多少 thread、每个 SM 至少放几个 block，compiler 据此限制 register 用量。快手校招问过，出处是 AIInfraGuide 的二手整理。</p>
 </details>
 <details>
   <summary>block size 越大，occupancy 越高吗？</summary>
-  <p>不是。block 是整个放进 SM 的，block 越大，放不进下一个时空出来的位置越多。只看 register 这一项，上面 256 个 thread 的 block 能放 5 个，是 40 个 warp。换成 512 个 thread 的 block 只放得下 2 个，是 32 个 warp，反而更低。</p>
-</details>
-<details>
-  <summary>fusion 之后 occupancy 掉了怎么办？</summary>
-  <p>先看时间有没有变慢，没有就不用管。变慢了再看 limiter 是 register 还是 shared memory，决定是拆开一部分还是减少占用（见 <a href="kernel-fusion.html#when">kernel fusion</a>）。</p>
+  <p>不是，block 是整个放进 SM 的。只看 register 这一项，图里 256 个 thread 的 block 能放 5 个，是 40 个 warp。512 个 thread 的 block 只放得下 2 个，是 32 个 warp。</p>
 </details>
 <details>
   <summary>kernel agent 会用到 occupancy 吗？</summary>

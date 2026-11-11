@@ -12,7 +12,7 @@
 <main>
 
 <h1>v0 单卡：一个 training step 花多少 compute 和 memory</h1>
-<p class="lead">第 0 课学会了判断“算”和“搬”。这一课从 v0 出发：一张 H100，直接训你在 TikTok 训过的 Qwen3-VL-8B。我们把一个 training step 的账算清楚：要多少 compute、多少 memory。结论是 memory 先爆。光 model state 就要 128 GB，比 H100 的 80 GB 还多。</p>
+<p class="lead">v0 是一张 H100，直接训你在 TikTok 训过的 Qwen3-VL-8B。这一课把一个 training step 要多少 compute 和 memory 算清楚。结论是 memory 先爆，光 model state 就要 128 GB，超过 H100 的 80 GB。</p>
 <p class="meta"><b>面试会这样问</b><q>How much GPU memory does it take to train an 8B model with Adam?</q> · <q>Where does 6ND come from, and how long will training take?</q> · <q>What is MFU, and what does a low MFU tell you?</q></p>
 <p class="meta"><b>考过</b>NVIDIA Senior MLE 电面 2025-10（全是计算题：SGD、Adam 各需要多少 parameter；每层输出多大、trainable parameter 多少；LoRA/QLoRA 的 parameter count 和 initialization，Fail，<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）· NVIDIA DevTech NG 2026（MLP 的维度变化，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· 字节（"14B：FP16 权重大概多大；训练还要加哪些"）· 滴滴（"AdamW 优化器为什么会占用4倍模型参数量显存？"）· 拼多多（"训练时占用显存的数据有哪些"）· 牛客（"mfu计算公式，6Nd公式是什么"、"给定训练所需的Tokens，怎么估计模型训练所需的完整时间？"）</p>
 
@@ -22,20 +22,14 @@
 loss.backward()               # 3. backward
 optimizer.step()              # 4. 更新 parameter
 optimizer.zero_grad()</code></pre>
-<ul>
-  <li><b>forward</b>：数据从第一层流到最后一层，得到预测</li>
-  <li><b>loss</b>：预测和答案差多少，是一个数</li>
-  <li><b>backward</b>：从 loss 倒着往回走，算出每个 parameter 的 gradient，也就是“该往哪个方向改、改多少”</li>
-  <li><b>optimizer.step</b>：按 gradient 改 parameter。Adam 还会参考过去几步的 gradient</li>
-</ul>
-<p>每一步花两样东西：compute（多少 FLOPs）和 memory（HBM 里要放什么）。第三样 communication 要到第 3 课用多卡时才出现。</p>
+<p>forward 得到预测，loss 是预测和答案差多少。backward 从 loss 往回走，算出每个 parameter 的 gradient，也就是该往哪边改、改多少。optimizer.step 按 gradient 改 parameter，Adam 还会参考过去几步的 gradient。</p>
 
 <h2>Compute：为什么是 6ND</h2>
 <ul>
-  <li><b>forward：每个 parameter、每个 token 2 FLOPs</b>。在 \(Y = XW\) 里，每个 weight \(w_{kj}\) 和输入 \(x_k\) 乘一次，再加进 \(y_j\) 一次，就是 1 次乘法 + 1 次加法。8B 模型 forward 一个 token ≈ 2 × 8B = 16 GFLOPs</li>
-  <li><b>backward ≈ forward 的 2 倍</b>。forward 的每个 \(Y = XW\)，backward 要做两个一样大的 matmul：\(dX = dY\,W^\top\)（把 gradient 继续传给前一层）和 \(dW = X^\top dY\)（这个 weight 自己的 gradient）。所以是 4 FLOPs</li>
+  <li><b>forward：每个 parameter、每个 token 2 FLOPs</b>。在 \(Y = XW\) 里，每个 weight 和输入乘一次，再加进输出一次</li>
+  <li><b>backward 是 4 FLOPs</b>。每个 \(Y = XW\) 要做两个一样大的 matmul：\(dX = dY\,W^\top\)（把 gradient 传给前一层）和 \(dW = X^\top dY\)（这个 weight 自己的 gradient）</li>
   <li><b>合计</b>：2 + 4 = 6。N 个 parameter（本课程记作 \(\Psi\)）、D 个 token，训练要 \(C \approx 6ND\) FLOPs。8B 模型每个 token 要 48 GFLOPs</li>
-  <li><b>漏了什么</b>：attention 的 \(QK^\top\) 和乘 V 不对应任何 parameter，6ND 没算。它约是 6ND 的 \(s/(6h)\)，s = 8192、h = 4096 时约 1/3，长序列不能忽略</li>
+  <li><b>漏了什么</b>：attention 的 \(QK^\top\) 和乘 V 不对应 parameter，6ND 没算。它约是 6ND 的 \(s/(6h)\)，s = 8192、h = 4096 时约 1/3，长序列不能忽略</li>
 </ul>
 
 <h2>训练要多久</h2>
@@ -44,37 +38,33 @@ optimizer.zero_grad()</code></pre>
 <ul>
   <li>C = 6 × 8e9 × 1e9 = 4.8e19 FLOPs</li>
   <li>一张 H100，MFU 40%：989 × 0.4 ≈ 400 TFLOPS，4.8e19 ÷ 4e14 = 1.2e5 秒 ≈ 33 小时</li>
-  <li>32 张卡：理想情况下约 1 小时（假设通信全藏在计算后面）</li>
+  <li>32 张卡：理想情况约 1 小时（通信全藏在计算后面）</li>
 </ul>
-<p>这里用的是 BF16 的峰值。v0 用 fp32，H100 的 FP32 峰值只有 67 TFLOPS，同样的活要慢约 15 倍。第 2 课解决。</p>
+<p>这里用的是 BF16 的峰值，v0 用 fp32 还要慢约 15 倍（第 2 课）。</p>
 
 <h2>MFU：厨师有多少时间真在炒菜</h2>
 <ul>
   <li><b>定义</b>：MFU（model FLOPs utilization）= 每秒实际完成的模型 FLOPs ÷ 峰值 = tokens/s × 6Ψ ÷（卡数 × 峰值）</li>
-  <li><b>直觉</b>：厨师（Tensor Core）全力炒每秒 989 万亿下，MFU 是他真正在炒的比例。其余时间在等菜（data loading、memory-bound 的算子）、等别的厨房（communication），或者每次只炒一小盘（kernel 太小）</li>
-  <li><b>例子</b>：8B 模型每个 token 48 GFLOPs。一张 H100 在 40% MFU 下，每秒处理 400T ÷ 48G ≈ 8,300 个 token。反过来，量出 tokens/s 就能算出 MFU</li>
-  <li><b>正常值</b>：大模型训练一般在 35–50%。Llama 3 405B 在 16K 张 H100 上是 38–43%</li>
-  <li><b>分子只算 6Ψ</b>：重算（第 2 课）多花的 FLOPs 不算，算上的叫 HFU。所以 MFU 能在不同系统之间直接比</li>
-  <li><b>MFU 低说明 GPU 在等</b>，不是算得慢，而是没在算。下一步看 profiler trace，分清时间卡在数据、通信还是小 kernel 上（第 8 课）</li>
+  <li><b>直觉</b>：厨师（Tensor Core）没在炒的时间，是在等菜（data loading、memory-bound 的算子）、等别的厨房（communication），或者每次只炒一小盘（kernel 太小）</li>
+  <li><b>正常值</b>：大模型训练一般在 35–50%，Llama 3 405B 在 16K 张 H100 上是 38–43%</li>
+  <li><b>分子只算 6Ψ</b>：重算（第 2 课）多花的 FLOPs 不算，算上的叫 HFU，所以 MFU 能跨系统直接比</li>
 </ul>
 
 <h2>Parameter 从哪来：每层约 12h²</h2>
 <ul>
-  <li>标准 Transformer 一层：attention 的 Q、K、V、O 四个 h × h 矩阵，共 4h²；MLP 先 h → 4h 再 4h → h，共 8h²。合计 12h²</li>
-  <li>h = 4096：每层 12 × 4096² ≈ 201M，36 层 ≈ 7.2B</li>
-  <li>Qwen3 不完全一样：GQA 只有 8 个 KV head，K、V 只有 h/4 宽，attention 是 2h² + 2 × h²/4 = 2.5h²；SwiGLU 的 MLP 有三个 h × 3h 的矩阵（12288 = 3h），是 9h²。合计 11.5h² ≈ 193M，和 12h² 差不多</li>
+  <li>标准 Transformer 一层：attention 的 Q、K、V、O 共 4h²，MLP（h → 4h → h）共 8h²，合计 12h²。h = 4096 时每层约 201M，36 层约 7.2B</li>
+  <li>Qwen3 的 GQA 只有 8 个 KV head，K、V 只有 h/4 宽，attention 是 2.5h²。SwiGLU 的 MLP 有三个 h × 3h 的矩阵（12288 = 3h），是 9h²。合计 11.5h² ≈ 193M</li>
   <li>再加 embedding（151936 × 4096 ≈ 0.62B）、LM head 和 vision encoder，总数约 8B</li>
 </ul>
 
 <h2>Memory 分四块</h2>
 <p>打个比方：模型是一本菜谱，每个 parameter 是一条配方。</p>
 <ul>
-  <li><b>parameter</b>：菜谱本身</li>
-  <li><b>gradient</b>：这一轮试吃后，写在每条配方旁边的修改意见（盐多一点、糖少一点）。每个 parameter 一个</li>
-  <li><b>optimizer state</b>：Adam 的笔记本，每条配方记两笔：最近的意见平均往哪边（m），意见摇摆得多厉害（v）</li>
-  <li><b>activation</b>：做菜时留在台面上的半成品。backward 要对着它们找原因，所以不能马上倒掉</li>
+  <li><b>gradient</b>：这一轮试吃后写在每条配方旁边的修改意见</li>
+  <li><b>optimizer state</b>：Adam 的笔记本，每条配方记两笔：最近的意见平均往哪边（m），摇摆得多厉害（v）</li>
+  <li><b>activation</b>：做菜时留在台面上的半成品，backward 还要用，不能马上倒掉</li>
 </ul>
-<p>前三块合称 <b>model state</b>，只跟 parameter 个数有关。每个 parameter 占多少 bytes：</p>
+<p>parameter、gradient、optimizer state 合称 <b>model state</b>，只跟 parameter 个数有关。每个 parameter 占多少 bytes：</p>
 <table>
   <thead><tr><th>部分</th><th>fp32 训练</th><th>mixed precision</th><th>8B，mixed precision</th></tr></thead>
   <tbody>
@@ -87,20 +77,18 @@ optimizer.zero_grad()</code></pre>
   </tbody>
 </table>
 <ul>
-  <li>optimizer 那三行（master weight、m、v）占 16 bytes 里的 12，共 96 GB，是大头</li>
-  <li>换成 SGD 就没有 m、v：fp32 只要 4 + 4 = 8 bytes，8B 是 64 GB。Adam 要存 w、g、m、v 四份，这就是“Adam 占 4 倍 parameter 的 memory”</li>
-  <li>mixed precision 用 bf16 省下的 4 bytes，又被 fp32 master weight 吃回去，还是 16。为什么非要这份 fp32 正本，第 2 课讲</li>
+  <li>fp32 的 Adam 要存 w、g、m、v 四份，这就是“Adam 占 4 倍 parameter 的 memory”</li>
+  <li>mixed precision 用 bf16 省下的 4 bytes 被 fp32 master weight 吃回去，还是 16（原因见第 2 课）。其中 optimizer 那三行占 12，是大头</li>
 </ul>
 
 <h2>Activation：为什么要存，存多少</h2>
 <ul>
-  <li><b>为什么要存</b>：backward 要用 forward 的中间结果。最简单的 \(Y = XW\)：\(dW = X^\top dY\)，没有 X 就算不出 W 的 gradient。所以每个 matmul 的输入、每个 SwiGLU 的输入，都得留到 backward 走到这里</li>
-  <li><b>存多少</b>（Korthikanti 2022 的估法，每个数按 16-bit 存，fp32 约翻倍）：每层 \(sbh(34 + 5as/h)\) bytes。s 是 sequence length，b 是 batch size，a 是 head 数。34 那项是每个 token 的各种中间向量；\(5as/h\) 那项是 attention 每个 head 一张 s × s 的 score 表</li>
+  <li><b>为什么要存</b>：\(Y = XW\) 的 \(dW = X^\top dY\)，没有 X 就算不出 W 的 gradient，所以每个 matmul 和 SwiGLU 的输入都得留到 backward</li>
+  <li><b>存多少</b>（Korthikanti 2022 的估法，每个数按 16-bit 存）：每层 \(sbh(34 + 5as/h)\) bytes，s 是 sequence length，b 是 batch size，a 是 head 数。34 那项是每个 token 的中间向量，\(5as/h\) 那项是 attention 每个 head 一张 s × s 的 score 表</li>
   <li><b>每层输出多大</b>（NVIDIA 电面问过）：[b, s, h] = 1 × 8192 × 4096 个数，bf16 下 64 MiB</li>
   <li><b>例子</b>（s = 8192 是假设的长度，b = 1）：sbh = 8192 × 4096 ≈ 3.36e7；5as/h = 5 × 32 × 8192 ÷ 4096 = 320；每层 3.36e7 × 354 ≈ 11.9 GB，36 层 ≈ 430 GB。其中 90% 是 s × s 那项</li>
-  <li><b>随 b × s 涨</b>：b = 2 就翻倍，约 860 GB。s 从 4K 加到 8K 却不止翻倍，是 117 → 430 GB，因为 s × s 那项按 s² 涨</li>
-  <li><b>峰值在 backward 开头</b>：forward 一路攒 activation，backward 一边用一边释放。所以估峰值就是 model state + 全部 activation</li>
-  <li>公式按 GPT 的结构推导，Qwen3 用 GQA 和 SwiGLU，所以只是数量级的估计</li>
+  <li><b>峰值在 backward 开头</b>：forward 一路攒，backward 边用边释放，所以峰值是 model state + 全部 activation</li>
+  <li>公式按 GPT 的结构推导，对 Qwen3 只是数量级的估计</li>
 </ul>
 
 <h2>总账：v0 在一张 80 GB 的卡上 OOM</h2>
@@ -113,24 +101,23 @@ optimizer.zero_grad()</code></pre>
     <tr><td><b>合计</b></td><td><b>≈ 560 GB，是 80 GB 的 7 倍</b></td></tr>
   </tbody>
 </table>
-<p>就算 activation 一点都不存，128 GB 的 model state 也放不下。而且就算放得下，1B tokens 也要算 33 小时。</p>
-<p>两块超标的性质不同。model state 跟着 Ψ 走，模型定了它就定了，只能切到多张卡上（第 4 课）。activation 跟着 b × s 走，单卡上就有办法压（第 2 课）。</p>
+<p>model state 跟着 Ψ 走，只能切到多张卡上（第 4 课）。activation 跟着 b × s 走，单卡上就能压（第 2 课）。</p>
 <p class="you"><b>你的经验</b>8B × 16 bytes = 128 GB，这就是你在 TikTok 没法单卡训 Qwen3-VL-8B、要用 DeepSpeed 把它摊到 32 张 H100 上的原因（怎么摊见第 4 课）。</p>
-<p class="you"><b>去查一下</b>翻出当时的训练 log，找到每张卡的 tokens/s（或者 step time 和每个 step 的 token 数），算一下 MFU：tokens/s × 48 GFLOPs ÷ 989 TFLOPS（vision token 也算进去，粗估即可）。面试官问 “What MFU did you get?” 时，你要能报出一个数，并说出它为什么高或低。</p>
+<p class="you"><b>去查一下</b>翻出当时的训练 log，找到每张卡的 tokens/s（或者 step time 和每个 step 的 token 数），算一下 MFU：tokens/s × 48 GFLOPs ÷ 989 TFLOPS（vision token 也算进去，粗估即可）。面试官问 “What MFU did you get?” 时，要能报出一个数，并说出它为什么高或低。</p>
 
 <h2>30 秒英文回答</h2>
 <div class="answer"><p>One step is forward, loss, backward and an optimizer update. Forward costs 2 FLOPs per parameter per token, a multiply and an add. Backward needs two matmuls of the same size, one for the input gradient and one for the weight gradient, so training costs about 6ND. An 8B model on a billion tokens is 4.8e19 FLOPs, about 33 hours on one H100 at 40% MFU. For memory, mixed-precision Adam needs 16 bytes per parameter for weights, gradients and optimizer state: 128 GB, already over 80 GB. Activations come on top and grow with batch times sequence length, about 430 GB for one 8K sequence.</p></div>
 
 <h2>自测</h2>
 <details><summary>14B 模型的 bf16 weight 多大？用 Adam 训练要多少 memory？</summary><p>weight 14B × 2 = 28 GB。训练的 model state 是 14B × 16 = 224 GB，再加 activation（看 b 和 s）。</p></details>
-<details><summary>8B 模型全用 fp32，SGD、momentum、Adam 各要多少 model state？</summary><p>SGD 只有 w、g，8 bytes → 64 GB；momentum 多一份速度，12 bytes → 96 GB；Adam 多 m、v 两份，16 bytes → 128 GB。mixed precision 的 Adam 也是 16 bytes。</p></details>
-<details><summary>8B 模型在一张 H100 上实测每秒 3,000 个 token，MFU 多少？说明什么？</summary><p>3,000 × 48 GFLOPs = 144 TFLOPS，÷ 989 ≈ 15%，远低于正常的 35–50%。GPU 大部分时间在等：等数据、等通信、kernel 太小，或者 memory-bound 的算子太多。下一步看 profiler trace。</p></details>
-<details><summary>LoRA r = 8，加在 Qwen3-8B 每层的 W_q 和 W_v 上，有多少 trainable parameter？</summary><p>每个矩阵 r × (d_in + d_out)。W_q 是 4096 → 4096：8 × 8192 = 65,536；W_v 因为 GQA 是 4096 → 1024：8 × 5120 = 40,960。每层 106,496，36 层 ≈ 3.8M，约占 8B 的 0.05%。memory：冻结的 bf16 weight 16 GB，LoRA 部分 3.8M × 16 bytes ≈ 61 MB。初始化 A 随机、B = 0，所以训练从原模型出发。</p></details>
-<details><summary>s 从 4K 加到 8K，activation 涨几倍？</summary><p>约 3.7 倍（117 → 430 GB）。每个 token 的中间向量随 s 线性涨，attention 的 s × s 随 s² 涨，而后者占大头。去掉 s × s 那项就正好 2 倍，这正是下一课 FlashAttention 做的事。</p></details>
+<details><summary>8B 模型全用 fp32，SGD、momentum、Adam 各要多少 model state？</summary><p>SGD 只有 w、g，8 bytes → 64 GB；momentum 多一份速度，12 bytes → 96 GB；Adam 多 m、v 两份，16 bytes → 128 GB。</p></details>
+<details><summary>8B 模型在一张 H100 上实测每秒 3,000 个 token，MFU 多少？说明什么？</summary><p>3,000 × 48 GFLOPs = 144 TFLOPS，÷ 989 ≈ 15%，远低于正常的 35–50%，说明 GPU 大部分时间在等。下一步看 profiler trace，分清时间卡在数据、通信还是小 kernel 上（第 8 课）。</p></details>
+<details><summary>LoRA r = 8，加在 Qwen3-8B 每层的 W_q 和 W_v 上，有多少 trainable parameter？</summary><p>每个矩阵 r × (d_in + d_out)。W_q 是 4096 → 4096：8 × 8192 = 65,536；W_v 因为 GQA 是 4096 → 1024：8 × 5120 = 40,960。每层 106,496，36 层 ≈ 3.8M，约占 8B 的 0.05%。初始化 A 随机、B = 0，所以训练从原模型出发。</p></details>
+<details><summary>s 从 4K 加到 8K，activation 涨几倍？</summary><p>约 3.7 倍（117 → 430 GB），因为占大头的 s × s 随 s² 涨。去掉这一项就正好 2 倍，这正是下一课 FlashAttention 做的事。</p></details>
 
 <p class="links"><b>想看细一点</b> <a href="training-memory.html">6.10 training memory</a>（四块怎么估、LoRA）· <a href="flops-mfu.html">6.11 FLOPs、6ND、MFU</a>（反推 MFU、6ND 漏了什么）· <a href="optimizer.html">2.6 optimizer</a>（SGD、Adam 的更新式和 memory）· <a href="transformer-complexity.html">3.4 Transformer 复杂度</a> · <a href="finetune-lora.html">3.14 LoRA</a></p>
 
-<div class="next"><b>下一课</b>v0 压着两座山：activation 约 430 GB，model state 128 GB，fp32 还算得慢。下一课在单卡上用三招（BF16、FlashAttention、activation checkpointing）提速，并把 activation 压到 2.4 GB；但 128 GB 的 model state 一点没少。</div>
+<div class="next"><b>下一课</b>在单卡上用三招（BF16、FlashAttention、activation checkpointing）提速，并把 activation 从约 430 GB 压到 2.4 GB，但 128 GB 的 model state 一点没少。</div>
 
 </main>
 </body>

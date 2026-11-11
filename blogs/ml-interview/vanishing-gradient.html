@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Backpropagation 与 chain rule</dt>
-  <dd>像传话游戏：loss 的"修改意见"从最后一层往前传，每经过一层就乘上这一层的"放大倍率"。<span class="eg">例：3 层，每层倍率 0.5，传到第 1 层只剩 \(0.5^3 = 0.125\)。</span></dd>
+  <dd>loss 的 gradient 从最后一层往前传，每经过一层就乘上这一层的倍率。</dd>
   <dt>Jacobian</dt>
-  <dd>一层的"放大倍率表"：输入每个分量动一点，输出每个分量跟着动多少。标量时就是导数。<span class="eg">例：\(h = 3x\) 的 Jacobian 是 3；\(h = \sigma(z)\) 的是 \(\sigma'(z)\)。</span></dd>
+  <dd>一层的倍率表，输入每个分量动一点，输出每个分量跟着动多少。标量时就是导数。<span class="eg">例：\(h = 3x\) 的 Jacobian 是 3；\(h = \sigma(z)\) 的是 \(\sigma'(z)\)。</span></dd>
   <dt>Vanishing / exploding gradient</dt>
-  <dd>倍率小于 1，连乘后指数变小，前几层几乎收不到 gradient，像话传到最前面只剩耳语；倍率大于 1 则指数变大，一步跨太远，loss 变成 NaN。<span class="eg">例：10 层，每层 0.5 → \(0.5^{10} \approx 0.001\)；每层 1.5 → \(1.5^{10} \approx 57.7\)。</span></dd>
+  <dd>倍率小于 1，连乘后指数变小，前几层几乎收不到 gradient。倍率大于 1 则指数变大，一步跨太远，loss 变成 NaN。<span class="eg">例：10 层，每层 0.5 → \(0.5^{10} \approx 0.001\)；每层 1.5 → \(1.5^{10} \approx 57.7\)。</span></dd>
   <dt>Saturation</dt>
-  <dd>sigmoid 两头是平的，输入再变输出也几乎不变，所以导数接近 0，详见 <a href="activation.html">activation function</a>。</dd>
+  <dd>sigmoid 两头是平的，导数接近 0，详见 <a href="activation.html">activation function</a>。</dd>
   <dt>Residual connection</dt>
-  <dd>在每层旁边修一条直达通道：输出 = \(x + F(x)\)。就算 \(F\) 那条路倍率很小，gradient 也能沿 \(x\) 这条路原样传回去。</dd>
+  <dd>在每层旁边修一条直达通道，输出 = \(x + F(x)\)。就算 \(F\) 那条路倍率很小，gradient 也能沿 \(x\) 这条路原样传回去。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
@@ -45,7 +45,7 @@
 
   <h3 id="additive">residual 和 LSTM：把乘法换成加法</h3>
   \[ \frac{\partial}{\partial h}\big(h + F(h)\big) = I + \frac{\partial F}{\partial h} \]
-  <p>展开后总有一项是 \(\partial L/\partial h_L\) 本身，不随深度衰减。LSTM 的 \(c_t = f_t \odot c_{t-1} + i_t \odot \tilde c_t\) 同理，直接路径上只乘 forget gate。</p>
+  <p>展开后总有一项是 \(\partial L/\partial h_L\) 本身，不随深度衰减。LSTM 的 \(c_t = f_t \odot c_{t-1} + i_t \odot \tilde c_t\) 同理，直接路径上只乘 forget gate。\(f = 0.99\) 时 100 步后还剩 \(0.99^{100} \approx 0.37\)，每步乘 0.5 的话只剩 \(0.5^{100} \approx 8\times10^{-31}\)。</p>
 </div>
 
 <h2 id="relu">ReLU 怎么缓解 vanishing</h2>
@@ -71,17 +71,14 @@
   <text class="acc" x="105" y="165" text-anchor="middle">ReLU′ = 0（z ≤ 0）</text>
   <text class="c2" x="268" y="130" text-anchor="end">σ′(z)，最大 0.25</text>
 </svg>
-<figcaption>sigmoid 的导数 σ′ 最高 0.25，两头趋近 0。ReLU 的导数在 z &gt; 0 时恒为 1，在 z ≤ 0 时为 0。</figcaption>
+<figcaption>σ′ 最高 0.25，两头趋近 0。ReLU′ 在 z &gt; 0 时恒为 1，z ≤ 0 时为 0。</figcaption>
 </figure>
-<p>每层的 Jacobian 是 \(\operatorname{diag}(f')\,W_l\)，activation 只管 \(f'\) 这个因子。sigmoid 的 \(f'\) 最大 0.25，saturate 时接近 0，每过一层都把 gradient 压小。ReLU 在 \(z &gt; 0\) 时 \(f' = 1\)，正区间不 saturate，gradient 经过激活的 neuron 时不被 activation 缩小。10 层连乘后，这个因子在 sigmoid 下最多剩 \(0.25^{10} \approx 9.5\times10^{-7}\)，在 ReLU 激活的路径上是 \(1^{10} = 1\)。</p>
-<p>ReLU 只去掉了 activation 带来的衰减，\(W\) 的连乘还在。大约一半 neuron 的 \(z \le 0\)，它们的 gradient 被清零，每层的 gradient norm 约乘 \(\sqrt{n\,\mathrm{Var}(W)/2}\)。He init 取 \(\mathrm{Var}(W) = 2/n\)，这个倍率正好是 1，所以 ReLU 要和 He init 一起用。下面表里 \(\mathrm{Var}(W) = 1/n\) 的 ReLU 传 20 层只剩约 \(10^{-3}\)，就是少了这个 2。</p>
-<p>ReLU 自己的问题是 dying ReLU。一个 neuron 对所有输入都有 \(z \le 0\) 时，它的 gradient 恒为 0，之后不再更新。Leaky ReLU 在负区间留一个 0.01 的斜率来避免，详见 <a href="activation.html">activation function</a>。</p>
+<p>Jacobian \(\operatorname{diag}(f')\,W_l\) 里 activation 只管 \(f'\) 这个因子。ReLU 在 \(z &gt; 0\) 时 \(f' = 1\)，gradient 经过激活的 neuron 时不被缩小。10 层连乘后，这个因子在 sigmoid 下最多剩 \(0.25^{10} \approx 9.5\times10^{-7}\)，在 ReLU 激活的路径上是 1。</p>
+<p>ReLU 只去掉了 activation 带来的衰减，\(W\) 的连乘还在。大约一半 neuron 的 \(z \le 0\)，gradient 被清零，每层的 gradient norm 约乘 \(\sqrt{n\,\mathrm{Var}(W)/2}\)。He init 取 \(\mathrm{Var}(W) = 2/n\) 让这个倍率正好是 1，所以 ReLU 要和 He init 一起用。下面表里 \(\mathrm{Var}(W) = 1/n\) 的 ReLU 传 20 层只剩约 \(10^{-3}\)，就是少了这个 2。</p>
+<p>ReLU 自己的问题是 dying ReLU，neuron 对所有输入都有 \(z \le 0\) 时不再更新，详见 <a href="activation.html">activation function</a>。</p>
 
 <h2 id="example">手算例子</h2>
-<ul>
-  <li>sigmoid 最好情况（每层 \(z = 0\)）：\(0.25^{10} \approx 9.5\times10^{-7}\)</li>
-  <li>branch 倍率 0.1：plain 网络 \(0.1^{10} = 10^{-10}\)；residual \((1 + 0.1)^{10} \approx 2.6\)</li>
-</ul>
+<p>branch 倍率 0.1 时，10 层 plain 网络剩 \(0.1^{10} = 10^{-10}\)，residual 是 \((1 + 0.1)^{10} \approx 2.6\)。</p>
 <p>20 层、宽 256 的 MLP 刚初始化时，第 1 层 gradient norm ÷ 第 20 层：</p>
 <table>
   <thead><tr><th>activation</th><th>\(\mathrm{Var}(W)\)</th><th>第 1 层 ÷ 第 20 层</th></tr></thead>
@@ -92,13 +89,12 @@
     <tr><td class="nw">ReLU</td><td class="nw">\(4/n\)</td><td class="nw">\(\approx 10^{3}\)</td></tr>
   </tbody>
 </table>
-<p>ReLU 清零一半，每层 gradient 约乘 \(\sqrt{n\,\mathrm{Var}(W)/2}\)；He 的 \(2/n\) 让它正好等于 1。</p>
 
 <h2 id="fixes">怎么解决</h2>
 <table>
   <thead><tr><th>方法</th><th>治什么</th><th>为什么有效</th></tr></thead>
   <tbody>
-    <tr><td class="nw">ReLU / GELU</td><td class="nw">vanishing</td><td>正区间导数 = 1，不 saturate（<a href="#relu">上面一节</a>）</td></tr>
+    <tr><td class="nw">ReLU / GELU</td><td class="nw">vanishing</td><td>正区间导数 = 1（<a href="#relu">上面一节</a>）</td></tr>
     <tr><td class="nw">Xavier / He init</td><td class="nw">两者</td><td>选 \(\mathrm{Var}(W)\) 让各层 activation 和 gradient 的方差不变</td></tr>
     <tr><td class="nw">BatchNorm / LayerNorm</td><td class="nw">两者</td><td>每层拉回 mean 0、variance 1，尺度不逐层漂移</td></tr>
     <tr><td class="nw">Residual connection</td><td class="nw">vanishing</td><td>多一条 identity 通路</td></tr>
@@ -112,30 +108,22 @@
   <li>原因：各层 Jacobian 连乘，norm &lt; 1 指数衰减，&gt; 1 指数爆炸</li>
   <li>sigmoid \(\sigma' \le 1/4\) 加剧 vanishing；RNN 连乘同一个 \(W\)，最严重</li>
   <li>ReLU：正区间 \(f' = 1\)，去掉了 activation 带来的衰减；要配 He init；缺点是 dying ReLU</li>
-  <li>症状：前几层不更新、loss 停滞；或 loss 变 NaN</li>
+  <li>症状：前几层的 gradient norm 小几个数量级、loss 停滞；或 norm 飙升、loss 变 NaN</li>
   <li>解决：ReLU、Xavier / He、BN / LN、residual、clipping、LSTM / GRU</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>怎么判断是 vanishing 还是 exploding？</summary>
-  <p>训练时记录每层 gradient norm：靠近输入的层比输出层小几个数量级、loss 停住不降，是 vanishing；norm 突然飙升、loss 出现 inf / NaN，是 exploding。</p>
-</details>
-<details>
   <summary>为什么 He init 是 \(2/n\)，Xavier 是 \(1/n\)？</summary>
-  <p>输出 variance = \(n_{\text{in}}\,\mathrm{Var}(W)\,\mathbb{E}[x^2]\)，要它等于输入 variance 就取 \(\mathrm{Var}(W) = 1/n_{\text{in}}\)；兼顾 backward 的 Xavier 取 \(2/(n_{\text{in}} + n_{\text{out}})\)。ReLU 把一半清零，\(\mathbb{E}[x^2]\) 少一半，所以 He 要乘回 2：\(2/n_{\text{in}}\)。</p>
-</details>
-<details>
-  <summary>为什么 RNN 特别容易出问题？LSTM 怎么解决？</summary>
-  <p>RNN 每步乘同一个 \(W\)，gradient 按 \(\lambda^T\) 变化，序列越长越严重。LSTM 的 cell state 是加法更新，直接路径上每步只乘 forget gate：\(f = 0.99\) 时 100 步后还剩 \(0.99^{100} \approx 0.37\)，而每步乘 0.5 的话只剩 \(0.5^{100} \approx 8\times10^{-31}\)。</p>
+  <p>输出 variance = \(n_{\text{in}}\,\mathrm{Var}(W)\,\mathbb{E}[x^2]\)，要它等于输入 variance 就取 \(\mathrm{Var}(W) = 1/n_{\text{in}}\)，兼顾 backward 的 Xavier 取 \(2/(n_{\text{in}} + n_{\text{out}})\)。ReLU 把一半清零，\(\mathbb{E}[x^2]\) 少一半，所以 He 乘回 2，取 \(2/n_{\text{in}}\)。</p>
 </details>
 <details>
   <summary>ResNet 解决的就是 vanishing gradient 吗？</summary>
-  <p>ResNet 原文说 vanishing / exploding 已被 normalized initialization 和 BatchNorm 基本解决，它针对的是 degradation：plain 网络加深后连 training error 都变高。面试两点都说：identity shortcut 让 gradient 能直接回传（Identity Mappings 论文），也让深网络更好优化。</p>
+  <p>ResNet 原文说 vanishing / exploding 已被 normalized initialization 和 BatchNorm 基本解决，它针对的是 degradation，plain 网络加深后连 training error 都变高。identity shortcut 既让 gradient 直接回传（Identity Mappings 论文），也让深网络更好优化。</p>
 </details>
 <details>
   <summary>Transformer 里为什么 Pre-LN 比 Post-LN 稳？</summary>
-  <p>Post-LN 把 LayerNorm 放在 residual 相加之后，初始化时靠近输出层的参数 gradient 很大，必须靠 learning rate warmup 才稳。Pre-LN 把 LayerNorm 放进 residual branch 里，初始化时 gradient 就比较平稳，可以去掉 warmup。</p>
+  <p>Pre-LN 把 LayerNorm 放进 residual branch 里，初始化时 gradient 更平稳，可以去掉 warmup，见 <a href="transformer-architecture.html#ln">Transformer architecture</a>。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §13.4.2–13.4.5（pp.447–453）· <a href="https://www.deeplearningbook.org/contents/optimization.html">Goodfellow et al., DL</a> §8.2.4–8.2.5（pp.285–287）· <a href="https://www.deeplearningbook.org/contents/rnn.html">同书</a> §10.7–10.11（pp.396–410）· <a href="https://arxiv.org/abs/1502.01852">He init</a> §2.2 · <a href="https://arxiv.org/abs/1512.03385">ResNet</a> §1 · <a href="https://arxiv.org/abs/1603.05027">Identity Mappings</a> · <a href="https://arxiv.org/abs/2002.04745">Xiong et al. 2020</a></p>

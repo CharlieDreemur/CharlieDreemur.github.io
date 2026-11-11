@@ -18,31 +18,31 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Annotation guideline</dt>
-  <dd>标注规范：每个标签的定义、判定步骤、边界例子。像裁判手册，目的是让不同的人看到同一条数据给出同一个标签。</dd>
+  <dd>每个标签的定义、判定步骤、边界例子，目的是让不同的人对同一条数据给出同一个标签。</dd>
   <dt>Inter-annotator agreement</dt>
   <dd>两个人标同一批数据，一致的程度。</dd>
   <dt>Cohen's κ</dt>
   <dd>扣掉“瞎猜也会一致”之后的一致率：\(\kappa = (p_o - p_e)/(1 - p_e)\)。<span class="eg">例：100 条里两人都标“好”40 条、都标“差”30 条，\(p_o = 0.7\)。A 标“好”占 50%，B 占 60%，\(p_e = 0.5\times 0.6 + 0.5\times 0.4 = 0.5\)，\(\kappa = 0.4\)。</span></dd>
   <dt>Adjudication</dt>
-  <dd>两人不一致的样本，交给第三个人或一起讨论来裁定。</dd>
+  <dd>不一致的样本交给第三个人或一起讨论来裁定。</dd>
   <dt>LLM-as-a-judge</dt>
-  <dd>让模型按 rubric 打分。把它当成又一个标注员，同样要量它和人的一致率。</dd>
+  <dd>让模型按 rubric 打分。它也是一个标注员，要量它和人的一致率。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Good guidelines define each label, give a decision procedure, and include borderline examples. For subjectivity, several annotators label the same pilot batch, and I measure agreement with Cohen's kappa instead of raw agreement. Then I read the disagreements: most come from unclear guidelines, so I fix the guideline and repeat. What's left goes to adjudication. An LLM judge is one more annotator: I measure its agreement with humans per category on a held-out set before trusting it at scale, and re-check whenever the prompt or model changes.</p></div>
+<div class="answer"><p>Good guidelines define each label, give a decision procedure, and include borderline examples. For subjectivity, several annotators label the same pilot batch, and I measure Cohen's kappa instead of raw agreement. Then I read the disagreements: most come from unclear guidelines, so I fix the guideline and repeat. What's left goes to adjudication. An LLM judge is one more annotator: I measure its agreement with humans per category on a held-out set before trusting it at scale, and re-check whenever the prompt or model changes.</p></div>
 
 <h2 id="steps">对齐主观 bias 的流程</h2>
 <ol>
   <li><strong>Pilot</strong>：几个人各自标同一批，比如 100 条</li>
-  <li><strong>量</strong>：算 κ，按类别看两人在哪里分歧最大</li>
+  <li><strong>量</strong>：算 κ，按类别看哪里分歧最大</li>
   <li><strong>读</strong>：逐条看不一致的样本，多数是规范没写清</li>
   <li><strong>改</strong>：改 guideline，加边界例子，再跑一轮，直到 κ 稳定</li>
-  <li><strong>监控</strong>：正式标注时保留一部分重叠样本和 gold 题</li>
+  <li><strong>监控</strong>：正式标注时留重叠样本和 gold 题</li>
 </ol>
 
 <h2 id="judge">LLM judge 的偏差</h2>
-<p>judge 常见的偏差有 position、verbosity、self-enhancement 三种，每种的实测数字和对策见 <a href="llm-evaluation.html">LLM evaluation</a>。verbosity 还可以在 rubric 里写明长度不加分。另外，几个 judge 会犯同样的错，所以多堆几个 judge 帮助有限，最后要靠人工校准。</p>
+<p>judge 有 position、verbosity、self-enhancement 三种常见偏差，实测数字和对策见 <a href="llm-evaluation.html">LLM evaluation</a>。几个 judge 的错误是相关的，所以多堆 judge 帮助有限，Apple 的 Nine Judges 论文里 9 个 judge 只相当于约 2 票。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -60,7 +60,7 @@
 </details>
 <details>
   <summary>κ 多少算够？</summary>
-  <p>常用的经验线是 0.6 以上（Landis &amp; Koch 称 0.61–0.80 为 substantial），但要看任务。更有用的是按类别看哪一类低。</p>
+  <p>经验线是 0.6 以上（Landis &amp; Koch 称 0.61–0.80 为 substantial），但要看任务，还要按类别看哪一类低。</p>
 </details>
 <details>
   <summary>1–5 分的有序标签，或者三个以上标注员，用什么？</summary>
@@ -68,11 +68,7 @@
 </details>
 <details>
   <summary>judge 和人不一致时信谁？</summary>
-  <p>信经过 adjudication 的人工标签。把不一致的样本拿去改 rubric，或者加进 judge 的 few-shot 例子，然后在 held-out 集上重新量一致率。</p>
-</details>
-<details>
-  <summary>多用几个 judge 投票行不行？</summary>
-  <p>帮助有限，因为它们的错误是相关的。Apple 的 Nine Judges 论文里 9 个 judge 只相当于约 2 票。</p>
+  <p>信经过 adjudication 的人工标签。把不一致的样本拿去改 rubric 或加进 judge 的 few-shot，再重新量一致率。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/6790299dba2544d8a25611b268863dd6">牛客：Apple 大模型算法面经</a> · <a href="https://arxiv.org/abs/2605.29800">Nine Judges（Apple）</a> · <a href="https://arxiv.org/abs/2306.05685">Zheng et al. 2023, Judging LLM-as-a-Judge</a>（position、verbosity、self-enhancement bias）· 基础见 <a href="llm-evaluation.html">LLM evaluation</a></p>

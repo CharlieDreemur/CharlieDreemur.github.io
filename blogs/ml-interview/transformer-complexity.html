@@ -19,21 +19,15 @@
 <dl class="concepts">
   <dt>FLOPs 与 2mkn 规则</dt>
   <dd>一次乘加算 2 个 FLOPs。\((m\times k)(k\times n)\) 的结果有 \(mn\) 个元素，每个要 \(k\) 次乘加，所以是 \(2mkn\)。<span class="eg">例：\((2\times3)(3\times4)\) 是 \(2\cdot2\cdot3\cdot4 = 48\) FLOPs。</span></dd>
-  <dt>n² 从哪来</dt>
-  <dd>每个 token 都要和所有 token 各打一次分，像 n 个人两两握手。序列长度翻倍，score 矩阵变成 4 倍。</dd>
-  <dt>d² 从哪来</dt>
-  <dd>每个 token 都要各自乘几个 \(d\times d\) 的矩阵（projection、FFN），和序列多长无关，像每人各做一套固定的体检。</dd>
-  <dt>Prefill 与 decode</dt>
-  <dd>prefill 一次处理整个 prompt；decode 每步只生成 1 个新 token。</dd>
-  <dt>KV cache</dt>
-  <dd>把前面 token 的 K、V 存起来，decode 时不用重算前缀。代价是 memory 随长度线性增长。</dd>
+  <dt>n² 和 d² 从哪来</dt>
+  <dd>每个 token 要和所有 token 各打一次分，所以有 n²。每个 token 还要乘几个 \(d\times d\) 的矩阵（projection、FFN），所以有 d²。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I count matrix multiplies: an (m×k)(k×n) product costs 2mkn FLOPs. Per layer, the Q, K, V and output projections cost 8nd², the FFN with hidden size 4d costs 16nd², and QKᵀ plus attention-times-V cost 4n²d. So a layer is O(n²d + nd²); the attention term dominates once n exceeds about 6d, and the score matrix needs O(n²) memory unless we use FlashAttention. Parameters are about 12d² per layer, so a forward pass costs about 2N FLOPs per token and training about 6N. With a KV cache, decoding costs O(nd) per token per layer instead of recomputing the prefix.</p></div>
+<div class="answer"><p>I count matrix multiplies: an (m×k)(k×n) product costs 2mkn FLOPs. Per layer, the Q, K, V and output projections cost 8nd², the FFN 16nd², and the two attention matmuls 4n²d. So a layer is O(n²d + nd²), attention dominates once n exceeds 6d, and the score matrix needs O(n²) memory unless we use FlashAttention. Parameters are about 12d² per layer, so forward costs about 2N FLOPs per token and training 6N. With a KV cache, decoding costs O(nd) per token per layer.</p></div>
 
 <h2 id="how">怎么算：数一层里的矩阵乘</h2>
-<p><strong>一句话</strong>：把一层里的每个矩阵乘按 \(2mkn\) 加起来，再看哪一项最大。\(n\) = 序列长度，\(d\) = d_model，\(h\) 个 head，\(d_k = d/h\)，forward、batch = 1：</p>
+<p>把一层里的每个矩阵乘按 \(2mkn\) 加起来。\(n\) 是序列长度，\(d\) 是 d_model，\(h\) 个 head，\(d_k = d/h\)，forward、batch = 1。</p>
 <table>
   <thead><tr><th>步骤</th><th>矩阵乘的形状</th><th>FLOPs</th></tr></thead>
   <tbody>
@@ -46,22 +40,21 @@
   </tbody>
 </table>
 <div class="deriv">
-  <p>所以每层 time 是 \(O(n^2d + nd^2)\)，\(L\) 层再乘 \(L\)。两项相等时：</p>
+  <p>每层 time 是 \(O(n^2d + nd^2)\)，\(L\) 层再乘 \(L\)。两项相等时：</p>
   \[ 4n^2d = 24nd^2 \;\Longrightarrow\; n = 6d \]
-  <p>\(n &lt; 6d\) 时 projection 和 FFN 是大头，\(n &gt; 6d\) 时 attention 的 \(n^2\) 项主导。</p>
+  <p>\(n &gt; 6d\) 时 attention 的 \(n^2\) 项才主导。</p>
   <p><strong>parameter</strong>：QKVO \(4d^2\) + FFN \(8d^2\) = 每层 \(12d^2\)，全模型 \(\approx 12Ld^2\) 加 embedding。</p>
-  <p><strong>per token FLOPs</strong>：每个参数对每个 token 做一次乘加，forward \(\approx 2N\)；backward 要对 activation 和 weight 各求一次 gradient，约是 forward 的 2 倍，所以 training \(\approx 6N\)（Kaplan et al. eq. 2.2，\(C \approx 6NBS\)）。</p>
-  <p><strong>memory</strong>：标准实现每层要存 \(h\) 个 \(n\times n\) 的 score 矩阵，\(O(n^2)\)；FlashAttention 分块计算、不存整个矩阵，额外 memory 降到 \(O(n)\)，但 FLOPs 仍是 \(O(n^2d)\)。KV cache 存 \(2\cdot L\cdot n\cdot d\) 个数。</p>
-  <p><strong>inference</strong>：prefill 每层 \(O(n^2d + nd^2)\)；decode 每生成一个 token，新 query 对前面 \(n\) 个 key 做 attention，每层 \(O(nd + d^2)\)。</p>
+  <p><strong>per token FLOPs</strong>：每个参数对每个 token 做一次乘加，forward \(\approx 2N\)。backward 要对 activation 和 weight 各求一次 gradient，约是 forward 的 2 倍，所以 training \(\approx 6N\)（Kaplan et al. 的 \(C \approx 6NBS\)）。</p>
+  <p><strong>memory</strong>：标准实现每层要存 \(h\) 个 \(n\times n\) 的 score 矩阵，\(O(n^2)\)。<a href="flashattention.html">FlashAttention</a> 不存整个矩阵，额外 memory 降到 \(O(n)\)，FLOPs 不变。KV cache 存 \(2\cdot L\cdot n\cdot d\) 个数，算例见 <a href="kv-cache.html">KV cache</a>。</p>
+  <p><strong>inference</strong>：prefill 一次处理整个 prompt，每层 \(O(n^2d + nd^2)\)。decode 每步只算 1 个 token，新 query 对 cache 里的 \(n\) 个 key 做 attention，每层 \(O(nd + d^2)\)。没有 cache 就要重算前缀，第 \(t\) 步每层 \(O(t^2d + td^2)\)。</p>
 </div>
 
 <h2 id="example">手算例子：LLaMA-7B</h2>
 <p>32 层，\(d = 4096\)，32 个 head，context 2048（LLaMA Table 2）：</p>
 <ul>
-  <li><strong>参数</strong>：\(12 \times 32 \times 4096^2 \approx 6.44\)B，加上 embedding，论文写 6.7B。SwiGLU 的 hidden 取 \(\tfrac23\cdot 4d\)，3 个矩阵合计仍是 \(8d^2\)。</li>
-  <li><strong>每层 forward，\(n = 2048\)</strong>：\(24nd^2 \approx 825\) GFLOPs，\(4n^2d \approx 69\) GFLOPs，attention 只占约 8%；要到 \(n = 6d = 24576\) 两者才相等。</li>
+  <li><strong>参数</strong>：\(12 \times 32 \times 4096^2 \approx 6.44\)B，加上 embedding，论文写 6.7B。SwiGLU 的 3 个矩阵合计仍是 \(8d^2\)。</li>
+  <li><strong>每层 forward，\(n = 2048\)</strong>：\(24nd^2 \approx 825\) GFLOPs，\(4n^2d \approx 69\) GFLOPs，attention 只占约 8%，要到 \(n = 6d = 24576\) 才相等。</li>
   <li><strong>训练 1T token</strong>：\(6 \times 6.7\text{B} \times 10^{12} \approx 4\times10^{22}\) FLOPs。</li>
-  <li><strong>KV cache（fp16）</strong>：每 token \(2 \times 32 \times 4096 \times 2\) bytes = 512 KiB，2048 个 token 约 1 GiB。</li>
 </ul>
 
 <h2>必答点</h2>
@@ -76,23 +69,19 @@
 <h2>追问</h2>
 <details>
   <summary>序列很长时怎么办？</summary>
-  <p>FlashAttention 不减 FLOPs、把 memory 降到 \(O(n)\)；只看邻近 \(r\) 个 token 的 restricted / sliding-window attention 把 time 降到 \(O(rnd)\)（Vaswani Table 1）。KV cache 太大就用 <a href="mqa-gqa-mla.html">MQA / GQA</a>。</p>
+  <p>restricted attention 只看邻近 \(r\) 个 token，time 降到 \(O(rnd)\)，最长路径变成 \(O(n/r)\)。KV cache 太大就用 <a href="mqa-gqa-mla.html">MQA / GQA</a>。</p>
 </details>
 <details>
   <summary>和 RNN 比呢？</summary>
-  <p>Vaswani Table 1：self-attention 每层 \(O(n^2d)\)、串行步数 \(O(1)\)、最长路径 \(O(1)\)；RNN 是 \(O(nd^2)\)、\(O(n)\)、\(O(n)\)。详见 <a href="rnn-vs-transformer.html">RNN vs Transformer</a>。</p>
+  <p>RNN 每层 \(O(nd^2)\)，但串行步数是 \(O(n)\)。见 <a href="rnn-vs-transformer.html">RNN vs Transformer</a>。</p>
 </details>
 <details>
   <summary>causal mask 能省一半计算吗？</summary>
-  <p>被 mask 掉的上三角不需要算，按块计算的 kernel 可以跳过整块被 mask 的部分；朴素实现先算满 \(n\times n\) 再加 mask，没有省。</p>
-</details>
-<details>
-  <summary>没有 KV cache 会怎样？</summary>
-  <p>每生成一个 token 都要把整个前缀重新 forward 一遍，第 \(t\) 步每层是 \(O(t^2d + td^2)\)，而有 cache 时只要 \(O(td + d^2)\)。详见 <a href="kv-cache.html">KV cache</a>。</p>
+  <p>按块计算的 kernel 可以跳过整块被 mask 的上三角。朴素实现先算满 \(n\times n\) 再加 mask，没有省。</p>
 </details>
 <details>
   <summary>为什么 decode 慢、是 memory-bound？</summary>
-  <p>batch 小时每生成一个 token 都要把全部权重从显存读一遍，每个参数只做约 2 FLOPs，算力用不满。具体的 arithmetic intensity 见 06。</p>
+  <p>batch 小时每个 token 都要把全部权重从 GPU memory 读一遍，每个参数只做约 2 FLOPs。arithmetic intensity 见 06。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> Table 1（p.6）· <a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020</a> §2.1 eq. 2.2（p.6）· <a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022, FlashAttention</a> Theorem 1（p.5）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023, LLaMA</a> §2.2、Table 2（p.3）</p>

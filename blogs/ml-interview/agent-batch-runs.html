@@ -17,14 +17,12 @@
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
-  <dt>Run</dt>
-  <dd>agent 把一个 task 从头做到尾的一次执行，里面有很多次 model call 和 tool call。</dd>
   <dt>Queue 和 worker</dt>
-  <dd>task 先排进 queue，worker 一个个取走去跑。像取号机和柜台，开几个柜台就是几个并发。</dd>
+  <dd>task 排进 queue，worker 逐个取走去跑。像取号机和柜台，开几个柜台就是几个并发。</dd>
   <dt>Rate limit</dt>
-  <dd>模型 API 每分钟允许的请求数和 token 数，超了返回 429。常用 token bucket 守住它，桶里按固定速度补令牌，发请求先拿令牌，拿不到就等。</dd>
+  <dd>模型 API 每分钟允许的请求数和 token 数，超了返回 429。常用 token bucket 守住它，桶里按固定速度补令牌，请求拿不到令牌就等。</dd>
   <dt>断点续跑</dt>
-  <dd>每个 task 跑完就写一条结果。进程挂了重启时，跳过已经有结果的 task。</dd>
+  <dd>每个 task 跑完就写一条结果，重启时跳过已有结果的 task。</dd>
   <dt>可比较</dt>
   <dd>两个方案的分数能直接相减的前提。<span class="eg">model 版本、image、seed 和 task 列表都一样，只有被比较的那一处不同。</span></dd>
 </dl>
@@ -62,62 +60,49 @@
   <path class="ln2" d="M481,176 V216 H64 V124" marker-end="url(#br-ah2)"/>
   <text class="c2" x="272" y="234" text-anchor="middle">断点续跑：重启时跳过已有结果的 task</text>
 </svg>
-<figcaption>图 1：task 从 queue 出来，每个 worker 起自己的 sandbox 跑一个 run。所有 worker 调 model API 之前先过同一个 rate limit。每个 task 跑完写一行结果，蓝线是断点续跑。</figcaption>
+<figcaption>图 1：每个 worker 起自己的 sandbox 跑一个 run，调 model API 前都过同一个 rate limit。蓝线是断点续跑。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I'd start with the arithmetic. 5,000 tasks in eight hours is about ten per minute, so if each run takes fifteen minutes I need roughly 160 running in parallel. Tasks go into a queue, and each worker pulls one and runs it in its own sandbox, so runs don't share state. The real bottleneck is usually the model API's rate limit, so I throttle with a token bucket and retry with backoff. Every finished task writes one result row, so a crash resumes instead of restarting. And I pin the model version, the environment image and the task list, so every variant runs under the same conditions.</p></div>
+<div class="answer"><p>I'd start with the arithmetic. 5,000 tasks in eight hours is about ten per minute, so with fifteen-minute runs I need roughly 160 in parallel. Each worker pulls a task from a queue and runs it in its own sandbox, so runs don't share state. The real bottleneck is usually the model API's rate limit, so I throttle with a token bucket and retry with backoff. Every finished task writes one result row, so a crash resumes instead of restarting. And I pin the model version, the image and the task list, so every variant runs under the same conditions.</p></div>
 
 <h2 id="math">先算账</h2>
-<p>先算要多少并发，再谈架构。一夜按 8 小时算，也就是 480 分钟。5000 ÷ 480 ≈ 每分钟 10.4 个 task。每个 run 按 15 分钟算，10.4 × 15 ≈ 160 个并发。15 分钟是假设，面试时先问面试官。顺序跑要 5000 × 15 分钟 = 1250 小时，约 52 天。</p>
-<p>再算 rate limit。假设每个 run 用 20 万 token，5000 个 run 一共 10 亿 token，平摊到 480 分钟约每分钟 208 万 token。API 的额度低于这个数时，瓶颈是 rate limit，加机器没有用。</p>
+<p>一夜按 8 小时算，是 480 分钟。5000 ÷ 480 ≈ 每分钟 10.4 个 task。每个 run 按 15 分钟算，10.4 × 15 ≈ 160 个并发。15 分钟是假设，面试时先问面试官。顺序跑要 5000 × 15 分钟 = 1250 小时，约 52 天。</p>
+<p>再算 rate limit。假设每个 run 用 20 万 token，5000 个 run 是 10 亿 token，平摊下来约每分钟 208 万 token。API 的额度低于这个数时，加机器没有用。</p>
 
 <h2 id="design">Version chain</h2>
 <table>
   <thead><tr><th>版本</th><th>做法</th><th>还剩的问题</th></tr></thead>
   <tbody>
-    <tr><td class="nw">v1 一个 loop</td><td>一个 task 接一个 task 顺序跑</td><td>要 52 天</td></tr>
-    <tr><td class="nw">v2 Queue + worker</td><td>task 进 queue；约 160 个 worker，每个起自己的 sandbox，跑完销毁</td><td>API 返回 429；一个进程挂了，整批重来</td></tr>
-    <tr><td class="nw">v3 Rate limit + 断点续跑</td><td>用 token bucket 守住 rate limit，失败后退避重试；每个 task 写一条结果，重启时跳过已完成的</td><td>两个方案的分数不能直接比</td></tr>
-    <tr><td class="nw">v4 可比较</td><td>固定 model 版本、image、seed；各方案跑同一批 task</td><td>要在 GPU 上计时的 task 互相干扰</td></tr>
-    <tr><td class="nw">v5 GPU 排队（推断）</td><td>编译和正确性检查并发跑；计时独占一张 GPU，排队跑</td><td>GPU 数量决定计时这一步的总时长</td></tr>
+    <tr><td class="nw">v1 一个 loop</td><td>顺序跑</td><td>要 52 天</td></tr>
+    <tr><td class="nw">v2 Queue + worker</td><td>约 160 个 worker 从 queue 取 task，各起一个 sandbox，跑完销毁</td><td>API 返回 429；进程挂了整批重来</td></tr>
+    <tr><td class="nw">v3 Rate limit + 断点续跑</td><td>token bucket 限流，失败后退避重试；每个 task 写一条结果，重启时跳过已完成的</td><td>两个方案的分数不能直接比</td></tr>
+    <tr><td class="nw">v4 可比较</td><td>固定 model 版本、image、seed；各方案跑同一批 task</td><td>GPU 上计时的 task 互相干扰</td></tr>
+    <tr><td class="nw">v5 GPU 排队（推断）</td><td>编译和正确性检查并发跑；计时独占一张 GPU，排队跑</td><td>计时的总时长由 GPU 数量决定</td></tr>
   </tbody>
 </table>
-<p>v5 是推断。中文样本里没有一条把 GPU 调度和 agent 连在一起问。依据是 kernel agent 的 task 要在 GPU 上计时，两个 run 同时用一张卡，时间就不准。</p>
-<p>sandbox 怎么隔离见 <a href="agent-sandbox.html">sandbox 和 verifier 隔离</a>。哪些错误该重试、checkpoint 怎么存见 <a href="tool-failure-retry.html">tool 失败与重试</a>。</p>
+<p>v5 是推断。两个 run 同时用一张卡计时，时间就不准。CUDA Agent 也把 CPU 上的编译和 GPU 上的测量分开（见 <a href="kernel-benchmark.html">怎么公平地 benchmark</a>）。</p>
+<p>隔离见 <a href="agent-sandbox.html">sandbox</a>，重试和 checkpoint 见 <a href="tool-failure-retry.html">tool 失败与重试</a>，结果的字段见 <a href="agent-observability.html">observability</a>，分数差多少才算数见 <a href="noise-floor.html">noise floor</a>。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>先算账：5000 ÷ 480 分钟 ≈ 每分钟 10 个，每个 run 15 分钟就要约 160 个并发</li>
-  <li>task 进 queue，每个 worker 起自己的 sandbox，不共享状态</li>
-  <li>瓶颈常是模型 API 的 rate limit，用 token bucket 守住它，失败后退避重试</li>
+  <li>先算账：每分钟约 10 个 task，每个 run 15 分钟，要约 160 个并发</li>
+  <li>每个 worker 一个 sandbox，不共享状态</li>
+  <li>瓶颈常是模型 API 的 rate limit，用 token bucket 限流</li>
   <li>每个 task 写一条结果，重启时跳过已完成的</li>
-  <li>固定 model 版本、image、seed，各方案跑同一批 task</li>
-  <li>要在 GPU 上计时的 task，编译可以并发，计时独占 GPU（推断）</li>
+  <li>固定 model 版本、image、seed 和 task 列表</li>
+  <li>GPU 上的计时独占一张卡，编译可以并发（推断）</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>为什么要限制 agent 的并发数？</summary>
-  <p>模型 API 的 rate limit 和机器的 CPU、memory 都有上限。并发超过上限后请求大面积失败，重试又把负载推得更高。百度 Agent 岗的面经里有这道原题。</p>
+  <summary>为什么要限制 agent 的并发数？（百度原题）</summary>
+  <p>模型 API 的 rate limit 和机器的 CPU、memory 都有上限。并发超过上限后请求大面积失败，重试又把负载推得更高。</p>
 </details>
 <details>
   <summary>有的 run 卡住不结束，怎么办？</summary>
-  <p>每个 run 设 timeout 和步数上限。超时就记成失败并写进结果，把 worker 让出来（见 <a href="tool-failure-retry.html">tool 失败与重试</a>）。</p>
+  <p>每个 run 设 timeout 和步数上限，超时就记成失败，把 worker 让出来（见 <a href="tool-failure-retry.html">tool 失败与重试</a>）。</p>
 </details>
-<details>
-  <summary>怎么保证不同方案是在相同环境下比较？</summary>
-  <p>固定 model 版本、image、seed 和 task 列表。FlashVector 也要求 baseline 和候选在同一个环境里测。差多少才算数见 <a href="noise-floor.html">noise floor</a>。</p>
-</details>
-<details>
-  <summary>结果文件里每条记什么？</summary>
-  <p>task id、方案版本、成功与否、步数、token、latency 和 trace 的路径。有了这些，失败的 run 才能按类型统计（见 <a href="agent-observability.html">observability</a>）。</p>
-</details>
-<details>
-  <summary>GPU 不够，计时排不完，怎么办？</summary>
-  <p>这一条是推断。只让通过了编译和正确性检查的候选去排队计时，CUDA Agent 也是把 CPU 上的编译和 GPU 上的测量分开（见 <a href="kernel-benchmark.html">怎么公平地 benchmark</a>）。</p>
-</details>
-
 <p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/3b05460868c7429193e93f8d09f62794">牛客：蚂蚁 Agent 日常一面</a> · <a href="https://www.nowcoder.com/discuss/917561494512861184">牛客：字节火山方舟 Managed Agent 一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/223fa82f976b4418b214894bd7d941fd">牛客：小红书 Agent 开发一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9">牛客：百度 Agent</a>（「为什么需要限制 Agent 的并发数？」）· <a href="https://arxiv.org/abs/2602.24286">CUDA Agent</a>（编译和测量分离）· ml-八股 08 第 32 题</p>
 
 </main>

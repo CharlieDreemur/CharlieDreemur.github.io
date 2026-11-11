@@ -18,15 +18,9 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>MXFP8 和 NVFP4</dt>
-  <dd>Blackwell 上的两种低精度格式，都按 block 配 scale。MXFP8 每 32 个连续值共用一个 2 的幂的 scale，元素是 8 bit。NVFP4 每 16 个元素一个 scale，再加一个 per-tensor 的 FP32 scale，元素是 4 bit。FP8 的基础见 <a href="mixed-precision.html">mixed precision</a>。</dd>
-  <dt>Selective FP32</dt>
-  <dd>给指定的参数打上标记，模块其余部分转成低精度时它们留在 FP32。PR #5929 的描述没有点名是哪些 tensor。</dd>
-  <dt>Quantized parameter gather</dt>
-  <dd>FSDP 用参数之前要 all-gather（见 <a href="dp-zero-fsdp.html">FSDP</a>）。weight 是 MXFP8 时直接 gather 它的 data 和 scale，不先还原成高精度。</dd>
+  <dd>Blackwell 上的两种低精度格式，元素分别是 8 bit 和 4 bit，都按 block 配 scale（格式见 <a href="mixed-precision.html">mixed precision</a>）。</dd>
   <dt>Full-iteration CUDA Graph</dt>
-  <dd>把一整个 training iteration 录成一个 graph，之后每步一次 replay。capture、replay 和限制见 <a href="cuda-graph.html">CUDA Graph</a>。</dd>
-  <dt>Expert-dispatch buffer</dt>
-  <dd>EP 里收发 token 用的 buffer，大小随 router 的结果变（见 <a href="moe-ep-communication.html">EP communication</a>）。</dd>
+  <dd>把一整个 training iteration 录成一个 graph，之后每步一次 replay（见 <a href="cuda-graph.html">CUDA Graph</a>）。</dd>
 </dl>
 
 <h2 id="figs">看图：哪种 iteration 能录成一个 graph</h2>
@@ -63,11 +57,11 @@
   <text class="acc" x="436" y="179">溢出</text>
   <text class="acc" x="404" y="212" text-anchor="middle">static mode 的固定 budget：1280</text>
 </svg>
-<figcaption>图 1：数字是示意。dense 模型每个 iteration 发同一串 kernel，录一次就能一直 replay。MoE 的 receive buffer 跟着 router 的结果变。static mode 给它一个固定 budget，超了就扩 budget 再重放这一步。</figcaption>
+<figcaption>图 1：数字是示意。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>From the 0.19 and 0.20 release notes, Megatron has MXFP8 training paths and NVFP4 training for DeepSeek-V3. Selected tensors stay in FP32, optionally including the output logits. Communication is quantized too: FSDP v2 gathers MXFP8 parameters directly, and NCCL EP can dispatch in MXFP8, which is experimental. To cut launch overhead, a whole training iteration is captured in one CUDA Graph. As I understand it, that works for dense models because every step launches the same kernels with the same buffer sizes. MoE is harder: expert-dispatch buffers depend on routing, so they aren't capture-safe. NCCL EP's static mode keeps a fixed budget and replays the step on overflow.</p></div>
+<div class="answer"><p>From the 0.19 and 0.20 release notes, Megatron has MXFP8 training paths and NVFP4 training for DeepSeek-V3. Selected tensors stay in FP32, optionally including the output logits. Communication is quantized too: FSDP v2 gathers MXFP8 parameters directly, and NCCL EP can dispatch in MXFP8, which is experimental. A whole dense training iteration can be captured in one CUDA Graph, I think because every step launches the same kernels with the same buffer sizes. MoE is harder: expert-dispatch buffers depend on routing, so they aren't capture-safe. NCCL EP's static mode keeps a fixed budget and replays the step on overflow.</p></div>
 
 <h2 id="lowp">低精度做到哪一步了</h2>
 <table>
@@ -75,19 +69,19 @@
   <tbody>
     <tr><td class="nw">MXFP8 training path</td><td>release notes 指向 Nemotron 3 Super 的 MXFP8 示例配置</td><td class="nw">0.19.0</td></tr>
     <tr><td class="nw">NVFP4 training</td><td>DeepSeek-V3；active MTP layer 里也做 FP4 quantization</td><td class="nw">0.20.0，#7328</td></tr>
-    <tr><td class="nw">Selective FP32</td><td>标记的 tensor 留 FP32，optimizer 和 checkpoint 跟着处理</td><td class="nw">0.20.0，#5929</td></tr>
+    <tr><td class="nw">Selective FP32</td><td>打了标记的参数在模块转成低精度时留在 FP32，optimizer 和 checkpoint 跟着处理。PR 没有点名是哪些 tensor</td><td class="nw">0.20.0，#5929</td></tr>
     <tr><td class="nw">FP32 output logits</td><td>LM output logits 可选用 FP32 算，<code>--output-logit-dtype</code> 默认 bf16</td><td class="nw">0.20.0，#6252</td></tr>
-    <tr><td class="nw">Quantized<br>parameter gather</td><td>MFSDP v2 的 adapter 支持 MXFP8 compute 和 quantized parameter gather</td><td class="nw">0.20.0，#7588</td></tr>
+    <tr><td class="nw">Quantized<br>parameter gather</td><td>weight 是 MXFP8 时 <a href="dp-zero-fsdp.html">FSDP</a> 直接 all-gather 它的 data 和 scale，不先还原成高精度。MFSDP v2 的 adapter 支持它和 MXFP8 compute</td><td class="nw">0.20.0，#7588</td></tr>
     <tr><td class="nw">EP 通信用 MXFP8</td><td>NCCL EP 的 dispatch forward 和 combine backward，标 experimental</td><td class="nw">0.20.0，#6524</td></tr>
   </tbody>
 </table>
-<p>logits 留 FP32 的理由在 PR #6252 里。原来的路径内部用 FP32 累加，但每个 logit 在 cross entropy 之前被舍成 BF16，丢掉的 bit 再 cast 回 FP32 也找不回来。代价是 PR 的 kernel benchmark 在 GB300 上量到的 median overhead 5.4%。</p>
-<p>按格式手算通信量。MXFP8 每个元素 8 bit，每 32 个元素再加一个 8 bit 的 scale，合 8.25 bit，约是 BF16 的 52%。NVFP4 是 4 + 8/16 = 4.5 bit，约 28%。</p>
+<p>logits 留 FP32 的理由在 PR #6252 里。原来的路径内部用 FP32 累加，但每个 logit 在 cross entropy 之前被舍成 BF16，丢掉的 bit 找不回来。代价是 PR 的 kernel benchmark 在 GB300 上量到的 median overhead 5.4%。</p>
+<p>按格式手算通信量。MXFP8 每个元素 8 bit，每 32 个元素再加一个 8 bit 的 scale，合 8.25 bit，约是 BF16 的 52%。NVFP4 每 16 个元素一个 scale，是 4 + 8/16 = 4.5 bit，约 28%。</p>
 
 <h2 id="graph">Full-iteration CUDA Graph：dense 可以，MoE 难</h2>
 <p>CUDA Graph 要求每次 replay 的 kernel 序列、shape 和内存地址都不变（见 <a href="cuda-graph.html#limits">限制</a>）。0.20.0 给 MFSDP v2 加了 full-iteration 的 capture 和 replay，范围限定在受支持的 dense 配置。PR #7075 的测试用一个 dense 的 Llama-3-shaped proxy，并写明有意排除 MoE，理由是 MoE 的 "data-dependent expert-dispatch buffers are not capture-safe"。</p>
-<p>dense 为什么可以，PR 没有展开。按 CUDA Graph 的限制推，batch 和 sequence length 固定时，每个 iteration 发的 kernel 和用的 buffer 都一样。MoE 每步收到多少 token 由 router 决定，buffer 的大小跟着数据走。</p>
-<p>对策是 NCCL EP 的 static mode。它用固定 budget，所以能被 capture。溢出时把 budget 扩到观察到的 peak，再重放这一步（PR #6229，细节见 <a href="moe-ep-communication.html#nccl">eager 和 static</a>）。</p>
+<p>dense 为什么可以，PR 没有展开。按 CUDA Graph 的限制推，batch 和 sequence length 固定时，每个 iteration 发的 kernel 和用的 buffer 都一样。</p>
+<p>对策是 NCCL EP 的 static mode，它用固定 budget，溢出就扩 budget 重放这一步（PR #6229，细节见 <a href="moe-ep-communication.html#nccl">eager 和 static</a>）。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -96,7 +90,6 @@
   <li>通信也量化：quantized parameter gather，NCCL EP 的 MXFP8 dispatch（experimental）</li>
   <li>full-iteration CUDA Graph 目前只覆盖 dense 配置；MoE 的 dispatch buffer 随数据变</li>
   <li>对策是 static mode 的固定 budget，溢出就扩 budget 重放</li>
-  <li>引用时说版本，这些功能还在变</li>
 </ul>
 
 <h2>追问</h2>
@@ -106,15 +99,11 @@
 </details>
 <details>
   <summary>NeMo-RL 的 NVFP4 训练里，哪些部分没有量化？</summary>
-  <p>只有 routed expert 的 MLP 在 forward 里用 NVFP4。持久保存的 weight 和 refit 传的数据留 BF16，optimizer state 留 FP32。attention、router、shared expert 和部分 boundary layer 也留 BF16。</p>
-</details>
-<details>
-  <summary>MoE 以后能做 full-iteration CUDA Graph 吗？</summary>
-  <p>已经有两条路。一条是 NCCL EP 的 static mode，0.20.0 的 release notes 里和 eager mode 并列的名字是 full-iteration graph mode，这个对应是按 PR #6229 推断的。另一条是 MegaMoE，状态页写 MoK 实现支持 full-iteration CUDA Graph。ShortcutMoE 的训练在 0.20.0 里还不支持 CUDA Graph。</p>
+  <p>只有 routed expert 的 MLP 在 forward 里用 NVFP4。持久保存的 weight、refit 传的数据、attention、router、shared expert 和部分 boundary layer 留 BF16，optimizer state 留 FP32。</p>
 </details>
 <details>
   <summary>Quantized parameter gather 有什么限制？</summary>
-  <p>按 PR #7588，MFSDP v2 的 adapter 要求 <code>fp8_param</code> 和 <code>fp8_param_gather</code> 两个设置一致，其他 FP8 recipe 和 FP4 仍然被拒绝。Q4 roadmap 还列着 NCCL EP 和 symmetric-memory collectives 的 MXFP8 communication。</p>
+  <p>按 PR #7588，MFSDP v2 的 adapter 要求 <code>fp8_param</code> 和 <code>fp8_param_gather</code> 两个设置一致，其他 FP8 recipe 和 FP4 仍然被拒绝。</p>
 </details>
 <details>
   <summary>低精度的 checkpoint 要注意什么？</summary>

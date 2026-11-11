@@ -18,18 +18,18 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>题目</dt>
-  <dd>给一个 PyTorch op，让 agent 写出又对又快的 CUDA 或 Triton kernel。<span class="eg">例：把 conv + bias + ReLU 写成一个 kernel。</span></dd>
+  <dd>给一个 PyTorch op，让 agent 写出又对又快的 CUDA 或 Triton kernel。</dd>
   <dt>One-shot</dt>
   <dd>LLM 只生成一次，不看任何执行结果。</dd>
   <dt>Harness</dt>
-  <dd>agent 外面那层确定性的代码。它先编译，再查正确性，最后计时，并决定一个候选留不留（见 <a href="llm-harness.html">LLM harness</a>）。</dd>
+  <dd>agent 外面那层确定性的代码。它编译、查正确性、计时，并决定候选留不留（见 <a href="llm-harness.html">LLM harness</a>）。</dd>
   <dt>Profiler feedback</dt>
-  <dd>Nsight Compute 给的硬件指标。它告诉 agent 瓶颈是 memory bound 还是 compute bound，只给 runtime 的话 agent 不知道该改哪里。</dd>
+  <dd>Nsight Compute 给的硬件指标，告诉 agent 瓶颈是 memory bound 还是 compute bound。</dd>
   <dt>fast_p</dt>
-  <dd>KernelBench 的指标，指既正确、又比 PyTorch 快 p 倍以上的题目比例。fast_1 就是比 PyTorch 快的比例。</dd>
+  <dd>KernelBench 的指标，既正确、又比 PyTorch 快 p 倍以上的题目比例。</dd>
 </dl>
 
-<h2 id="figs">看图：agent 的循环，谁做判定</h2>
+<h2 id="figs">看图：agent 的循环</h2>
 <figure class="fig">
 <svg viewBox="0 0 560 214" role="img" aria-label="kernel agent 的循环：LLM 生成，harness 编译、查正确性、计时和 profile，结果喂回下一轮，去留由 harness 判定">
   <rect class="bwd" x="156" y="26" width="394" height="74" rx="6"/>
@@ -67,60 +67,55 @@
   <rect class="hot" x="300" y="168" width="250" height="36" rx="4"/>
   <text x="425" y="190" text-anchor="middle">判定：正确，提升超过 noise 才留下</text>
 </svg>
-<figcaption>图 1：v1 只有左边的 LLM。v2 和 v3 把 harness 里三步的结果喂回去。v4 保留 top-K 候选。v5 把 harness 放到 agent 改不了的地方，去留由它判定。v6 用同一个环境训练这个 LLM。</figcaption>
+<figcaption>图 1：v1 到 v5 标的是 version chain 各版加进来的部分，去留由 harness 判定。v6 用同一个环境训练这个 LLM。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I'd start with one-shot generation, which rarely beats PyTorch. So I'd add a loop that feeds compiler errors and correctness diffs back, then timing and profiler metrics so the agent knows what the bottleneck is. A single chain gets stuck, so I'd keep a population of candidates with beam or evolutionary search. Stronger search finds holes in the harness, so the harness has to be hardened. Finally, I'd use the same environment to train the model with RL, so the skill is in the model instead of in expensive search. In production I'd keep search simple and put the effort into verification, as FlashVector does.</p></div>
+<div class="answer"><p>I'd start with one-shot generation, which rarely beats PyTorch. So I'd add a loop that feeds back compiler errors and correctness diffs, then timing and profiler metrics so the agent knows the bottleneck. A single chain gets stuck, so I'd keep several candidates with beam or evolutionary search. Stronger search finds holes in the harness, so I'd harden it. Finally, I'd train the model with RL in the same environment, so the skill lives in the model, not in expensive search. In production I'd keep search simple and put the effort into verification, as FlashVector does.</p></div>
 
-<h2 id="chain">Version chain：每一版只解决上一版的一个问题</h2>
+<h2 id="chain">Version chain</h2>
 <table>
   <thead><tr><th>版本</th><th>加了什么</th><th>还剩的问题</th></tr></thead>
   <tbody>
     <tr><td class="nw">v1 One-shot</td><td>LLM 直接写 kernel</td><td>KernelBench 上 frontier model 比 PyTorch 快的不到 20%，很多编译不过或数值不对</td></tr>
-    <tr><td class="nw">v2 编译和<br>正确性循环</td><td>编译错误和数值 diff 喂回去重写。NVIDIA 用 DeepSeek-R1 加 verifier 的闭环，在 L1 上全部数值正确（<a href="kernel-correctness.html">怎么查正确性</a>）</td><td>对了，但不快</td></tr>
-    <tr><td class="nw">v3 Benchmark<br>和 profiler</td><td>给 runtime 和 Nsight Compute 指标。KernelBench 论文里 DeepSeek-R1 在 L2 的 fast_1 从 36% 升到 72%（<a href="kernel-benchmark.html">怎么计时</a>）</td><td>单条链容易困在第一个思路里</td></tr>
-    <tr><td class="nw">v4 搜索</td><td>同时保留 top-K 候选，用 beam 或 evolution。AlphaEvolve 演化 matmul 的 tiling heuristic，kernel 平均快 23%（<a href="kernel-search-methods.html">怎么选</a>）</td><td>搜得越狠，越会钻评测的漏洞。Sakana 的一个 kernel 报快 150x，实际慢 3x</td></tr>
-    <tr><td class="nw">v5 加固 harness</td><td>hidden shape；按 dtype 设容差；分进程跑；评测脚本只读；禁止调 PyTorch fallback；比物理上限还快就作废（<a href="reward-hacking.html">漏洞</a>、<a href="agent-sandbox.html">隔离</a>）</td><td>每个 kernel 都搜一遍，token 很贵</td></tr>
-    <tr><td class="nw">v6 RL</td><td>在同一个环境里做 multi-turn RL，reward 看正确性和 speedup，能力训进模型。例子是 Kevin 和 CUDA Agent（<a href="kernel-rl-reward.html">reward 怎么设计</a>）</td><td>训练不稳，hack 会被放大</td></tr>
+    <tr><td class="nw">v2 编译和<br>正确性循环</td><td>编译错误和数值 diff 喂回去重写。NVIDIA 的 DeepSeek-R1 加 verifier 闭环在 L1 上全部数值正确（<a href="kernel-correctness.html">怎么查正确性</a>）</td><td>对了，但不快</td></tr>
+    <tr><td class="nw">v3 Benchmark<br>和 profiler</td><td>给 runtime 和 Nsight Compute 指标。KernelBench 论文里 DeepSeek-R1 在 L2 的 fast_1 从 36% 升到 72%，只加 execution feedback 时是 62%（<a href="kernel-benchmark.html">怎么计时</a>）</td><td>单条链容易困在第一个思路里</td></tr>
+    <tr><td class="nw">v4 搜索</td><td>保留 top-K 候选，用 beam 或 evolution。AlphaEvolve 演化 matmul 的 tiling heuristic，kernel 平均快 23%（<a href="kernel-search-methods.html">怎么选</a>）</td><td>搜得越狠，越会钻评测的漏洞。Sakana 的一个 kernel 报快 150x，实际慢 3x</td></tr>
+    <tr><td class="nw">v5 加固 harness</td><td>hidden shape、按 dtype 的容差、分进程跑、评测脚本只读，比物理上限还快就作废（<a href="reward-hacking.html">漏洞</a>、<a href="agent-sandbox.html">隔离</a>）</td><td>每个 kernel 都搜一遍，token 很贵</td></tr>
+    <tr><td class="nw">v6 RL</td><td>在同一个环境里做 multi-turn RL，把能力训进模型。例子是 Kevin 和 CUDA Agent（<a href="kernel-rl-reward.html">reward 怎么设计</a>）</td><td>训练不稳，hack 会被放大</td></tr>
   </tbody>
 </table>
-<p>v3 那一行的 72% 是 execution feedback 和 profiler feedback 一起的结果。只加 execution feedback 时是 62%。</p>
 
 <h2 id="flashvector">FlashVector 的搜索很简单</h2>
-<p>按这条 version chain 看，<a href="flashvector.html">FlashVector</a> 有 v3 的 profile 循环和 v5 那种 agent 改不了的 harness，没有 v4 的搜索。它是单链循环，每轮随机抽一层，一轮只做一个改动。Diagnose 给假设排序，用的是时间占比乘预期收益。</p>
-<p>同类系统里，Meta 的 KernelEvolve 用 MCTS 加 evolution，AlphaEvolve 用 evolution，Baseten 和 FlashVector 一样是带排序的贪心循环。四家都报告了生产落地，所以搜索的复杂度和进没进生产没有正相关。FlashVector 把精力放在 verify 和交付上。面试里讲完 version chain 可以补一句，上生产先把 harness 做牢，搜索够用就行。</p>
+<p><a href="flashvector.html">FlashVector</a> 有 v3 的 profile 循环和 v5 的 harness，没有 v4 的搜索，是一轮只做一个改动的单链循环。</p>
+<p>Meta 的 KernelEvolve 用 MCTS 加 evolution，AlphaEvolve 用 evolution，Baseten 和 FlashVector 一样是带排序的贪心循环。四家都报告了生产落地，所以搜索的复杂度和进没进生产没有正相关。上生产先把 harness 做牢，搜索够用就行。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>从 one-shot 讲起，每一版只解决上一版的一个问题</li>
-  <li>反馈有两层：先过编译和正确性，再给 runtime 和 profiler 指标</li>
+  <li>反馈先过编译和正确性，再给 runtime 和 profiler 指标</li>
   <li>agent 只提案，去留由它改不了的 harness 判定</li>
   <li>搜索越强越会钻漏洞，所以 v4 和 v5 要连着讲</li>
-  <li>RL 把能力训进模型，省掉每个 kernel 都搜一遍的 token</li>
+  <li>RL 把能力训进模型，省掉每个 kernel 的搜索 token</li>
   <li>FlashVector 用单链循环进了生产，精力在 verify 和交付</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>FlashVector 每轮随机抽一层，为什么不先做瓶颈最大的那层？</summary>
-  <p>论文没有解释，也没有按各层的时间占比加权。这一条适合当反问。自己设计时可以按时间占比加权抽样，这是我的想法，不是论文的做法。</p>
-</details>
-<details>
   <summary>循环什么时候停？</summary>
-  <p>有三种停法。结果接近硬件的物理上限（speed of light），连续几轮没有提升，或者预算用完。FlashVector 的 Algorithm 1 只写了到迭代上限或优化目标达成，具体数值论文没写。</p>
+  <p>结果接近硬件的物理上限（speed of light）、连续几轮没有提升或预算用完时停。FlashVector 的 Algorithm 1 只写了到迭代上限或优化目标达成。</p>
 </details>
 <details>
   <summary>没有 profiler feedback 会怎样？</summary>
-  <p>LLM 会一直沿着第一版的写法改。Meta KernelAgent 的 matvec 例子里，不给硬件反馈的版本比 torch.compile 还慢，数字见 <a href="kernel-search-methods.html#combine">search 方法怎么选</a>。</p>
+  <p>LLM 会一直沿着第一版的写法改。Meta KernelAgent 的 matvec 例子里，不给硬件反馈的版本比 torch.compile 还慢（数字见 <a href="kernel-search-methods.html#combine">search 方法怎么选</a>）。</p>
 </details>
 <details>
   <summary>让 agent 写 CUDA 还是 Triton？</summary>
-  <p>DSL 更容易写对。μCUTLASS 论文在 59 道 KernelBench 题上用 GPT-5-mini，直接写底层代码的 geomean 是 0.40x，改写 DSL 后是 1.27x。</p>
+  <p>DSL 更容易写对，μCUTLASS 论文的对比数字见 <a href="triton-vs-cuda.html">Triton 和 CUDA</a>。</p>
 </details>
 <details>
   <summary>循环的控制流放在 LLM 里还是代码里？</summary>
-  <p>放在确定性的代码里。worker 的生命周期、预算和 early exit 由 Python orchestrator 管，LLM 只提案和写代码，这是 Meta KernelFalcon 的做法。</p>
+  <p>放在确定性的代码里，LLM 只提案和写代码，这是 Meta KernelFalcon 的做法（见 <a href="sub-agents.html">sub-agent</a>）。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 19 题 · <a href="https://arxiv.org/abs/2502.10517">KernelBench</a>（不到 20%；DeepSeek-R1 在 L2 的 36%、62%、72% 见 Table 1）· <a href="https://developer.nvidia.com/blog/automating-gpu-kernel-generation-with-deepseek-r1-and-inference-time-scaling/">NVIDIA：R1 加 verifier</a> · <a href="https://arxiv.org/html/2506.13131">AlphaEvolve</a> · <a href="https://techcrunch.com/?p=2969225">TechCrunch 2025-02-21</a>（Sakana 的 150x）· <a href="https://cognition.com/blog/kevin-32b">Kevin-32B</a> · <a href="https://arxiv.org/abs/2602.24286">CUDA Agent</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> Algorithm 1、Figure 3 · <a href="https://pytorch.org/blog/kernelagent-hardware-guided-gpu-kernel-optimization-via-multi-agent-orchestration/">KernelAgent</a> · <a href="https://arxiv.org/abs/2603.29010">μCUTLASS</a> · 同类系统的对照见 调研笔记第 4 节 · 牛客原帖见“考过”行</p>

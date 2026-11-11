@@ -18,17 +18,17 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Knowledge distillation</dt>
-  <dd>大模型（teacher，也可以是一个 ensemble）当老师，小模型（student）当学生。学生不只抄标准答案，还模仿老师给每个选项打的概率。目的是部署。小模型快、便宜，准确率接近大模型。</dd>
+  <dd>student（小模型）不只学标准答案，还模仿 teacher（大模型或 ensemble）给每个类打的概率。目的是部署时又快又便宜，准确率接近 teacher。</dd>
   <dt>Hard label 与 soft target</dt>
-  <dd>Hard label 只说"是哪一类"；soft target 是 teacher 输出的整个概率分布，还告诉你"像谁、不像谁"。这些错误类别之间的相对大小就是 teacher 学到的 similarity 结构，常叫 dark knowledge。<span class="eg">例：一张汽车图片，类别（汽车, 卡车, 胡萝卜）。hard label = (1, 0, 0)；teacher logits (6, 3, −2) 给出 soft target (0.952, 0.047, 0.0003)：错成卡车的可能是错成胡萝卜的约 150 倍。</span></dd>
+  <dd>Hard label 只说是哪一类。soft target 是 teacher 输出的整个概率分布，错误类别之间的相对大小就是 teacher 学到的 similarity 结构，常叫 dark knowledge。<span class="eg">例：汽车图片上 teacher 给卡车 0.047、胡萝卜 0.0003，差约 150 倍。</span></dd>
   <dt>Temperature \(T\)</dt>
-  <dd>softmax 之前把 logit 都除以 \(T\)。\(T\) 越大分布越平，小概率被放大，像把照片的对比度调低，暗部细节才露出来。<span class="eg">例：同样的 logits，\(T = 4\) 时变成 (0.622, 0.294, 0.084)：胡萝卜那一项从几乎为 0 变得看得见。</span></dd>
+  <dd>softmax 之前把 logit 都除以 \(T\)。\(T\) 越大分布越平，小概率被放大，数字见<a href="#choose-t">下面的表</a>。</dd>
   <dt>KL divergence</dt>
-  <dd>衡量两个分布差多少：\(\mathrm{KL}(p\,\|\,q) = \sum_i p_i \log(p_i/q_i)\)，完全一样时为 0。它等于 cross-entropy 减去 teacher 自己的 entropy。后者和 student 无关，所以用 KL 还是 CE，gradient 一样。</dd>
+  <dd>衡量两个分布差多少，\(\mathrm{KL}(p\,\|\,q) = \sum_i p_i \log(p_i/q_i)\)，完全一样时为 0。它等于 cross-entropy 减去 teacher 自己的 entropy，后者和 student 无关，所以用 KL 还是 CE，gradient 一样。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Distillation trains a small student to match a large teacher's output distribution, not just the hard labels. Both softmaxes use a temperature T &gt; 1, which softens them and exposes how the teacher ranks the wrong classes, so each example carries much more information. The loss is cross-entropy with the true labels at T = 1 plus the KL divergence between teacher and student at temperature T, multiplied by T² because the soft-target gradients scale as 1/T². At very high T it becomes logit matching. At inference the student uses T = 1.</p></div>
+<div class="answer"><p>Distillation trains a small student to match a large teacher's output distribution, not just the hard labels. Both softmaxes use a temperature T &gt; 1, which softens them and exposes how the teacher ranks the wrong classes, so each example carries much more information. The loss is cross-entropy with the true labels at T = 1 plus the KL divergence between teacher and student at temperature T, multiplied by T² because the soft-target gradients scale as 1/T². At inference the student uses T = 1.</p></div>
 
 <h2>推导</h2>
 <div class="deriv">
@@ -36,7 +36,7 @@
   <p>teacher logits \(v\)，student logits \(z\)，两边用同一个 \(T\)：</p>
   \[ p_i = \frac{e^{v_i/T}}{\sum_j e^{v_j/T}},\qquad q_i = \frac{e^{z_i/T}}{\sum_j e^{z_j/T}} \]
   \[ \mathcal L = \alpha\,\mathrm{CE}\big(y,\ q^{(T=1)}\big) + (1-\alpha)\,T^2\,\mathrm{KL}\big(p^{(T)} \,\|\, q^{(T)}\big) \]
-  <p>hard 项用 \(T = 1\)；训练完 student 推理也用 \(T = 1\)。</p>
+  <p>hard 项和推理都用 \(T = 1\)。</p>
   <h3 id="t2">为什么乘 \(T^2\)</h3>
   <p>soft 项对 student logit 的 gradient（论文 eq. 2）：</p>
   \[ \frac{\partial C}{\partial z_i} = \frac1T\,(q_i - p_i) \]
@@ -60,8 +60,8 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
     return alpha * hard + (1 - alpha) * T**2 * soft</code></pre>
 
 <h2 id="choose-t">\(T\) 和 \(\alpha\) 怎么选</h2>
-<p><strong>\(T\) 是 hyperparameter，在 validation set 上试出来</strong>：固定 \(\alpha\)，对 \(T\) = 1、2、4、8 各蒸馏一次，取 student validation accuracy 最好的；再在它附近调 \(\alpha\)，hard 项权重通常小一些。</p>
-<p>为什么不是越大越好：还是 logits (6, 3, −2)，卡车 / 胡萝卜的概率比 \(= e^{5/T}\)：</p>
+<p><strong>\(T\) 是 hyperparameter，在 validation set 上试出来。</strong>固定 \(\alpha\)，对 \(T\) = 1、2、4、8 各蒸馏一次，取 student validation accuracy 最好的，再调 \(\alpha\)，hard 项权重通常小一些。transfer set 没有 label 时只用 soft 项（\(\alpha = 0\)）。</p>
+<p>\(T\) 不是越大越好。teacher logits (6, 3, −2)，卡车 / 胡萝卜的概率比 \(= e^{5/T}\)：</p>
 <table>
   <thead><tr><th>\(T\)</th><th>汽车</th><th>卡车</th><th>胡萝卜</th><th>卡车 / 胡萝卜</th></tr></thead>
   <tbody>
@@ -71,8 +71,7 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
     <tr><td>10</td><td>0.457</td><td>0.338</td><td>0.205</td><td>1.6</td></tr>
   </tbody>
 </table>
-<p>\(T\) 太低：错误类别几乎都是 0，和 hard label 差不多；\(T\) 太高：三类趋于平均，还逼 student 去拟合很负、很 noisy 的 logit。论文 MNIST：student 每层 30 个 unit 时，\(T\) = 2.5–4 最好。</p>
-<div class="answer"><p>I'd try a few temperatures, say 1, 2, 4 and 8, keep the one with the best student validation accuracy, then tune α. Small students usually prefer lower T.</p></div>
+<p>\(T\) 太低，错误类别几乎都是 0，和 hard label 差不多。\(T\) 太高，三类趋于平均，还逼 student 去拟合很负、很 noisy 的 logit。论文 MNIST 里每层 30 个 unit 的小 student 在 \(T\) = 2.5–4 最好。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -85,23 +84,15 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
 <h2>追问</h2>
 <details>
   <summary>为什么 soft target 比 hard label 好？</summary>
-  <p>每个样本带的信息多、gradient variance 小，student 能用更少数据学好。论文语音实验只用 3% 数据：hard label 训练 44.5%，soft target 57.0%，接近全量数据的 58.9%。</p>
-</details>
-<details>
-  <summary>用 KL 还是 cross-entropy？</summary>
-  <p>两者只差 teacher 的 entropy，对 student 是常数，gradient 一样。KL 在完全匹配时为 0，数值更直观。</p>
-</details>
-<details>
-  <summary>没有 label 能蒸馏吗？</summary>
-  <p>能。transfer set 可以全是 unlabeled data，只用 soft 项（\(\alpha = 0\)）；有 label 时加上 hard 项通常更好。</p>
+  <p>每个样本带的信息多、gradient variance 小。论文语音实验只用 3% 数据，hard label 训练 44.5%，soft target 57.0%，接近全量数据的 58.9%。</p>
 </details>
 <details>
   <summary>除了最后的输出，还能蒸馏什么？</summary>
-  <p>中间层 feature。FitNets 让 student 的中间层经过一个 regressor 去拟合 teacher 的中间层（hint），能训练更深更窄的 student。</p>
+  <p>中间层 feature。FitNets 让 student 的中间层经过一个 regressor 去拟合 teacher 的中间层，能训练更深更窄的 student。</p>
 </details>
 <details>
   <summary>LLM 怎么蒸馏？</summary>
-  <p>Word-level：每个 token 上匹配 teacher 的 next-token 分布。Sequence-level（Kim &amp; Rush 2016）：teacher 在训练集上 beam search 生成输出，student 在这些数据上做普通 CE 训练，即"teacher 生成数据 → student SFT"。</p>
+  <p>word-level 是在每个 token 上匹配 teacher 的 next-token 分布。sequence-level（Kim &amp; Rush 2016）是 teacher 在训练集上 beam search 生成输出，student 在这些数据上做普通 CE 训练。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1503.02531">Hinton, Vinyals &amp; Dean 2015</a> §1（p.2）、§2–2.1 eq. 1–4（p.3）、§3（p.4）、§6 Table 5（pp.7–8）· <a href="https://arxiv.org/abs/1606.07947">Kim &amp; Rush 2016</a> §3.1–3.2（pp.3–4）· <a href="https://arxiv.org/abs/1412.6550">Romero et al. 2014, FitNets</a>（abstract）</p>

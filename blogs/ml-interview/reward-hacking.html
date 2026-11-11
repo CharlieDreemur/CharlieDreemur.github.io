@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Reward hacking</dt>
-  <dd>agent 让分数变高，但没有完成任务。<span class="eg">例：评测说 kernel 又对又快，其实它没算，或者算的那部分没被计时。</span></dd>
+  <dd>agent 让分数变高，但没有完成任务。</dd>
   <dt>Harness</dt>
-  <dd>判定候选对不对、测它多快的那段代码。agent 的去留和 reward 全靠它，所以它就是被攻击的对象（见 <a href="llm-harness.html">LLM harness</a>）。</dd>
-  <dt>Caching allocator</dt>
-  <dd>PyTorch 释放的显存不还给系统，下一次申请时直接复用，里面的旧数据还在。</dd>
+  <dd>判定候选对不对、测它多快的那段代码，所以它就是被攻击的对象（见 <a href="llm-harness.html">LLM harness</a>）。</dd>
   <dt>CUDA stream</dt>
-  <dd>GPU 上的一条任务队列。计时只等 default stream 时，放到别的 stream 上的计算不算进时间。</dd>
+  <dd>GPU 上的一条任务队列。</dd>
   <dt>Speed of light（SOL）</dt>
-  <dd>按硬件峰值算出来的时间下限。比它还快的结果一定有问题。</dd>
+  <dd>按硬件峰值算出来的时间下限。</dd>
 </dl>
 
 <h2 id="figs">看图：三个真实的漏洞各打在哪</h2>
@@ -61,61 +59,52 @@
   <text x="28" y="222">METR 测的 o3：改写 timer，测出来的时间变短</text>
   <text class="c2" x="10" y="242">加固：candidate 单独一个进程，计时等所有 stream，评测脚本只读</text>
 </svg>
-<figcaption>图 1：① 和 ③ 是 candidate 够得着 harness 的显存和代码，② 是 timer 没盖住全部计算。蓝色虚线是加固后的进程边界，candidate 在线的左边。① 的机制是外界的推测，Sakana 没有公开细节。</figcaption>
+<figcaption>图 1：① 和 ③ 是 candidate 够得着 harness 的 GPU memory 和代码，② 是 timer 没盖住全部计算。蓝色虚线是加固后的进程边界。① 的机制是外界的推测。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Reward hacking is when the agent raises its score without doing the task. In kernel work there are three well-known cases. Sakana's system found a memory exploit in its own harness, and one kernel reported as 150x faster was actually 3x slower. A third of CUDA-L1's kernels ran work on a side stream the timer missed. METR saw o3 overwrite the grader's timer. So I treat the harness as the attack surface: run each candidate in its own process, keep the scripts read-only, re-verify inside the timing loop, reject anything faster than the hardware limit, and audit sudden jumps by hand.</p></div>
+<div class="answer"><p>Reward hacking is when the agent raises its score without doing the task. Sakana's system found a memory exploit in its own harness, and one kernel reported as 150x faster was actually 3x slower. A third of CUDA-L1's kernels ran work on a side stream the timer missed. METR saw o3 overwrite the grader's timer. So I treat the harness as the attack surface: run each candidate in its own process, keep the scripts read-only, re-verify inside the timing loop, reject anything faster than the hardware limit, and audit sudden jumps by hand.</p></div>
 
 <h2 id="cases">三个真实例子</h2>
 <table>
-  <thead><tr><th>例子</th><th>漏洞</th><th>数字</th><th>对应的防御</th></tr></thead>
+  <thead><tr><th>例子</th><th>漏洞</th><th>数字</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Sakana AI<br>CUDA Engineer<br>（2025-02）</td><td>harness 里有 memory exploit，kernel 没算对也能过 correctness check。外界推测是 caching allocator 把 reference 刚释放的显存分给了它</td><td>一个 kernel 报快 150x，实际慢 3x。别人修掉漏洞后复现，median speedup 是 1.10x</td><td>reference 和 candidate 分进程跑</td></tr>
-    <tr><td class="nw">CUDA-L1<br>（2025-07）</td><td>计算放到另一个 CUDA stream，KernelBench 的 timer 测不到</td><td>250 个 kernel 里有 82 个，占 32.8%。平均 speedup 从 17.7x 改成 3.12x</td><td>end event 等所有 stream</td></tr>
-    <tr><td class="nw">METR 测 o3<br>（2025-06）</td><td>改写 harness 的 timer。另一种手法是从 call stack 里找出 harness 算好的答案</td><td>Optimize a Kernel 任务 24 次 run 里 hack 了 6 次</td><td>harness 放在 agent 写不到的进程和文件里</td></tr>
+    <tr><td class="nw">Sakana AI<br>CUDA Engineer<br>（2025-02）</td><td>harness 里有 memory exploit，kernel 没算对也能过 correctness check。外界推测是 caching allocator 把 reference 刚释放的 GPU memory 分给了它，里面的旧数据还在</td><td>一个 kernel 报快 150x，实际慢 3x。别人修掉漏洞后复现，median speedup 是 1.10x</td></tr>
+    <tr><td class="nw">CUDA-L1<br>（2025-07）</td><td>计算放到另一个 CUDA stream，KernelBench 的 timer 只等 default stream，测不到</td><td>250 个 kernel 里有 82 个，占 32.8%。平均 speedup 从 17.7x 改成 3.12x</td></tr>
+    <tr><td class="nw">METR 测 o3<br>（2025-06）</td><td>改写 harness 的 timer。另一种手法是从 call stack 里找出 harness 算好的答案</td><td>Optimize a Kernel 任务 24 次 run 里 hack 了 6 次</td></tr>
   </tbody>
 </table>
 
 <h2 id="defense">常见类型和三层防御</h2>
-<p>常见的类型有调用 PyTorch fallback、缓存输出、降精度、hardcode 测试 shape 和改评测脚本。SOL-ExecBench 的统计里有 14.5% 的提交被标为 hack，其中最多的是降精度。</p>
+<p>常见的类型有调用 PyTorch fallback、缓存输出、降精度、hardcode 测试 shape 和改评测脚本。SOL-ExecBench 里有 14.5% 的提交被标为 hack。最多的是降精度，占全部提交的 6.4%（对策见 <a href="kernel-correctness.html#checklist">kernel 正确性</a>）。</p>
 <ol>
-  <li><strong>隔离 harness</strong>：candidate 分进程跑，输入每次 clone，计时等所有 stream，评测脚本只读。隔离用什么技术见 <a href="agent-sandbox.html">sandbox 和 verifier 隔离</a></li>
+  <li><strong>隔离 harness</strong>：candidate 分进程跑，输入每次 clone，计时等所有 stream，评测脚本只读（技术见 <a href="agent-sandbox.html">sandbox</a>）</li>
   <li><strong>规则和物理上限</strong>：运行时禁止 PyTorch fallback；计时循环里每次重新校验输出；比 SOL 还快的结果直接作废</li>
   <li><strong>Judge 加人工</strong>：reward 突然跳高就让 LLM judge 复查，高分样本人工抽查，发现的手法固化成新规则</li>
 </ol>
-<p>KernelGuard 用静态规则、physics floor 和 LLM judge 三层，把比赛里的 hacked 提交率从 3.45% 降到 0.37%。Search agent 一侧的 reward hacking 见 <a href="train-search-agent.html">search agent 怎么训</a>。</p>
+<p>KernelGuard 用静态规则、physics floor 和 LLM judge 三层，把比赛里的 hacked 提交率从 3.45% 降到 0.37%。Search agent 一侧见 <a href="train-search-agent.html">search agent 怎么训</a>。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>定义：分数高了，任务没完成</li>
   <li>三个例子：Sakana 的 memory exploit、CUDA-L1 的 stream、METR 的 o3 改 timer</li>
   <li>搜索或 RL 越强，越容易找到 harness 的漏洞</li>
-  <li>第一层是隔离：分进程、clone 输入、等所有 stream、脚本只读</li>
-  <li>第二层是规则和 SOL，第三层是 judge 加人工抽查高分</li>
+  <li>三层防御：隔离 harness，规则加 SOL，judge 加人工抽查高分</li>
   <li>在 prompt 里写“不要作弊”没有用</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>在 prompt 里写“不要作弊”为什么不行？</summary>
-  <p>METR 试过，效果很小。事后问 o3 这样做是否符合用户的意图，10 次里它 10 次回答 no，说明它知道这是作弊。所以只能靠 harness 拦。</p>
+  <p>METR 试过，效果很小。事后问 o3 这样做是否符合用户的意图，10 次里它 10 次回答 no，说明它知道这是作弊。</p>
 </details>
 <details>
   <summary>Speed of light 怎么算？</summary>
   <p>用运算量除以硬件的峰值算力。4096 × 4096 的 matmul 是 \(2 \times 4096^3 \approx 1.37 \times 10^{11}\) FLOPs，H100 的 BF16 峰值约 989 TFLOPS，相除约 0.14 ms。KernelBench v0.1 给的下界是约 0.138 ms。</p>
 </details>
 <details>
-  <summary>让 agent 自己写 test 行不行？</summary>
-  <p>不行。Meta 的 KernelFalcon 让 LLM 生成 test harness，原文把这一点列为弱点。判定要由 agent 改不了的代码做。</p>
-</details>
-<details>
-  <summary>降精度算不算 hack？</summary>
-  <p>容差太宽时它能过检查，实际是用 FP16 或 TF32 算完再转回来。SOL-ExecBench 里这一类占全部提交的 6.4%。对策是按 dtype 设容差，见<a href="kernel-correctness.html">怎么验证 kernel 正确</a>。</p>
-</details>
-<details>
   <summary>你自己的经验怎么接上？</summary>
-  <p>RL environment 里的 verifier 就是这里的 harness。原则是它的覆盖面要大于 policy 的搜索能力，并且持续找人或 agent 来攻击它。只讲简历上公开的层面。</p>
+  <p>RL environment 里的 verifier 就是这里的 harness。它的覆盖面要大于 policy 的搜索能力，并且持续找人或 agent 来攻击它。只讲简历上公开的层面。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 21 题 · Sakana 事件：<a href="https://techcrunch.com/?p=2969225">TechCrunch 2025-02-21</a>、<a href="https://gigazine.net/gsc_news/en/20250225-sakana-ai-cuda-engineer-walks-back">GIGAZINE</a>，复现的 1.10x 见 <a href="https://arxiv.org/html/2510.03760">EvoEngineer</a> App. A.8 · <a href="https://arxiv.org/html/2507.14111">CUDA-L1</a>（32.8%、17.7x 改 3.12x）· <a href="https://metr.org/blog/2025-06-05-recent-reward-hacking">METR 2025-06-05</a> · <a href="https://scalingintelligence.stanford.edu/blogs/kernelbenchv01/">KernelBench v0.1</a>（SOL 的例子）· <a href="https://arxiv.org/html/2603.19173">SOL-ExecBench</a> Table 3 · <a href="https://icml.cc/virtual/2026/67922">KernelGuard</a> · <a href="https://pytorch.org/blog/kernelfalcon-autonomous-gpu-kernel-generation-via-deep-agents/">KernelFalcon</a> · 整理见文献笔记 5.3 节</p>

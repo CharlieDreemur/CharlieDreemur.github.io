@@ -18,19 +18,19 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Convolution</dt>
-  <dd>拿一个小窗口（kernel）在图上滑，每个位置和底下的像素对应相乘再求和，像拿一枚印章逐格比对，看哪里最像。库里其实不翻转 kernel，严格说是 cross-correlation。<span class="eg">例：输入 0, 0, 1, 1（左暗右亮），kernel (−1, 1) → 0, 1, 0：只在明暗交界处亮，这就是 edge detector。</span></dd>
+  <dd>kernel 在图上滑，每个位置和底下的像素对应相乘再求和。库里不翻转 kernel，严格说是 cross-correlation。<span class="eg">例：输入 0, 0, 1, 1，kernel (−1, 1) → 0, 1, 0，只在明暗交界处亮（edge detector）。</span></dd>
   <dt>Local connectivity 与 parameter sharing</dt>
-  <dd>每个输出只看 k×k 的一小块；同一个 kernel 在所有位置复用，"找竖线"的规则在哪儿都一样。所以参数量和图片大小无关。<span class="eg">例：32×32×3 → 32×32×16，FC 要约 5000 万个 weight，3×3 conv 只要 448 个参数。</span></dd>
+  <dd>每个输出只看 k×k 的一小块，同一个 kernel 在所有位置复用，所以参数量和图片大小无关。<span class="eg">例：32×32×3 → 32×32×16，FC 要约 5000 万个 weight，3×3 conv 只要 448 个参数。</span></dd>
   <dt>Stride 与 padding</dt>
-  <dd>Stride 是每次挪几格，stride 2 让边长约减半；padding 是四周补 0，让边缘也被扫到。<span class="eg">例：3×3 kernel、padding 1、stride 1，输出和输入一样大（"same" padding）。</span></dd>
+  <dd>Stride 是每次挪几格，stride 2 让边长约减半；padding 是四周补 0，让边缘也被扫到。</dd>
   <dt>Pooling</dt>
-  <dd>每个小窗口只留一个数（max 或 average），尺寸变小，没有参数。<span class="eg">例：2×2 max pooling，窗口 (1, 3; 2, 0) → 3。</span></dd>
+  <dd>每个小窗口只留一个数（max 或 average），尺寸变小，没有参数。</dd>
   <dt>Equivariance 与 invariance</dt>
-  <dd>猫往右挪 2 格，conv 输出的 feature map 也往右挪 2 格（equivariance：跟着变）；再 pooling，小的平移基本不改变输出（invariance：不变）。</dd>
+  <dd>输入平移，conv 的 feature map 跟着平移（equivariance）。再 pooling，小的平移基本不改变输出（invariance）。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Images have local structure, and the same pattern can appear anywhere. Conv layers exploit this with local connectivity, where each output sees only a k-by-k window, and parameter sharing, where one kernel slides over every position. So a layer has (k²·C_in + 1)·C_out parameters regardless of image size, and it's translation equivariant; pooling adds invariance to small shifts. The output size is floor((n + 2p − k)/s) + 1. Architectures went from AlexNet to VGG's stacked 3×3 convs, Inception's 1×1 bottlenecks, ResNet's residual connections that make very deep nets trainable, MobileNet's depthwise separable convs, and ViT, a Transformer on image patches.</p></div>
+<div class="answer"><p>Images have local structure, and the same pattern can appear anywhere. Conv layers exploit this with local connectivity, where each output sees only a k-by-k window, and parameter sharing, where one kernel slides over every position. So a layer has (k²·C_in + 1)·C_out parameters regardless of image size, and it's translation equivariant; pooling adds invariance to small shifts. The output size is floor((n + 2p − k)/s) + 1. Architectures went from AlexNet to VGG's stacked 3×3 convs, Inception's 1×1 bottlenecks, ResNet's residual connections, MobileNet's depthwise separable convs, and ViT, a Transformer on image patches.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
@@ -40,8 +40,8 @@
   <p>每个输出 channel 一个 \(C_{\text{in}}\times k\times k\) 的 kernel 加一个 bias，和 \(n\) 无关。</p>
 </div>
 
-<h2 id="example">手算例子：一个小 CNN 逐层算</h2>
-<p><strong>尺寸按公式逐层往下推，参数只有 conv 和 FC 有</strong>。输入 32×32×3：</p>
+<h2 id="example">手算例子</h2>
+<p>输入 32×32×3，尺寸按公式逐层往下推：</p>
 <table>
   <thead><tr><th>层</th><th>设置</th><th>输出尺寸</th><th>参数量</th></tr></thead>
   <tbody>
@@ -53,16 +53,16 @@
 </table>
 <p>共 21,546 个参数，最后的 FC 占七成多。AlexNet 的 60M 参数也主要在 FC 层。</p>
 
-<h2 id="arch">经典架构（各一句）</h2>
+<h2 id="arch">经典架构</h2>
 <table>
   <thead><tr><th>架构</th><th>关键点</th></tr></thead>
   <tbody>
     <tr><td class="nw">AlexNet（2012）</td><td>比 LeNet 深，ReLU、dropout、GPU；ImageNet top-5 error 26% → 15%</td></tr>
-    <tr><td class="nw">VGG</td><td>全用 3×3 conv 堆叠：参数更少、非线性更多</td></tr>
+    <tr><td class="nw">VGG</td><td>全用 3×3 conv 堆叠</td></tr>
     <tr><td class="nw">Inception</td><td>一个 block 并行跑多种 kernel 再拼接，先用 1×1 conv 降 channel</td></tr>
-    <tr><td class="nw">ResNet</td><td>residual connection \(x_{l+1} = \varphi(x_l + F(x_l))\)，训到 152 层</td></tr>
+    <tr><td class="nw">ResNet</td><td>residual connection \(x_{l+1} = \varphi(x_l + F(x_l))\)，训到 152 层（<a href="vanishing-gradient.html#additive">为什么</a>）</td></tr>
     <tr><td class="nw">MobileNet</td><td>depthwise separable conv，3×3 时计算量少 8–9 倍</td></tr>
-    <tr><td class="nw">ViT</td><td>图片切 patch 当 token 进 Transformer；pre-train 数据够大才超过 CNN</td></tr>
+    <tr><td class="nw">ViT</td><td>图片切 patch 当 token 进 Transformer；没有 CNN 的 inductive bias，在 14M–300M 张图上 pre-train 才追平或超过</td></tr>
   </tbody>
 </table>
 
@@ -81,19 +81,11 @@
 </details>
 <details>
   <summary>1×1 conv 有什么用？</summary>
-  <p>相当于在每个像素上做同一个 FC，只混合 channel，参数 \(C_{\text{in}}C_{\text{out}}\)。用来改 channel 数，比如 Inception 在大 kernel 之前先降 channel 省计算。</p>
+  <p>相当于在每个像素上做同一个 FC，只混合 channel，参数 \(C_{\text{in}}C_{\text{out}}\)。用来改 channel 数。</p>
 </details>
 <details>
   <summary>一层 conv 的计算量怎么算？</summary>
   <p>每个输出元素做 \(k^2C_{\text{in}}\) 次乘加，共 \(n_{\text{out}}^2 k^2 C_{\text{in}} C_{\text{out}}\) 次（MACs），FLOPs 约是它的 2 倍。上表 conv1：\(28^2\cdot 25\cdot 3\cdot 16 = 940{,}800\)。</p>
-</details>
-<details>
-  <summary>ResNet 为什么能训很深？</summary>
-  <p>每个 block 只学 residual \(F\)，\(F = 0\) 就是 identity，加深至少不比浅的差。gradient 还能沿 skip connection 直接传回前面的层，缓解 vanishing gradient。</p>
-</details>
-<details>
-  <summary>CNN 和 ViT 怎么选？</summary>
-  <p>CNN 自带 locality 和 translation equivariance 的 inductive bias，数据少时更好；ViT 只在 ImageNet 上训会比同等大小的 ResNet 差几个点，在 14M–300M 张图上 pre-train 后才追平或超过。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.deeplearningbook.org/contents/convnets.html">Goodfellow et al.</a> §9.1–9.3（pp.329–339）· <a href="https://d2l.ai/chapter_convolutional-neural-networks/padding-and-strides.html">d2l §7.3</a> eq. 7.3.2 · <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §14.2.1（pp.468–474）、§14.3（pp.479–484）、§13.4.4（p.451）· <a href="https://arxiv.org/abs/1409.1556">VGG</a> §2.3 · <a href="https://arxiv.org/abs/1704.04861">MobileNets</a> §3.1 · <a href="https://arxiv.org/abs/2010.11929">ViT</a> §1</p>

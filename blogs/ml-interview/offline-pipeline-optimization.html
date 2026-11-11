@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Offline pipeline</dt>
-  <dd>不直接回应用户请求的那一段。它把原始数据处理成训练样本，再拿去训练模型。</dd>
+  <dd>不直接回应用户请求的那一段，把原始数据处理成训练样本，再拿去训练模型。</dd>
   <dt>Stage</dt>
-  <dd>pipeline 里的一段。<span class="eg">这页用四个 stage：读取、解码和 feature transform、组 batch、送进 GPU 训练。</span></dd>
+  <dd>pipeline 里的一段，比如解码和 feature transform。</dd>
   <dt>GPU 等 CPU</dt>
-  <dd>GPU 算完一个 batch，下一个 batch 还没准备好，只能空等。像厨师手快但备菜慢，灶台闲着。</dd>
+  <dd>GPU 算完一个 batch，下一个 batch 还没准备好，只能空等。</dd>
   <dt>Zero-copy</dt>
   <dd>不把数据再复制一份，直接在原来那块内存上读。</dd>
   <dt>Samples/s 和 GPU-hour</dt>
-  <dd>offline 的端到端目标。samples/s 是每秒处理多少样本，GPU-hour 是用了几张卡乘以多少小时。</dd>
+  <dd>samples/s 是每秒处理多少样本，GPU-hour 是用了几张卡乘以多少小时。</dd>
 </dl>
 
 <h2 id="figs">看图：GPU 在哪里等 CPU</h2>
@@ -67,44 +67,40 @@
   <text x="190" y="231" text-anchor="middle">计算 300 ms</text>
   <text class="acc" x="322" y="231">throughput × 1.67</text>
 </svg>
-<figcaption>图 1：上面是四个 stage，粗框是这个例子里的瓶颈。下面两条时间线的数字是示意。优化前 CPU 每 500 ms 才准备好一个 batch，GPU 300 ms 算完，剩下 200 ms 空等。把 feature transform 做快之后，瓶颈换成 GPU。</figcaption>
+<figcaption>图 1：上面是四个 stage，粗框是这个例子里的瓶颈。下面两条时间线的数字是示意。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>It's the same loop with different targets. I'd profile the pipeline stage by stage to see whether the GPU is waiting on the CPU. Then I find the dominant stage, often decoding and feature transforms, and change one thing, like vectorizing it or removing a copy. To verify, the output data must be identical row by row, training loss must stay within tolerance, and the throughput gain has to beat the noise. The end-to-end metric is samples per second and GPU-hours per run, not request latency. FlashVector's feature-processing case is the closest analogy: Cython kernels and zero-copy took a pod from 940 to about 1,500 requests per second.</p></div>
+<div class="answer"><p>It's the same loop with different targets. I'd profile the pipeline stage by stage to see whether the GPU is waiting on the CPU. Then I find the dominant stage, often decoding and feature transforms, and change one thing, like vectorizing it. To verify, the output data must be identical row by row, training loss must stay within tolerance, and the throughput gain has to beat the noise. The end-to-end metric is samples per second and GPU-hours per run, not request latency. FlashVector's feature-processing case is the closest analogy: Cython kernels and zero-copy took a pod from 940 to about 1,500 requests per second.</p></div>
 
-<h2 id="compare">同一个循环，两个场景各换成什么</h2>
+<h2 id="compare">同一个循环，两个场景</h2>
 <table>
   <thead><tr><th></th><th>Serving（FlashVector 论文）</th><th>Offline（推断）</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Profile</td><td>GPU 用 Nsight；model server 和 feature processing 用 eBPF</td><td>GPU utilization、DataLoader 等待时间、每个 stage 的耗时</td></tr>
-    <tr><td class="nw">Diagnose</td><td>对照 knowledge base 找瓶颈；预期收益低于 noise 的跳过</td><td>先分清是 GPU 等 CPU 还是 GPU 本身慢；候选原因有解码和 feature transform、序列化、IO、GPU kernel</td></tr>
+    <tr><td class="nw">Profile</td><td>Nsight 和 eBPF</td><td>GPU utilization、DataLoader 等待时间、每个 stage 的耗时</td></tr>
+    <tr><td class="nw">Diagnose</td><td>对照 knowledge base 找瓶颈</td><td>先分清是 GPU 等 CPU 还是 GPU 本身慢，再看解码和 feature transform、序列化、IO、GPU kernel</td></tr>
     <tr><td class="nw">Optimize</td><td>kernel fusion、改写成 C++ 或 Cython、zero-copy、调 config</td><td>向量化或 Cython、zero-copy、调 worker 数；训练侧 torch.compile</td></tr>
     <tr><td class="nw">Verify</td><td>输出逐元素相等或在 dtype 容差内；replay 生产流量</td><td>输出数据逐行相同；训练侧 loss 在容差内；数据版本固定</td></tr>
     <tr><td class="nw">端到端目标</td><td>固定 latency SLO 下的 throughput</td><td>samples/s 和 GPU-hour，没有 latency SLO</td></tr>
   </tbody>
 </table>
-<p>最接近的类比是 FlashVector 的 Case 3。它的瓶颈是 CPU 上的 feature processing，agent 把它改成 Cython kernel 和 zero-copy，RPS 从 940 提到约 1.5k 每 pod。改动分两轮做，第二轮 profile 的是第一轮改过的服务，冒出来的是新的瓶颈。</p>
+<p>最接近的类比是 <a href="flashvector.html#cases">FlashVector</a> 的 Case 3，瓶颈在 CPU 上的 feature processing。它的第二轮 profile 的是改过的服务，冒出来的是新的瓶颈。</p>
 
 <h2 id="example">手算：瓶颈会转移</h2>
-<p>用图里的数字，它们是示意。CPU 每 500 ms 才准备好一个 batch，GPU 300 ms 就算完，每步空等 200 ms，GPU 有 40% 的时间闲着。把 feature transform 做快到 250 ms 一个 batch 之后，瓶颈换成 GPU，一步变成 300 ms，throughput 是原来的 500 ÷ 300 ≈ 1.67 倍。这时再优化 CPU 没有收益，下一轮要 profile GPU 一侧。</p>
-<p>训练慢和 GPU utilization 低的一般排查见 <a href="debug-slow-hang.html">训练慢与 hang</a>。</p>
+<p>数字是示意。CPU 每 500 ms 才准备好一个 batch，GPU 300 ms 就算完，每步空等 200 ms，GPU 有 40% 的时间闲着。把 feature transform 做快到 250 ms 一个 batch 之后，瓶颈换成 GPU，一步变成 300 ms，throughput 是原来的 500 ÷ 300 ≈ 1.67 倍。这时再优化 CPU 没有收益，下一轮要 profile GPU 一侧。</p>
+<p>GPU utilization 低的一般排查见 <a href="debug-slow-hang.html">训练慢与 hang</a>。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>循环不变，换的是 profile 工具、verify 标准和端到端目标</li>
   <li>先分清是 GPU 等 CPU，还是 GPU 本身慢</li>
   <li>一轮只改一处，改完重新 profile，因为瓶颈会转移</li>
-  <li>verify 看三样：输出数据逐行相同、训练侧 loss 在容差内、提升超过 noise</li>
+  <li>verify 看输出数据逐行相同、训练侧 loss 在容差内、提升超过 noise</li>
   <li>目标是 samples/s 和 GPU-hour，没有 latency SLO</li>
   <li>数据版本固定，前后才可比</li>
 </ul>
 
 <h2>追问</h2>
-<details>
-  <summary>和 serving 最大的区别是什么？</summary>
-  <p>没有 latency SLO，目标换成 throughput 和成本。可比的前提也变了，serving 是 replay 同一段生产流量，offline 是固定同一个数据版本。</p>
-</details>
 <details>
   <summary>Offline 的 noise floor 还是 ±6% 吗？</summary>
   <p>不是。±6% 是 FlashVector 在 serving 端到端量出来的。offline 要把未改动的 pipeline 重复跑几遍，自己量（见 <a href="noise-floor.html">noise floor</a>）。</p>
@@ -114,12 +110,8 @@
   <p>固定 seed 和数据顺序，比较若干步的 loss，差别在容差内才算过。浮点运算的顺序变了，就不能要求 bit-exact（见 <a href="kernel-correctness.html">kernel 正确性</a>）。</p>
 </details>
 <details>
-  <summary>GPU kernel 的优化在 offline 还有用吗？</summary>
-  <p>看它占一步的多大比例。GPU 在等 CPU 时，kernel 再快，一步的时间也不变（见 <a href="local-vs-e2e.html">local 和 end-to-end</a>）。旧版 Offline 岗写过 GPU kernel optimization，所以训练侧的 kernel 可能也在这个组的范围里，这是推断。</p>
-</details>
-<details>
   <summary>这题适合反问面试官什么？</summary>
-  <p>Offline 组现在用什么工具 profile，瓶颈在哪个 stage，FlashVector 的循环有没有搬到训练侧。这三件事公开材料里都没有。</p>
+  <p>Offline 组现在用什么工具 profile，瓶颈在哪个 stage，FlashVector 的循环有没有搬到训练侧。公开材料里都没有。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a>（arXiv 2609.17391，§4.2、§5.3 Case 3）· <a href="https://unitytech.wd1.myworkdayjobs.com/Unity/job/Mountain-View-CA-USA/XMLNAME--Req-6087--Software-Developer_JOBREQ-2615965">本岗 JD</a> · <a href="https://hitmarker.net/jobs/unity-staff-senior-machine-learning-engineer-ml-infrastructure-offline-1954884">hitmarker：已关闭的旧版 Offline 岗</a> · 调研笔记 0 节第 13 点、2.4 节 · ml-八股 08 第 31 题</p>

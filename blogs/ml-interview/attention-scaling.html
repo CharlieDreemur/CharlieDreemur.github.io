@@ -18,17 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Attention score \(q\cdot k\)</dt>
-  <dd>query 是"我想找什么"，key 是"我这里有什么"，点积就是匹配分，过 softmax 变成权重。像拿搜索关键词去对网页标签，越像分越高。<span class="eg">例：\(q = (1, 2)\)，\(k = (3, 1)\)，\(q\cdot k = 5\)。</span></dd>
+  <dd>query 是"我想找什么"，key 是"我这里有什么"，点积就是匹配分，过 softmax 变成权重。<span class="eg">例：\(q = (1, 2)\)，\(k = (3, 1)\)，\(q\cdot k = 5\)。</span></dd>
   <dt>点积的 variance 随 \(d_k\) 变大</dt>
-  <dd>点积是 \(d_k\) 个随机小项相加，像连掷 \(d_k\) 次 ±1 的硬币累加。掷得越多，总和离 0 越远，典型幅度是 \(\sqrt{d_k}\)。<span class="eg">例：\(d_k = 1\) 时 std = 1；\(d_k = 64\) 时 std = 8。</span></dd>
+  <dd>点积是 \(d_k\) 个随机小项相加，像连掷 \(d_k\) 次 ±1 的硬币，总和的典型幅度是 \(\sqrt{d_k}\)。<span class="eg">例：\(d_k = 64\) 时 std = 8。</span></dd>
   <dt>Softmax saturation</dt>
-  <dd>输入差距一大，softmax 就"赢者通吃"，几乎变成 one-hot。<span class="eg">例：softmax(1, −1) = (0.88, 0.12)；softmax(8, −8) ≈ (1, \(1.1\times10^{-7}\))。</span></dd>
-  <dt>Softmax 的 gradient</dt>
-  <dd>\(\partial p_i/\partial s_j = p_i(\delta_{ij} - p_j)\)。已经 one-hot 时每一项都 ≈ 0。票数差太多，分数再改一点结果也不变，\(W_Q\)、\(W_K\) 就收不到信号。</dd>
+  <dd>输入差距一大，softmax 几乎变成 one-hot，gradient 接近 0，\(W_Q\)、\(W_K\) 收不到信号。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Because the variance of the dot product grows with d_k. If the components of q and k are independent with mean 0 and variance 1, q·k is a sum of d_k such products, so its variance is d_k and its standard deviation is √d_k. With d_k = 64 the scores are about eight times larger, softmax saturates into a near one-hot distribution, and its gradient p_i(δ_ij − p_j) is almost zero, so the query and key projections barely learn. Dividing by √d_k brings the variance back to 1 regardless of d_k. Dividing by d_k would overshoot: the variance becomes 1/d_k and attention becomes nearly uniform.</p></div>
+<div class="answer"><p>Because the variance of the dot product grows with d_k. If q and k have independent components with mean 0 and variance 1, q·k has variance d_k and standard deviation √d_k. With d_k = 64 the scores are about eight times larger, softmax saturates to near one-hot, and its gradient p_i(δ_ij − p_j) is almost zero, so the query and key projections barely learn. Dividing by √d_k brings the variance back to 1. Dividing by d_k would overshoot: the variance becomes 1/d_k and attention becomes nearly uniform.</p></div>
 
 <h2>推导 / 关键公式</h2>
 <div class="deriv">
@@ -37,19 +35,20 @@
   \[ \mathrm{Var}(q_i k_i) = \mathbb E[q_i^2]\,\mathbb E[k_i^2] = 1 \]
   \[ \mathrm{Var}(q\cdot k) = \sum_{i=1}^{d_k}\mathrm{Var}(q_i k_i) = d_k \]
   \[ \mathrm{Var}\big(q\cdot k/\sqrt{d_k}\big) = 1 \]
+  <p>乘以 \(c\) 后 variance 是 \(c^2 d_k\)，要它等于 1 只能取 \(c = 1/\sqrt{d_k}\)。</p>
   <h3 id="gradient">为什么 score 大了学不动</h3>
   \[ \frac{\partial p_i}{\partial s_j} = p_i(\delta_{ij} - p_j) \]
-  <p>\(p\) 接近 one-hot 时，每个 \(p_i\) 不是 ≈ 0 就是 ≈ 1，这一项都 ≈ 0 → gradient vanishing。</p>
+  <p>\(p\) 接近 one-hot 时每个 \(p_i\) 不是 ≈ 0 就是 ≈ 1，这一项都 ≈ 0。</p>
 </div>
 
 <h2 id="example">手算例子：\(d_k = 1\) vs \(d_k = 64\)</h2>
-<p>两个 key，分数分别比平均高、低一个 std。\(d_k = 1\) 时 score 是 (1, −1)；\(d_k = 64\) 时 std = 8，同样的位置变成 (8, −8)：</p>
+<p>两个 key 的分数分别比平均高、低一个 std。\(d_k = 1\) 时是 (1, −1)，\(d_k = 64\) 时 std = 8，变成 (8, −8)。</p>
 <table>
   <thead><tr><th>\(d_k = 64\) 时</th><th>score</th><th>softmax</th><th>\(p_1(1-p_1)\)</th></tr></thead>
   <tbody>
-    <tr><td class="nw">不缩放</td><td class="nw">(8, −8)</td><td class="nw">(≈1, \(1.1\times10^{-7}\))</td><td>\(1.1\times10^{-7}\)：saturate，学不动</td></tr>
+    <tr><td class="nw">不缩放</td><td class="nw">(8, −8)</td><td class="nw">(≈1, \(1.1\times10^{-7}\))</td><td>\(1.1\times10^{-7}\)：saturate</td></tr>
     <tr><td class="nw"><strong>除以 \(\sqrt{d_k} = 8\)</strong></td><td class="nw">(1, −1)</td><td class="nw">(0.88, 0.12)</td><td><strong>0.105</strong>：和 \(d_k = 1\) 一样</td></tr>
-    <tr><td class="nw">除以 \(d_k = 64\)</td><td class="nw">(0.125, −0.125)</td><td class="nw">(0.56, 0.44)</td><td>0.246：接近 uniform，分不出谁重要</td></tr>
+    <tr><td class="nw">除以 \(d_k = 64\)</td><td class="nw">(0.125, −0.125)</td><td class="nw">(0.56, 0.44)</td><td>0.246：接近 uniform</td></tr>
   </tbody>
 </table>
 
@@ -63,24 +62,20 @@
 
 <h2>追问</h2>
 <details>
-  <summary>为什么不除以 \(d_k\)？</summary>
-  <p>variance 变成 \(1/d_k\)。\(d_k = 64\) 时 score 被压到 ±0.125 附近，softmax 接近 uniform，attention 失去区分度。乘以 \(c\) 后 variance 是 \(c^2 d_k\)，要它等于 1 只能取 \(c = 1/\sqrt{d_k}\)。</p>
-</details>
-<details>
   <summary>multi-head 里的 \(d_k\) 指哪个维度？</summary>
-  <p>每个 head 的维度 \(d_{\text{model}}/h\)。原版 512/8 = 64，所以是除以 8，不是 \(\sqrt{512}\)。</p>
+  <p>每个 head 的维度 \(d_{\text{model}}/h\)。原版 512/8 = 64，所以除以 8，不是 \(\sqrt{512}\)。</p>
 </details>
 <details>
   <summary>训练中 \(q\)、\(k\) 不再是 unit variance 怎么办？</summary>
-  <p>这个假设只在初始化附近大致成立。ViT-22B 在 8B 规模遇到 attention logits 越来越大、attention 变成 one-hot、loss 发散，解决办法是 QK-norm：先对 \(q\)、\(k\) 做 LayerNorm 再点积。</p>
+  <p>假设只在初始化附近成立。ViT-22B 在 8B 规模遇到 attention logits 变大、loss 发散，用 QK-norm 解决，即先对 \(q\)、\(k\) 做 LayerNorm 再点积。</p>
 </details>
 <details>
   <summary>和 softmax temperature 什么关系？</summary>
-  <p>除以 \(\sqrt{d_k}\) 就是 temperature \(T = \sqrt{d_k}\) 的 softmax。\(T\) 越大分布越平，越小越尖。区别是这里 \(T\) 固定，不调。</p>
+  <p>除以 \(\sqrt{d_k}\) 就是 <a href="decoding.html">temperature</a> \(T = \sqrt{d_k}\) 的 softmax，只是这里 \(T\) 固定不调。</p>
 </details>
 <details>
   <summary>为什么不用 additive attention？</summary>
-  <p>原论文：\(d_k\) 小时两者差不多，\(d_k\) 大时 additive 比不缩放的 dot-product 好。缩放后 dot-product 能用矩阵乘法实现，更快、更省内存。</p>
+  <p>原论文说 \(d_k\) 大时 additive 比不缩放的 dot-product 好。缩放后的 dot-product 能用矩阵乘法实现，更快、更省内存。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.2.1 及 footnote 4（p.4）· <a href="https://d2l.ai/chapter_attention-mechanisms-and-transformers/attention-scoring-functions.html">Dive into Deep Learning</a> §11.3.1 eq. 11.3.2 · <a href="https://arxiv.org/abs/2302.05442">Dehghani et al. 2023（ViT-22B）</a> §2（p.2，QK normalization）</p>

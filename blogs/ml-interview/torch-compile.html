@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Eager mode</dt>
-  <dd>PyTorch 默认的跑法。Python 执行到一个 op 就 launch 一个 kernel，结果写回 HBM，再执行下一个 op。<span class="eg">y = relu(x * w + b) 是 3 个 op，也就是 3 个 kernel。</span></dd>
+  <dd>PyTorch 默认的跑法。Python 执行到一个 op 就 launch 一个 kernel，结果写回 HBM。<span class="eg">y = relu(x * w + b) 是 3 个 op，也就是 3 个 kernel。</span></dd>
   <dt>TorchDynamo</dt>
-  <dd>负责捕获 graph。它在 Python 执行函数之前把函数拦下来，把里面的 tensor op 记成一张 FX graph。</dd>
+  <dd>在 Python 执行函数之前把它拦下来，把里面的 tensor op 记成一张 FX graph。</dd>
   <dt>AOTAutograd</dt>
-  <dd>负责 backward。它提前把 backward 的 graph 也 trace 出来，forward 和 backward 就都能交给 compiler 优化。</dd>
+  <dd>提前把 backward 的 graph 也 trace 出来，forward 和 backward 都能交给 compiler 优化。</dd>
   <dt>TorchInductor</dt>
-  <dd>默认的 backend compiler。它对 graph 里的 op 做 fusion，在 GPU 上生成 Triton kernel（见 <a href="triton-vs-cuda.html">Triton 和 CUDA</a>）。</dd>
+  <dd>默认的 backend compiler，对 graph 里的 op 做 fusion，在 GPU 上生成 Triton kernel（见 <a href="triton-vs-cuda.html">Triton 和 CUDA</a>）。</dd>
   <dt>Guard</dt>
-  <dd>编译结果能复用的前提条件，像一张写着“只限这种输入”的通行证。每次调用先查 guard。<span class="eg">tensor 的 guard 会查 dtype、device 和 shape，shape 变了就失败。</span></dd>
+  <dd>编译结果能复用的前提条件，每次调用先查。<span class="eg">tensor 的 guard 会查 dtype、device 和 shape，shape 变了就失败。</span></dd>
 </dl>
 
 <h2 id="figs">看图：编译的三步，和之后每次调用</h2>
@@ -69,19 +69,19 @@
   <rect class="stale" x="250" y="230" width="300" height="28" rx="4"/>
   <text x="400" y="249" text-anchor="middle">recompile 到上限（默认 8），回到 eager</text>
 </svg>
-<figcaption>图 1：上面一行是第一次调用时的编译，三步依次走。下面是之后的每次调用。guard 通过就复用编译好的 kernel，失败就 recompile。recompile 的次数到上限后，这个函数不再编译，回到 eager。</figcaption>
+<figcaption>图 1：上面一行是第一次调用时的编译，下面是之后的每次调用。guard 通过就复用，失败就 recompile，到上限后回到 eager。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>In eager mode, Python runs one op at a time: each op launches its own kernel and writes its result back to GPU memory. torch.compile does three things. TorchDynamo captures the Python function into a graph. AOTAutograd traces the backward pass ahead of time, so both directions can be optimized. TorchInductor then fuses ops and generates Triton kernels on GPU, which means fewer launches and less memory traffic. The compiled code is protected by guards, for example on input shapes; when a guard fails, it recompiles. And the compiler can only fuse ops it can see into. The reduce-overhead mode also adds CUDA Graphs.</p></div>
+<div class="answer"><p>In eager mode, Python runs one op at a time: each op launches its own kernel and writes its result back to GPU memory. torch.compile does three things. TorchDynamo captures the Python function into a graph. AOTAutograd traces the backward pass ahead of time, so both directions can be optimized. TorchInductor fuses ops and generates Triton kernels on GPU, so there are fewer launches and less memory traffic. Compiled code is protected by guards, for example on input shapes; when a guard fails, it recompiles. The compiler can only fuse ops it can see into.</p></div>
 
 <h2 id="steps">三步：捕获 graph，拿到 backward，生成 kernel</h2>
 <table>
-  <thead><tr><th>步骤</th><th>组件</th><th>做什么</th><th>要记住的一点</th></tr></thead>
+  <thead><tr><th>步骤</th><th>组件</th><th>要记住的一点</th></tr></thead>
   <tbody>
-    <tr><td>①</td><td class="nw">TorchDynamo</td><td>把 Python 函数捕获成 FX graph，同时生成 guard</td><td>遇到不支持的代码会 graph break。已捕获的部分先编译，这一段回 Python 跑，后面另起一张 graph</td></tr>
-    <tr><td>②</td><td class="nw">AOTAutograd</td><td>提前 trace 出 backward 的 graph</td><td>forward 和 backward 都能被加速，所以训练也能用</td></tr>
-    <tr><td>③</td><td class="nw">TorchInductor</td><td>做 fusion，GPU 上用 Triton 当 building block 生成 kernel</td><td>收益来自 launch 更少、访存更少，计算量不变（见 <a href="kernel-fusion.html">kernel fusion</a>）</td></tr>
+    <tr><td>①</td><td class="nw">TorchDynamo</td><td>捕获 graph 时同时生成 guard。遇到不支持的代码会 graph break，已捕获的部分先编译，这一段回 Python 跑，后面另起一张 graph</td></tr>
+    <tr><td>②</td><td class="nw">AOTAutograd</td><td>forward 和 backward 都能被加速，所以训练也能用</td></tr>
+    <tr><td>③</td><td class="nw">TorchInductor</td><td>fusion 的收益见 <a href="kernel-fusion.html">kernel fusion</a></td></tr>
   </tbody>
 </table>
 
@@ -90,16 +90,15 @@
   <thead><tr><th></th><th>Eager</th><th>torch.compile</th></tr></thead>
   <tbody>
     <tr><td class="nw">执行单位</td><td>一个 op 一个 kernel，Python 逐个调度</td><td>一张 graph 编译一次，fusion 后 kernel 更少</td></tr>
-    <tr><td class="nw">中间结果</td><td>每个 op 的输出都写回 HBM</td><td>融进同一个 kernel 的中间结果不写回 HBM</td></tr>
     <tr><td class="nw">第一次调用</td><td>直接跑</td><td>要先编译，前几次调用更慢</td></tr>
     <tr><td class="nw">输入的 shape 变了</td><td>没有影响</td><td>guard 失败，recompile</td></tr>
   </tbody>
 </table>
-<p>已有的编译结果 guard 全都不通过时，torch.compile 才 recompile。参数 <code>dynamic</code> 默认是 None，它发现 shape 变过，recompile 时会生成一个更 dynamic 的 kernel。recompile 的次数到上限（默认 8）后不再编译，这个函数回到 eager。所以 shape 一直在变的输入，可能编译了很多次，最后还是跑 eager。</p>
+<p>已有的编译结果 guard 全都不通过时才 recompile。参数 <code>dynamic</code> 默认是 None，发现 shape 变过，recompile 时会生成一个更 dynamic 的 kernel。次数到上限（默认 8）后这个函数回到 eager，shape 一直在变的输入最后可能还是跑 eager。</p>
 
 <h2 id="boundary">Compiler 的边界：FlashVector 的 embedding bag</h2>
-<p>FlashVector Case 2 的 baseline 是用 AOTInductor 编译的模型。AOTInductor 是 TorchInductor 的提前编译版本。它处理 torch.export 导出的模型，产出 shared library，部署时不需要 Python。</p>
-<p>baseline 已经编译过，embedding bag 仍然占 28.1% 的 GPU time。原因是 PyTorch 把它映射成一个 "opaque ATen dispatcher kernel"，compiler 看不到里面，所以融不了。agent 把 masked-mean pooling 拆成基本的 PyTorch op，compiler 才把它们融成一个 Triton kernel。compiler 只能融它看得见的 op，这是它的边界，也是 agent 能补上的地方。</p>
+<p>FlashVector Case 2 的 baseline 用 AOTInductor 编译。torch.compile 是 JIT，AOTInductor 是 TorchInductor 的提前编译版本，把 torch.export 导出的模型编译成 shared library，部署时不需要 Python。</p>
+<p>编译过之后 embedding bag 仍然占 28.1% 的 GPU time，因为 PyTorch 把它映射成一个 "opaque ATen dispatcher kernel"，compiler 看不到里面。agent 把 masked-mean pooling 拆成基本的 PyTorch op，compiler 才把它们融成一个 Triton kernel。这是 agent 能补上的地方。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -113,24 +112,16 @@
 
 <h2>追问</h2>
 <details>
-  <summary><code>reduce-overhead</code> 和 <code>max-autotune</code> 各做什么？</summary>
-  <p><code>reduce-overhead</code> 用 CUDA Graph 减少 Python 的 overhead，文档说它适合小 batch（见 <a href="cuda-graph.html">CUDA Graph</a>）。<code>max-autotune</code> 会用 Triton 或 template 实现的 matmul。</p>
-</details>
-<details>
   <summary>CUDA Graph 和 torch.compile 是什么关系？（滴滴二面问过）</summary>
-  <p>它们省的东西不同。torch.compile 靠 fusion 减少 kernel 的数量和访存，CUDA Graph 减少每次 launch 的 overhead。<code>reduce-overhead</code> 把两者叠在一起用。</p>
-</details>
-<details>
-  <summary>torch.compile 和 AOTInductor 有什么区别？</summary>
-  <p>torch.compile 是 JIT，在 Python 进程里第一次调用时编译。AOTInductor 提前把导出的模型编译成 shared library，文档说它面向没有 Python 的 server 端 inference 部署。</p>
+  <p>省的东西不同。torch.compile 靠 fusion 减少 kernel 的数量和访存，<a href="cuda-graph.html">CUDA Graph</a> 减少每次 launch 的 overhead。<code>reduce-overhead</code> 模式把两者叠在一起用，文档说它适合小 batch。</p>
 </details>
 <details>
   <summary>什么时候 torch.compile 反而更慢？</summary>
-  <p>前几次调用要付编译时间，shape 一直变还会反复 recompile。graph break 把 graph 切碎，文档的说法是 "we lose optimization opportunities"。</p>
+  <p>前几次调用要付编译时间，shape 一直变会反复 recompile，graph break 会把 graph 切碎。</p>
 </details>
 <details>
   <summary>benchmark 时为什么要和 torch.compile 比？</summary>
-  <p>eager 太弱，快过它说明不了什么。CUDA Agent 的 reward 把快过 eager 和快过 torch.compile 分成两档（见 <a href="kernel-rl-reward.html">kernel RL 的 reward</a>）。Meta KernelEvolve 的 60% 也是对着 torch.compile 加厂商库量的。</p>
+  <p>eager 太弱，快过它说明不了什么，所以 CUDA Agent 的 reward 把快过 torch.compile 单列一档（见 <a href="kernel-rl-reward.html">kernel RL 的 reward</a>）。</p>
 </details>
 
 <p class="src"><b>来源</b>PyTorch 文档：<a href="https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler.html">torch.compiler</a>（TorchDynamo、AOT Autograd、TorchInductor 的定义）· <a href="https://docs.pytorch.org/docs/main/generated/torch.compile.html">torch.compile API</a>（<code>mode</code>、<code>dynamic</code>）· <a href="https://github.com/pytorch/pytorch/blob/main/docs/source/user_guide/torch_compiler/torch.compiler_troubleshooting.md">torch.compile troubleshooting</a>（graph break、guard、recompile 上限）· <a href="https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_aot_inductor.html">AOTInductor</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> §5.2 · ml-八股 08 第 12 题 · 面经出处见 面试题与 JD 1.4、3.4 节和 NVIDIA 题库笔记 1.9 节</p>

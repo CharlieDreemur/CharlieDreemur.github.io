@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>异步执行</dt>
-  <dd>CPU 把 kernel 交给 GPU 就返回，不等它跑完。像下了单就看表，量到的是下单时间，不是送达时间。</dd>
+  <dd>CPU 把 kernel 交给 GPU 就返回，不等它跑完。</dd>
   <dt>synchronize 和 CUDA event</dt>
-  <dd>两种计时法。<code>torch.cuda.synchronize()</code> 让 CPU 等 GPU 跑完，再用 host timer 停表，量到的时间含 launch overhead。CUDA event 量的是 GPU 时间。</dd>
-  <dt>Warmup</dt>
-  <dd>正式计时前先空跑几次，不让初始化的开销算进去。</dd>
+  <dd><code>torch.cuda.synchronize()</code> 让 CPU 等 GPU 跑完，再用 host timer 停表，量到的时间含 launch overhead。CUDA event 量的是 GPU 时间。</dd>
   <dt>Baseline</dt>
-  <dd>拿来对比的参照实现。它越弱，speedup 越好看。<span class="eg">KernelBench-Verified 把 baseline 换成开 TF32 的版本并加上 hidden test 后，GPT-5.5 从 1.43x 掉到 0.88x。</span></dd>
+  <dd>拿来对比的参照实现。它越弱，speedup 越好看（例子见 <a href="kernelbench.html">KernelBench</a>）。</dd>
   <dt>Speed of light</dt>
-  <dd>硬件的物理上限，由峰值算力和 memory bandwidth 算出来（见 <a href="matmul-roofline.html#roofline">roofline</a>）。<span class="eg">H100 上 BF16 4096² matmul 的下界约 0.138 ms。</span></dd>
+  <dd>硬件的物理上限，由峰值算力和 memory bandwidth 算出来（见 <a href="matmul-roofline.html#roofline">roofline</a>）。</dd>
 </dl>
 
 <h2 id="figs">看图：一次计时的时间线</h2>
@@ -62,66 +60,53 @@
   <rect class="f2" x="524" y="96" width="22" height="28" rx="3"/>
   <text class="hd" x="485" y="142" text-anchor="middle">每次的时间取 median</text>
 </svg>
-<figcaption>图 1：时间从左到右，不按比例。CPU 做完 launch 就返回，kernel 还在 GPU 上跑，所以不同步就停表只量到 launch。在 synchronize 之后停表，或者用 CUDA event，才量到 kernel 本身。</figcaption>
+<figcaption>图 1：时间从左到右，不按比例。不同步就停表只量到 launch，在 synchronize 之后停表或用 CUDA event 才量到 kernel 本身。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>GPU kernels launch asynchronously, so a host timer without a sync only measures the launch. I time with CUDA events, or call synchronize before and after. Then I cut the noise: warm up first, repeat many times and take the median, flush the L2 cache between runs, lock the GPU clock and keep the GPU exclusive. To compare candidates fairly, they run on the same machine, the same build and the same shapes and dtype, in alternating or random order. The baseline has to be strong, like torch.compile with TF32 on, not eager FP32. Finally, anything faster than the hardware's speed of light is a bug, not a win.</p></div>
+<div class="answer"><p>GPU kernels launch asynchronously, so a host timer without a sync only measures the launch. I time with CUDA events, or call synchronize before and after. Then I cut the noise: warm up, repeat and take the median, flush the L2 cache between runs, lock the GPU clock and keep the GPU exclusive. To compare candidates fairly, they run on the same machine, build, shapes and dtype, in alternating or random order. The baseline has to be strong, like torch.compile with TF32 on, not eager FP32. Finally, anything faster than the hardware's speed of light is a bug.</p></div>
 
 <h2 id="timing">怎么计时，怎么去噪</h2>
 <table>
   <thead><tr><th>措施</th><th>防什么</th><th>谁这么做</th></tr></thead>
   <tbody>
-    <tr><td class="nw">同步后再停表</td><td>只量到 launch</td><td>PyTorch 文档："time measurements without synchronizations are not accurate"</td></tr>
-    <tr><td class="nw">Warmup</td><td>初始化被算进去</td><td>KernelBench 用 3 次 warmup 加 100 次 trial；Triton <code>do_bench</code> 默认 25 ms warmup、100 ms rep</td></tr>
-    <tr><td class="nw">多次取 median</td><td>个别离群的一次带偏结果</td><td>CUDA-L1 取 median of bucket averages；GPU MODE 跑到 relative standard error 低于 1% 才停</td></tr>
+    <tr><td class="nw">同步后再停表</td><td>只量到 launch</td><td>PyTorch 文档</td></tr>
+    <tr><td class="nw">Warmup，先空跑几次</td><td>初始化被算进去</td><td>KernelBench 用 3 次 warmup 加 100 次 trial；Triton <code>do_bench</code> 默认 25 ms warmup、100 ms rep</td></tr>
+    <tr><td class="nw">多次取 median</td><td>离群值带偏结果</td><td>CUDA-L1 取 median of bucket averages；GPU MODE 跑到 relative standard error 低于 1% 才停</td></tr>
     <tr><td class="nw">每次运行前清 L2</td><td>上一次留在 cache 里的数据</td><td><code>do_bench</code> 每次调用前执行 <code>clear_cache</code></td></tr>
     <tr><td class="nw">锁时钟、独占 GPU</td><td>频率变化，别的任务抢 GPU</td><td>SOL-ExecBench 把 B200 锁在 1,500 MHz；KernelBench 一次只跑一个 kernel</td></tr>
-    <tr><td class="nw">规模调到 1–15 ms</td><td>launch overhead 占主导</td><td>KernelBench v0.1；也可以用 CUDA graph 去掉 launch overhead</td></tr>
+    <tr><td class="nw">规模调到 1–15 ms</td><td>launch overhead 占主导</td><td>KernelBench v0.1 的做法，也可以用 CUDA graph</td></tr>
   </tbody>
 </table>
-<p>手算一遍规模为什么要紧。KernelBench 原来的 ReLU 一次只要 0.013 ms，也就是 13 µs。launch overhead 按 5 µs 算（示意），占了三分之一还多。v0.1 把这题调到 6.97 ms，同样的 5 µs 不到 0.1%。</p>
+<p>KernelBench 原来的 ReLU 一次只要 13 µs。launch overhead 按 5 µs 算（示意），占了三分之一还多。v0.1 把这题调到 6.97 ms，同样的 5 µs 不到 0.1%。</p>
 
 <h2 id="same-env">不同方案怎么在相同环境下比</h2>
 <ul>
   <li><strong>同一台机器、同一套 build</strong>：KDA 要求 baseline 和候选同 ABI、同 build 路径</li>
   <li><strong>同样的输入</strong>：固定 shape 和 dtype，最好用生产 shape</li>
-  <li><strong>交替或随机先后</strong>：KDA 让 A/B 交替跑；CUDA-L1 每轮随机决定 reference 和 candidate 谁先跑</li>
+  <li><strong>交替或随机先后</strong>：KDA 让 A/B 交替跑，CUDA-L1 每轮随机决定谁先跑</li>
   <li><strong>离群值复测</strong>：CUDA-L1 把超过 3x 的结果放到第二张 GPU 上复测，相差 10% 以内才接受</li>
-  <li><strong>Baseline 要强</strong>：对比 torch.compile，FP32 开 TF32，有厂商库就比厂商库</li>
 </ul>
-<p>比的是 agent 方案而不是 kernel 时，还要固定 model 版本、image 和 seed，各方案跑同一批题（见 <a href="agent-batch-runs.html">大批量跑 agent</a>）。</p>
+<p>比 agent 方案时，还要固定 model 版本、image 和 seed，各方案跑同一批题（见 <a href="agent-batch-runs.html">大批量跑 agent</a>）。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>kernel 是异步执行的，所以用 CUDA event，或在计时前后 synchronize</li>
+  <li>kernel 异步执行，所以用 CUDA event，或在计时前后 synchronize</li>
   <li>warmup，多次取 median，清 L2，锁时钟，独占 GPU</li>
-  <li>单次运行调到 1–15 ms，或用 CUDA graph 去掉 launch overhead</li>
+  <li>单次运行调到 1–15 ms，launch overhead 才不占主导</li>
   <li>相同环境：同机器、同 build、同输入，交替或随机先后</li>
   <li>baseline 要强：torch.compile、TF32、厂商库</li>
-  <li>比 speed of light 还快的结果是 bug</li>
+  <li>比 speed of light 还快的结果是 bug（见 <a href="reward-hacking.html">reward hacking</a>）</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>论文里的 speedup 能直接比吗？</summary>
-  <p>不能。baseline、精度、硬件、shape 和 best-of-k 的选法都不一样。robust-kbench 剔除受污染的题后，3.13x 只剩 1.49x。</p>
-</details>
-<details>
-  <summary>结果怎么报告？</summary>
-  <p>报 geomean speedup 和 fast_p。同时写清 hardware、dtype、PyTorch 版本，以及 best-of-k 是怎么选的。</p>
-</details>
-<details>
-  <summary>agent 把计时函数改了怎么办？</summary>
-  <p>harness 放在 agent 写不到的进程或文件里，CUDA Agent 用文件权限保护 verify 和 profile 脚本（见 <a href="agent-sandbox.html">sandbox</a>）。别的钻法见 <a href="reward-hacking.html">reward hacking</a>。</p>
+  <summary>论文里的 speedup 能直接比吗，自己怎么报告？</summary>
+  <p>不能，各家的 baseline、dtype、hardware、shape 和 best-of-k 的选法都不一样。自己报 geomean speedup 和 fast_p，并写清这几项和 PyTorch 版本。</p>
 </details>
 <details>
   <summary>FlashVector 在这方面写了什么？</summary>
-  <p>baseline 和候选在同一环境测，config sweep 跑在生产机型的隔离节点上。warmup 几次、是否锁 GPU 时钟、是否清 L2，论文没写。</p>
-</details>
-<details>
-  <summary>单个 kernel 测准了，就能说线上快了吗？</summary>
-  <p>不能。端到端有自己的 noise floor（见 <a href="noise-floor.html">noise floor</a>），kernel 的提升也常常传不到端到端（见 <a href="local-vs-e2e.html">局部和端到端</a>）。</p>
+  <p>baseline 和候选在同一环境测，config sweep 跑在生产机型的隔离节点上，端到端的 <a href="noise-floor.html">noise floor</a> 是 ±6%。warmup、锁时钟和清 L2 论文都没写。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://docs.pytorch.org/docs/2.14/notes/cuda.html">PyTorch CUDA notes</a> · <a href="https://raw.githubusercontent.com/triton-lang/triton/main/python/triton/testing.py">Triton testing.py</a>（<code>do_bench</code>）· <a href="https://scalingintelligence.stanford.edu/blogs/kernelbenchv01/">KernelBench v0.1</a> · <a href="https://arxiv.org/html/2507.14111">CUDA-L1</a> · <a href="https://arxiv.org/html/2603.19173">SOL-ExecBench</a> · <a href="https://arxiv.org/html/2607.16241">KernelBench-Verified</a> · <a href="https://github.com/mit-han-lab/kernel-design-agents">KDA</a> · ml-八股 08 第 16 题 · 文献笔记 5.2 节 · 面经出处见 中文平台调研 1.7 节</p>

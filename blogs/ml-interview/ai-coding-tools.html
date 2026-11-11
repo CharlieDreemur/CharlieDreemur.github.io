@@ -18,73 +18,60 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Coding agent</dt>
-  <dd>能自己读文件、改文件、跑命令的 LLM 工具，比如 Claude Code 和 Cursor。它里面是一个 agent loop（见 <a href="agent-mcp.html">agent 和 tool calling</a>、<a href="mini-coding-agent.html">手写 mini coding agent</a>）。</dd>
-  <dt>Spec</dt>
-  <dd>动手前写下来的要求，包括输入输出、约束和不能动的东西。</dd>
-  <dt>验收测试</dt>
-  <dd>我先写好的测试。agent 的产出过了它才算数。</dd>
-  <dt>Diff</dt>
-  <dd>这次改动前后的差异，是 review 的对象。</dd>
+  <dd>能自己读文件、改文件、跑命令的 LLM 工具，比如 Claude Code 和 Cursor（agent loop 见 <a href="mini-coding-agent.html">mini coding agent</a>）。</dd>
+  <dt>Spec 和验收测试</dt>
+  <dd>动手前写下的要求和我先写好的测试。agent 的产出过了测试才算数。</dd>
   <dt>Fallback</dt>
-  <dd>新代码出错时悄悄退回旧实现。测试能过，但新代码其实没生效。<span class="eg">Kevin 训练时，模型学会了用 try-except 包住错的 CUDA kernel，失败就退回 PyTorch。</span></dd>
+  <dd>新代码出错时悄悄退回旧实现，测试能过，但新代码没生效。<span class="eg">Kevin 训练时学会了用 try-except 包住错的 CUDA kernel，失败就退回 PyTorch。</span></dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I use coding agents every day, and I treat their output like a junior engineer's pull request. I write the spec and the acceptance tests first, then let the agent loop: write, run, read the error, fix. Nothing merges until it passes those tests and I've read the diff. In infra work it saves me the most time on pipeline boilerplate, benchmark scripts, reading long logs, and porting code between languages. The risk is code that looks right but is wrong, or an agent that edits the test or adds a silent fallback to pass. So verification becomes the core of my job.</p></div>
+<div class="answer"><p>I use coding agents every day, and I treat their output like a junior engineer's pull request. I write the spec and the acceptance tests first, then let the agent loop: write, run, read the error, fix. Nothing merges until it passes those tests and I've read the diff. In infra work it saves the most time on pipeline boilerplate, benchmark scripts, reading long logs, and porting code between languages. The risk is code that looks right but is wrong, or an agent that edits the test or adds a silent fallback to pass. So verification becomes the core of my job.</p></div>
 
 <h2 id="checklist">怎么验收 AI 的产出</h2>
 <ol>
-  <li>先写 spec 和验收测试，再让 agent 动手。测试由我写，不由它写</li>
-  <li>大任务拆小，一次只交给它一件事</li>
-  <li>让它自己跑循环，先写，再运行，看到报错就改。我看测试和 benchmark 的结果，不看它的自述</li>
+  <li>先写 spec 和验收测试，再让 agent 动手。测试由我写</li>
+  <li>大任务拆小，一次只给它一件事</li>
+  <li>让它自己写、运行、看报错再改。我只看测试和 benchmark 的结果</li>
   <li>逐个 review diff，看不懂的代码不合并</li>
   <li>警惕三种能骗过测试的改法：改测试本身；加 fallback；用 try-except 吞掉错误</li>
-  <li>性能改动要有同一环境下改动前后的数字</li>
+  <li>性能改动要有同一环境下前后的数字</li>
 </ol>
-<p>第 5 条和 kernel agent 的 <a href="reward-hacking.html">reward hacking</a> 是同一件事。我在 RL environment 里设计 verifier 的经验可以直接用来审 agent 写的代码。FlashVector 里 agent 的改动也是开 PR，由人 review（见 <a href="agent-to-production.html">agent 的改动怎么进生产</a>）。面试时配一个自己的例子。</p>
+<p>第 5 条和 kernel agent 的 <a href="reward-hacking.html">reward hacking</a> 是同一件事，我在 RL environment 里设计 verifier 的经验可以直接用来审 agent 写的代码。FlashVector 里 agent 的改动也开成 PR 由人 review（见 <a href="agent-to-production.html">改动怎么进生产</a>）。</p>
 
 <h2 id="value">在 infra 里的价值和边界</h2>
 <table>
   <thead><tr><th></th><th>内容</th></tr></thead>
   <tbody>
-    <tr><td class="nw">省时间的地方</td><td>pipeline 的样板代码；benchmark 脚本；读又长又乱的日志；跨语言翻译，比如 CUDA 改 Triton</td></tr>
+    <tr><td class="nw">省时间的地方</td><td>pipeline 样板代码；benchmark 脚本；读长日志；跨语言翻译，比如 CUDA 改 Triton。讯飞同场的另一篇复盘答的也是后三样（CUDA 到 CANN 的算子翻译）</td></tr>
     <tr><td class="nw">边界</td><td>会自信地写错；不懂业务约束和生产环境</td></tr>
-    <tr><td class="nw">别人怎么答</td><td>讯飞那一场的另一篇复盘里，作者答的是三件事：CUDA 到 CANN 的算子翻译，生成 benchmark 压测脚本，分析底层的报错日志</td></tr>
     <tr><td class="nw">面试官追问什么</td><td>为什么这么写 prompt；AI 的修改对不对；你是否理解它写的代码；怎么测</td></tr>
   </tbody>
 </table>
-<p>最后一行转述自英文社区的面经，不是原话。OpenAI 的 Agentic Coding screen 看你怎么验证产出，以及能不能解释这段代码并对它负责（<a href="https://www.teamblind.com/post/openai-agentic-code-interview-up8jhuiq">Blind</a>）。Razorpay 把小步 commit、逐个审 diff、边写边测列为评分项（<a href="https://leetcode.com/discuss/post/8349883/razorpay-agentic-coding-round-sde-2-expe-wwpi/">LeetCode</a>）。Anthropic 有一轮 onsite 是 review 四个 PR，再改进其中一个（<a href="https://prachub.com/interview-experiences/anthropic-software-engineer-interview-experience-reviewing-and-improving-pull-requests-with-claude-code">PracHub</a>）。</p>
+<p>最后一行转述自英文社区的面经。OpenAI 的 Agentic Coding screen 看你怎么验证产出、能不能解释代码并对它负责（<a href="https://www.teamblind.com/post/openai-agentic-code-interview-up8jhuiq">Blind</a>）。Anthropic 有一轮 onsite 是 review 四个 PR 再改进其中一个（<a href="https://prachub.com/interview-experiences/anthropic-software-engineer-interview-experience-reviewing-and-improving-pull-requests-with-claude-code">PracHub</a>）。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>把 AI 的产出当成 junior 的 PR：先有 spec 和测试，再 review diff</li>
   <li>以测试和 benchmark 为准，不信它的自述</li>
   <li>警惕改测试、加 fallback、吞掉错误</li>
-  <li>价值在样板代码、benchmark 脚本、读日志、跨语言翻译</li>
-  <li>边界是自信地写错，不懂业务约束和生产环境</li>
+  <li>价值：样板代码、benchmark 脚本、读日志、跨语言翻译</li>
+  <li>边界：自信地写错，不懂业务约束和生产环境</li>
   <li>配一个自己的例子，并接到 verifier 的经验上</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>AI 一直给回同一段错的代码，怎么办？</summary>
-  <p>不再重复同一个 prompt。自己定位到出错的位置，把最小复现和期望输出给它，或者这一小段自己写。这个场景转述自 Microsoft CoreAI 一场 onsite 的面经（<a href="https://prachub.com/interview-experiences/microsoft-senior-software-engineer-interview-experience-coreai-loop-with-an-ai-coding-round-after-11-loops-in-a-year">PracHub</a>），候选人认为那一轮考的是 AI 出错时你怎么想。</p>
+  <p>不再重复同一个 prompt，自己定位出错的位置，把最小复现和期望输出给它，或者这一小段自己写。场景转述自 Microsoft CoreAI 的 onsite 面经（<a href="https://prachub.com/interview-experiences/microsoft-senior-software-engineer-interview-experience-coreai-loop-with-an-ai-coding-round-after-11-loops-in-a-year">PracHub</a>）。</p>
 </details>
 <details>
   <summary>现场让你用 Claude Code 改一个项目，注意什么？</summary>
-  <p>先读代码和已有的测试，说出计划，再小步改。每一步都跑测试、看 diff。虾皮那一场改完会问方案有什么问题，所以要能指出 AI 方案的缺点。</p>
+  <p>先读代码和已有的测试，说出计划，再小步改，每步都跑测试、看 diff。虾皮那一场改完会问方案有什么问题，要能指出 AI 方案的缺点。</p>
 </details>
 <details>
   <summary>AI 已经能写 kernel 了，你的价值在哪？</summary>
-  <p>没有懂的人，就没法判断 AI 写的那个是不是更好，这是 r/CUDA 一个讨论帖里高赞的观点（转述，<a href="https://www.reddit.com/r/CUDA/comments/1wn3x39/if_ai_is_better_than_humans_at_generating_kernels/">Reddit</a>）。我的价值在定目标、搭 harness、判断结果是真是假。</p>
-</details>
-<details>
-  <summary>Coding agent 出来之后，人怎么和它共存，能力怎么培养？</summary>
-  <p>虾皮同一场也问了这一题，这里的问法是转述。把时间从写代码挪到写 spec、设计验收和读 diff 上。基础还是要懂，不然判断不了它写得对不对。</p>
-</details>
-<details>
-  <summary>AI 写的代码该不该信？</summary>
-  <p>这是 NVIDIA 一场 director 轮的话题（转述，<a href="https://prachub.com/interview-experiences/nvidia-software-engineer-interview-experience-three-system-design-rounds-and-a-director-round">PracHub</a>）。我的回答是信测试，不信代码。有验收测试覆盖的部分可以信，没覆盖的部分按没人看过的代码处理。</p>
+  <p>没有懂的人，就没法判断 AI 写的是不是更好，这是 r/CUDA 一个讨论帖的高赞观点（转述，<a href="https://www.reddit.com/r/CUDA/comments/1wn3x39/if_ai_is_better_than_humans_at_generating_kernels/">Reddit</a>）。我的价值在定目标、搭 harness、判断结果是真是假。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 10 题 · 中文原题和 JD 见面试题与 JD 笔记 1.3、2.2 节（牛客原帖和 Workday 链接在“考过”行）· 讯飞同场的另一篇复盘：<a href="https://www.nowcoder.com/discuss/944282956095320064">牛客</a> · 英文面经的转述见英文社区笔记 1.12、1.13、2.1 节 · Kevin 的 fallback 例子：<a href="https://cognition.com/blog/kevin-32b">Kevin-32B</a></p>

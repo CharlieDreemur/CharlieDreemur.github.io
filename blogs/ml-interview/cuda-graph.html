@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Launch</dt>
-  <dd>CPU 让 GPU 跑一个 kernel 的那次调用。CPU 准备好参数、提交命令就返回，不等 kernel 跑完。</dd>
+  <dd>CPU 让 GPU 跑一个 kernel 的那次调用，不等 kernel 跑完就返回。</dd>
   <dt>Launch overhead</dt>
-  <dd>每次 launch 花在 CPU 上的时间，是微秒级，和 kernel 处理多少数据无关。<span class="eg">NVIDIA 的博客在 V100 上量过一个 2.9 µs 的小 kernel，每次 launch 后都同步时，每个 kernel 要 9.6 µs。</span></dd>
+  <dd>每次 launch 花在 CPU 上的时间，微秒级，和 kernel 处理多少数据无关。</dd>
   <dt>Launch-bound</dt>
-  <dd>kernel 又小又多，GPU 跑完一个要等 CPU 发下一个。像厨师几秒炒完一个菜，但每张单子都要服务员跑一趟送来。</dd>
+  <dd>kernel 又小又多，GPU 跑完一个要等 CPU 发下一个。</dd>
   <dt>CUDA Graph</dt>
-  <dd>把一整串 kernel 和它们的参数录下来，这一步叫 capture。之后一次调用就把整串重放，叫 replay。</dd>
-  <dt>Fallback</dt>
-  <dd>输入对不上任何录好的 graph 时，退回 eager，一个个 launch。</dd>
+  <dd>把一整串 kernel 和它们的参数录下来（capture），之后一次调用重放整串（replay）。</dd>
 </dl>
 
 <h2 id="figs">看图：逐个 launch 和一次 replay</h2>
@@ -70,42 +68,40 @@
   <rect class="f2" x="250" y="180" width="22" height="24" rx="3"/>
   <text class="acc" x="290" y="197">共 17 µs，每个 kernel 还是 2 µs</text>
 </svg>
-<figcaption>图 1：时间从左到右，蓝色小块是 kernel。launch 5 µs、kernel 2 µs、replay 5 µs 都是示意。上面每个 kernel 都要等一次 launch，6 个共 32 µs，GPU 只忙 12 µs。下面一次 replay 之后 kernel 连着跑，共 17 µs。</figcaption>
+<figcaption>图 1：launch 5 µs、kernel 2 µs、replay 5 µs 都是示意。逐个 launch 时 6 个 kernel 共 32 µs，GPU 只忙 12 µs。一次 replay 之后 kernel 连着跑，共 17 µs。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Every kernel launch costs the CPU a few microseconds to set up arguments and submit the work. When a model runs many tiny kernels, that overhead dominates and the GPU sits idle waiting for the CPU. A CUDA Graph captures the whole sequence of kernels and their arguments once, then replays it with a single call. It removes launch overhead; it doesn't make any single kernel faster. It needs fixed shapes and fixed memory addresses, with no CPU sync or data-dependent branches inside. With dynamic shapes, I capture one graph per shape bucket, pad inputs up to the bucket, and fall back to eager when nothing matches.</p></div>
+<div class="answer"><p>Every kernel launch costs the CPU a few microseconds to set up arguments and submit the work. With many tiny kernels, that overhead dominates and the GPU sits idle waiting for the CPU. A CUDA Graph captures the whole sequence of kernels and their arguments once, then replays it with a single call. It removes launch overhead but doesn't make any kernel faster. It needs fixed shapes and memory addresses, with no CPU sync or data-dependent branches. For dynamic shapes, I capture one graph per shape bucket, pad inputs up to the bucket, and fall back to eager when nothing matches.</p></div>
 
 <h2 id="when">什么时候有用：手算一遍</h2>
-<p>一次 forward 有 100 个小 kernel，每个在 GPU 上跑 2 µs，每次 launch 要 5 µs（示意）。逐个 launch 时 GPU 每跑完一个都在等下一次 launch，总共约 500 µs，其中 GPU 只忙 200 µs。换成 CUDA Graph 是一次 replay 加 100 × 2 µs，约 205 µs，快约 2.4 倍。每个 kernel 还是 2 µs，省掉的只有 launch overhead。</p>
-<p>反过来，每个 kernel 要跑 5 ms 时，5 µs 的 launch 只占 0.1%，用了也看不出差别。benchmark 时把单次运行调到 1–15 ms 是同一个道理（见 <a href="kernel-benchmark.html#timing">kernel benchmark</a>）。</p>
-<p>NVIDIA 博客的实测是 V100 上 2.9 µs 的 kernel，连续 launch 时平均每个 3.8 µs，用 CUDA Graph 是 3.4 µs。PyTorch 文档说 replay 跳过的还有 Python 和 C++ 这两层的开销。</p>
+<p>按图里的数字放大到 100 个小 kernel。逐个 launch 约 500 µs，其中 GPU 只忙 200 µs。CUDA Graph 是一次 replay 加 100 × 2 µs，约 205 µs，快约 2.4 倍。</p>
+<p>反过来，每个 kernel 要跑 5 ms 时，5 µs 的 launch 只占 0.1%，用了也看不出差别（benchmark 调大单次运行是同一个道理，见 <a href="kernel-benchmark.html#timing">kernel benchmark</a>）。</p>
+<p>NVIDIA 博客在 V100 上实测 2.9 µs 的 kernel，连续 launch 时平均每个 3.8 µs，用 CUDA Graph 是 3.4 µs。</p>
 
 <h2 id="limits">流程和限制</h2>
 <ol>
   <li><strong>Warmup</strong>：先用 eager 跑几次</li>
-  <li><strong>Capture</strong>：再跑一次。这次 kernel 不真的执行，只把 kernel 和参数记进 graph</li>
-  <li><strong>Replay</strong>：之后每次只调用一次 replay，整串 kernel 按录下的参数重跑</li>
+  <li><strong>Capture</strong>：再跑一次，kernel 不真的执行，只把 kernel 和参数记进 graph</li>
+  <li><strong>Replay</strong>：之后每次调用一次，整串 kernel 按录下的参数重跑</li>
   <li><strong>Fallback</strong>：输入的 shape 对不上任何 graph，就退回 eager</li>
 </ol>
 <table>
   <thead><tr><th>限制</th><th>原因</th></tr></thead>
   <tbody>
-    <tr><td class="nw">shape 固定</td><td>graph 假设每次 replay 里每个 tensor 的 size 和 layout 都不变</td></tr>
+    <tr><td class="nw">shape 固定</td><td>每次 replay 里每个 tensor 的 size 和 layout 都不能变</td></tr>
     <tr><td class="nw">内存地址固定</td><td>每次 replay 读写同一批地址，新输入要先 copy 进 capture 时用的那块 tensor</td></tr>
-    <tr><td class="nw">不能有 CPU 同步</td><td><code>.item()</code> 这类要等 GPU 结果的 op 不能出现在 capture 里</td></tr>
-    <tr><td class="nw">不能有依赖数据的分支</td><td>录下的是一条固定的 kernel 序列，分支走哪边在 capture 时就定死了</td></tr>
-    <tr><td class="nw">多占显存</td><td>PyTorch 默认给每次 capture 一个 private memory pool</td></tr>
+    <tr><td class="nw">不能有 CPU 同步</td><td><code>.item()</code> 这类要等 GPU 结果的 op 不能在 capture 里</td></tr>
+    <tr><td class="nw">不能有依赖数据的分支</td><td>录下的是固定的 kernel 序列，分支在 capture 时就定死了</td></tr>
   </tbody>
 </table>
-<p>动态 shape 的做法是按 batch size 分桶，每个桶 capture 一个 graph，输入 padding 到桶的大小。比如分 8、16、32 三个桶（示意），batch 11 的请求 padding 到 16，有 5/16 ≈ 31% 的计算是白做的。batch 40 对不上任何桶，就 fallback。shape 变得很频繁时反而更慢，因为要反复 capture，graph 越多显存也占得越多。</p>
+<p>动态 shape 按 batch size 分桶，每个桶 capture 一个 graph，输入 padding 到桶的大小。分 8、16、32 三个桶时（示意），batch 11 padding 到 16，有 5/16 ≈ 31% 的计算是白做的，batch 40 对不上任何桶就 fallback。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>launch overhead：每次 launch 在 CPU 上花几微秒，小 kernel 多的时候 GPU 在等 CPU</li>
-  <li>CUDA Graph：capture 一次整串 kernel，之后每次一次 replay</li>
-  <li>它只去掉 launch overhead，不改单个 kernel 的速度</li>
-  <li>限制：shape 和内存地址固定，中间不能有 CPU 同步和依赖数据的分支</li>
+  <li>launch overhead：每次 launch 在 CPU 上花几微秒，小 kernel 多时 GPU 在等 CPU</li>
+  <li>CUDA Graph：capture 一次整串 kernel，之后每次一次 replay，只去掉 launch overhead，不改单个 kernel 的速度</li>
+  <li>限制：shape 和内存地址固定，不能有 CPU 同步和依赖数据的分支</li>
   <li>动态 shape：分桶，每桶一个 graph，输入 padding，对不上就 fallback 到 eager</li>
   <li>shape 经常变反而更慢：反复 capture，多占显存</li>
 </ul>
@@ -113,23 +109,19 @@
 <h2>追问</h2>
 <details>
   <summary>launch 的时候 CPU 做了什么？</summary>
-  <p>准备 kernel 的参数，把命令提交给 GPU，然后立刻返回。PyTorch eager 里每个 op 在这之前还要过 Python 和 C++ 的 dispatch，这几层 replay 都跳过。</p>
+  <p>准备 kernel 的参数，把命令提交给 GPU，立刻返回。PyTorch eager 里每个 op 在这之前还要过 Python 和 C++ 的 dispatch，这几层 replay 都跳过。</p>
 </details>
 <details>
   <summary>怎么知道自己是 launch-bound？</summary>
-  <p>在 Nsight Systems 的 timeline 上，kernel 之间有密集的小空隙，GPU 在等 CPU（见 <a href="nsight-profiling.html">Nsight profiling</a> 和 <a href="debug-slow-hang.html#slow">训练慢怎么查</a>）。</p>
+  <p>Nsight Systems 的 timeline 上 kernel 之间有密集的小空隙，GPU 在等 CPU（见 <a href="nsight-profiling.html">Nsight profiling</a> 和 <a href="debug-slow-hang.html#slow">训练慢怎么查</a>）。</p>
 </details>
 <details>
   <summary>它和 kernel fusion 有什么区别？</summary>
-  <p>CUDA Graph 不改 kernel，kernel 数和每个 kernel 读写 HBM 的量都不变。<a href="kernel-fusion.html">Kernel fusion</a> 把几个 kernel 合成一个，launch 次数和 memory traffic 一起降。两个可以叠加。</p>
-</details>
-<details>
-  <summary>CUDA Graph 和 torch.compile 是什么关系？</summary>
-  <p>torch.compile 的 <code>reduce-overhead</code> 模式把 CUDA Graph 叠在 fusion 之后用（见 <a href="torch-compile.html">torch.compile</a>）。滴滴 AI Infra 算法岗二面 2026-09-30 问过两者的关系。</p>
+  <p>CUDA Graph 不改 kernel，kernel 数和读写 HBM 的量都不变。<a href="kernel-fusion.html">Kernel fusion</a> 把 launch 次数和 memory traffic 一起降。两个可以叠加，<a href="torch-compile.html">torch.compile</a> 的 <code>reduce-overhead</code> 模式就是这样做的。</p>
 </details>
 <details>
   <summary>为什么用了 CUDA Graph 显存占得更多？</summary>
-  <p>PyTorch 默认给每次 capture 一个 private memory pool，graph 和 capture 时创建的 tensor 还活着，它就不释放。分的桶越多，pool 越多。小马智行的实习面问过这一点，出处是 AIInfraGuide 的二手整理。</p>
+  <p>PyTorch 默认给每次 capture 一个 private memory pool，graph 和 capture 时创建的 tensor 还活着它就不释放，桶越多 pool 越多。小马智行实习面问过，出处是 AIInfraGuide 的二手整理。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-graphs">PyTorch CUDA semantics：CUDA Graphs</a>（capture 不执行、Constraints、private pool、warmup）· <a href="https://developer.nvidia.com/blog/cuda-graphs/">NVIDIA blog：Getting Started with CUDA Graphs</a>（V100、CUDA 10.1 的实测）· ml-八股 08 第 13 题 · 面经出处见 面试题与 JD 3.5 节和 NVIDIA 题库笔记 1.7、1.9 节</p>

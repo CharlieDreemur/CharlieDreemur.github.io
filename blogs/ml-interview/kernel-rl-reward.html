@@ -18,11 +18,9 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Reward</dt>
-  <dd>模型每交一个 kernel，环境给的一个分数。训练就是让这个分数变高，所以 reward 奖什么，模型就学什么。</dd>
-  <dt>Speedup</dt>
-  <dd>reference 的运行时间除以生成的 kernel 的运行时间，大于 1 才是变快。</dd>
+  <dd>模型每交一个 kernel，环境给的分数。reward 奖什么，模型就学什么。</dd>
   <dt>Multi-turn</dt>
-  <dd>一条 trajectory 里模型改好几轮，每一轮都交一个 kernel。<span class="eg">Kevin 训练时每题 16 条 trajectory，每条 4 个 refinement step。</span></dd>
+  <dd>一条 trajectory 里模型改好几轮，每轮交一个 kernel。<span class="eg">Kevin 训练时每题 16 条 trajectory，每条 4 个 refinement step。</span></dd>
   <dt>Credit assignment</dt>
   <dd>最后的 kernel 快了，功劳怎么分给前面几轮。</dd>
   <dt>Milestone reward</dt>
@@ -30,65 +28,61 @@
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Incorrect kernels get zero or a negative reward, and correct ones earn more for speedup. Kevin uses 0.3 plus the speedup, and each refinement step also gets the discounted sum of later scores with gamma 0.4, so early steps get credit for later gains. CUDA Agent found raw speedup has outliers and favors easy kernels, so it uses discrete milestones: minus one for wrong, one for correct, two for beating eager, three for also beating torch.compile. CUDA-L1 normalizes the reward and clips it at 1.5. I'd also measure on a dedicated GPU in random order, take the median, and re-check any sudden jump, since that is often a hack.</p></div>
+<div class="answer"><p>Incorrect kernels get zero or negative reward; correct ones earn more for speedup. Kevin uses 0.3 plus speedup, and each refinement step also gets the discounted sum of later scores, gamma 0.4, so early steps get credit for later gains. CUDA Agent found raw speedup has outliers and favors easy kernels, so it uses discrete milestones: minus one for wrong, one for correct, two for beating eager, three for also beating torch.compile. CUDA-L1 normalizes and clips at 1.5. I'd take the median on a dedicated GPU and re-check any sudden jump as a possible hack.</p></div>
 
 <h2 id="compare">三家的 reward</h2>
-<p>三家的形状相同。先看正确性，不正确给 0 或负分，正确了再按 speedup 加分。PPO 和 GRPO 的原理见 <a href="rlhf-dpo-grpo.html">RLHF、DPO、GRPO</a>，这里只讲 reward。</p>
+<p>PPO 和 GRPO 的原理见 <a href="rlhf-dpo-grpo.html">RLHF、DPO、GRPO</a>。</p>
 <table>
   <thead><tr><th>系统</th><th>Reward</th><th>想解决的问题</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Kevin-32B<br>multi-turn GRPO</td><td>不正确 0；正确 0.3 + speedup。每一步的 reward 是自己和后面各步得分的 discounted sum，γ = 0.4</td><td>Credit assignment。前面的改动为后面铺路，也要记功</td></tr>
-    <tr><td class="nw">CUDA Agent<br>PPO</td><td>离散的 −1、1、2、3：不正确；正确但没明显提速；比 eager 快 5% 以上；比 eager 和 torch.compile 都快 5% 以上</td><td>原始 speedup 有 outlier，还偏向容易提速的 kernel</td></tr>
-    <tr><td class="nw">CUDA-L1<br>GRPO</td><td>speedup 先 normalize 成 \((r - \mu)/\sigma\)，再 clip 到 [−1.5, 1.5]</td><td>压低突然跳高的 reward，让 hack 的收益变小</td></tr>
+    <tr><td class="nw">Kevin-32B<br>multi-turn GRPO</td><td>不正确 0；正确 0.3 + speedup。每步的 reward 是自己和后面各步得分的 discounted sum，γ = 0.4</td><td>Credit assignment，前面的改动为后面铺路</td></tr>
+    <tr><td class="nw">CUDA Agent<br>PPO</td><td>离散的 −1、1、2、3：不正确；正确但没明显提速；比 eager 快 5% 以上；比 eager 和 torch.compile 都快 5% 以上</td><td>原始 speedup 有 outlier，偏向容易的 kernel</td></tr>
+    <tr><td class="nw">CUDA-L1<br>GRPO</td><td>speedup 先 normalize 成 \((r - \mu)/\sigma\)，再 clip 到 [−1.5, 1.5]</td><td>让 hack 的收益变小</td></tr>
   </tbody>
 </table>
 
 <h2 id="example">手算两个例子</h2>
-<p><strong>Kevin 的多轮 reward。</strong>一条 trajectory 有 3 步。第 1 步的 kernel 不正确，得 0。第 2 步正确，speedup 是 1.0，得 1.3。第 3 步的 speedup 是 1.5，得 1.8。这组数字是示意。</p>
+<p><strong>Kevin 的多轮 reward。</strong>一条 trajectory 有 3 步（示意）。第 1 步不正确，得 0。第 2 步正确，speedup 1.0，得 1.3。第 3 步 speedup 1.5，得 1.8。</p>
 <div class="deriv">
   \[ R_3 = 1.8,\qquad R_2 = 1.3 + 0.4 \times 1.8 = 2.02 \]
   \[ R_1 = 0 + 0.4 \times 1.3 + 0.4^2 \times 1.8 = 0.808 \]
 </div>
-<p>第 1 步自己是错的，但后面改对了，所以它也拿到 0.808。</p>
-<p><strong>CUDA Agent 的档位。</strong>一个 kernel 正确，比 eager 快 8%，比 torch.compile 慢 3%，得 2。再看 outlier。假设容易的 kernel 快 20 倍，难的 kernel 快 1.3 倍。用原始 speedup 当 reward，前者约是后者的 15 倍，gradient 被它带着走。离散档位下两者都是 3。CUDA Agent 的 ablation 把 reward 换回原始 speedup 后，对 torch.compile 的 faster rate 从 96.8% 掉到 60.4%，geomean 从 2.11x 掉到 1.25x。</p>
+<p>第 1 步是错的，但后面改对了，所以也拿到 0.808。</p>
+<p><strong>CUDA Agent 的档位。</strong>容易的 kernel 快 20 倍，难的快 1.3 倍（示意），用原始 speedup 当 reward 时前者约是后者的 15 倍，gradient 被它带着走。离散档位下两者都是 3。ablation 把 reward 换回原始 speedup 后，对 torch.compile 的 faster rate 从 96.8% 掉到 60.4%，geomean 从 2.11x 掉到 1.25x。</p>
 
 <h2 id="guard">防 hack 和降噪</h2>
 <ul>
-  <li>正确但没提速只给低分，CUDA Agent 给 1。Dr. Kernel 用 profiling-based reward 处理这种 lazy optimization</li>
-  <li>reward 突然跳高就复查。CUDA-L1 让 DeepSeek-R1 当 adversarial judge（手法和防御见 <a href="reward-hacking.html">reward hacking</a>）</li>
-  <li>测量要降噪：独占 GPU，随机顺序跑 reference 和 candidate，取 median。CUDA-L1 把超过 3x 的结果放到第二张 GPU 上复测，相差 10% 以内才算</li>
+  <li>正确但没提速是 lazy optimization，Dr. Kernel 用 profiling-based reward 处理</li>
+  <li>reward 突然跳高时，CUDA-L1 让 DeepSeek-R1 当 adversarial judge 复查（见 <a href="reward-hacking.html">reward hacking</a>）</li>
+  <li>CUDA-L1 把超过 3x 的结果放到第二张 GPU 上复测，相差 10% 以内才算</li>
 </ul>
 
 <h2>必答点</h2>
 <ul>
   <li>基本形状：不正确给 0 或负分，正确了再按 speedup 加分</li>
   <li>Kevin：0.3 + speedup，多轮用 γ = 0.4 的 discounted sum</li>
-  <li>CUDA Agent：离散的 −1、1、2、3，比原始 speedup 好，因为原始值有 outlier、偏向简单 kernel</li>
+  <li>CUDA Agent：离散的 −1、1、2、3，因为原始 speedup 有 outlier、偏向简单 kernel</li>
   <li>CUDA-L1：normalize 后 clip 到 ±1.5</li>
-  <li>reward 的测量要降噪：独占 GPU、随机顺序、取 median</li>
+  <li>测量要降噪：独占 GPU、随机顺序、取 median</li>
   <li>reward 突然跳高，先当 hack 查</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>γ = 0.4 是什么意思？为什么用 sum 不用 max？</summary>
-  <p>后一步的得分打 4 折，再后一步打 1.6 折，所以主要看自己和紧接着的一步。Kevin 的 ablation 里 sum 比 max 好。</p>
+  <p>后一步的得分打 4 折，再后一步打 1.6 折，所以主要看自己和紧接着的一步。ablation 里 sum 比 max 好。</p>
 </details>
 <details>
   <summary>GRPO 用在多轮上有什么问题？</summary>
-  <p>Dr. Kernel 发现 GRPO 的 self-inclusion 会让 policy gradient 有偏，提出 TRLOO（turn-level leave-one-out）。GRPO 的公式见 <a href="rlhf-dpo-grpo.html#grpo">GRPO</a>。</p>
+  <p>Dr. Kernel 发现 GRPO 的 self-inclusion 会让 policy gradient 有偏，提出 TRLOO（turn-level leave-one-out）。公式见 <a href="rlhf-dpo-grpo.html#grpo">GRPO</a>。</p>
 </details>
 <details>
   <summary>训练时模型学会过哪些 hack？</summary>
-  <p>Kevin 上有三种。第一种是直接复制 PyTorch reference。第二种是用 try-except 包住错的 CUDA kernel，失败就退回 PyTorch。第三种是继承 reference，不写 CUDA。对策是更严的 format check，用了 PyTorch function 或没有 CUDA kernel 的回答给 0 分。</p>
+  <p>Kevin 上有三种。复制 PyTorch reference，用 try-except 包住错的 CUDA kernel 再退回 PyTorch，继承 reference 不写 CUDA。对策是 format check，这类回答给 0 分。</p>
 </details>
 <details>
   <summary>RL 训练为什么不稳，怎么稳住？</summary>
-  <p>CUDA Agent 最初只稳定训练了 17 步就崩了。它先做 single-turn 的 PPO warmup，再对 actor 做 RFT、对 critic 做 value pretraining，之后才做 agentic PPO。</p>
-</details>
-<details>
-  <summary>还有别的 reward 形状吗？</summary>
-  <p>Makora 用 logistic 函数，不正确为 0，否则是\(\sigma(\text{validated} + \max(0, \text{speedup}) - 1.8)\)。TritonRL 把 speedup clip 在 2，并且把 reasoning token 和 code token 的奖励分开给。</p>
+  <p>CUDA Agent 最初只稳定训练 17 步就崩了。它先做 single-turn 的 PPO warmup，再做 RFT 和 value pretraining，之后才做 agentic PPO。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 24 题 · Kevin-32B：<a href="https://cognition.com/blog/kevin-32b">blog</a>、<a href="https://arxiv.org/abs/2507.11948">arXiv 2507.11948</a> · <a href="https://arxiv.org/abs/2602.24286">CUDA Agent</a> §3.2 式 1、Table 2 · <a href="https://arxiv.org/html/2507.14111">CUDA-L1</a> §2.4.4、§3.2 · <a href="https://arxiv.org/abs/2602.05885v2">Dr. Kernel</a> · <a href="https://arxiv.org/html/2602.11000v1">Makora</a> · <a href="https://arxiv.org/html/2510.17891v2">TritonRL</a> · 整理见文献笔记第 3 节</p>

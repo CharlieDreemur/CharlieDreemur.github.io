@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Nsight Systems（nsys）</dt>
-  <dd>把整个程序画成一条 timeline，CPU thread、CUDA API 调用、每个 kernel 和 memcpy 都在上面。像看整条流水线的监控录像，先找哪一段在堵。</dd>
+  <dd>整个程序的 timeline，上面有 CPU thread、CUDA API 调用、每个 kernel 和 memcpy。</dd>
   <dt>Nsight Compute（ncu）</dt>
-  <dd>只看一个 kernel，报它的硬件指标。像把最慢的那台机器拆开看。<span class="eg">报告分节，常看的三节是 GPU Speed Of Light Throughput、Occupancy、Warp State Statistics。</span></dd>
+  <dd>只看一个 kernel，报它的硬件指标。<span class="eg">常看 GPU Speed Of Light Throughput、Occupancy、Warp State Statistics 三节。</span></dd>
   <dt>Memory bound 和 compute bound</dt>
-  <dd>memory bound 是 kernel 被 memory bandwidth 卡住，算力闲着。compute bound 反过来，算力用满了，bandwidth 还有余。</dd>
+  <dd>memory bound 是 kernel 被 memory bandwidth 卡住，算力闲着。compute bound 反过来。</dd>
   <dt>Arithmetic intensity</dt>
-  <dd>每读写 1 byte 做几次 FLOP。它低于 roofline 的 ridge point 就是 memory bound。</dd>
+  <dd>每读写 1 byte 做几次 FLOP，低于 roofline 的 ridge point 就是 memory bound。</dd>
   <dt>Warp stall</dt>
-  <dd>一个 warp 这个 cycle 发不出指令。ncu 会按原因统计。<span class="eg">long scoreboard 表示 warp 在等 global memory 的数据。</span></dd>
+  <dd>一个 warp 这个 cycle 发不出指令。</dd>
 </dl>
 
 <h2 id="figs">看图：先找到 kernel，再看它卡在哪</h2>
@@ -62,65 +62,58 @@
   <text class="c2" x="450" y="233">9%</text>
   <text class="acc" x="54" y="264">memory 接近峰值，compute 很低 → memory bound</text>
 </svg>
-<figcaption>图 1：数字是示意。先在 timeline 上找到占时间最多的 kernel，同时看 GPU 有没有空等。再用 Nsight Compute 只看这一个 kernel，看 memory 和 compute 哪个接近峰值。</figcaption>
+<figcaption>图 1：数字是示意。先在 timeline 上找占时间最多的 kernel，再看它的 memory 和 compute 哪个接近峰值。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Nsight Systems shows the whole timeline: CPU threads, CUDA API calls, every kernel and memcpy. I use it first to find where the time goes, whether that's one slow kernel or gaps where the GPU sits idle. Then Nsight Compute profiles that one kernel in depth with hardware counters. If its memory throughput is near peak while compute is low, it's memory bound, so I fuse kernels and cut reads and writes. If compute throughput is near peak, it's compute bound, so I move to tensor cores or lower precision. If both are low, the warps are stalled, so I check occupancy and the stall reasons.</p></div>
+<div class="answer"><p>Nsight Systems shows the whole program as a timeline. I use it first to find where the time goes: one slow kernel, or gaps where the GPU sits idle. Then Nsight Compute profiles that kernel with hardware counters. If memory throughput is near peak and compute is low, it's memory bound, so I fuse kernels and cut reads and writes. If compute throughput is near peak, it's compute bound, so I use tensor cores or lower precision. If both are low, warps are stalled, so I check occupancy and stall reasons.</p></div>
 
 <h2 id="tools">两个工具各看什么</h2>
 <table>
   <thead><tr><th></th><th>Nsight Systems（nsys）</th><th>Nsight Compute（ncu）</th></tr></thead>
   <tbody>
-    <tr><td class="nw">范围</td><td>整个程序的 timeline</td><td>一个 kernel</td></tr>
     <tr><td class="nw">回答的问题</td><td>时间花在哪</td><td>这个 kernel 为什么慢</td></tr>
-    <tr><td class="nw">看什么</td><td>GPU 空等、launch 之间的间隙、memcpy、最耗时的 kernel</td><td>memory 和 compute throughput 占峰值多少、occupancy、warp stall 的原因、roofline chart</td></tr>
-    <tr><td class="nw">顺序</td><td>先用</td><td>找到目标 kernel 之后用</td></tr>
+    <tr><td class="nw">看什么</td><td>GPU 空等、launch 间隙、memcpy、最耗时的 kernel</td><td>memory 和 compute throughput 占峰值多少、occupancy、warp stall 原因、roofline chart</td></tr>
   </tbody>
 </table>
-<p>timeline 上 GPU 空白很多时，问题不在 kernel 里，排查流程见<a href="debug-slow-hang.html#slow">训练慢怎么查</a>。</p>
+<p>timeline 上 GPU 空白很多时问题不在 kernel 里，见<a href="debug-slow-hang.html#slow">训练慢怎么查</a>。</p>
 
 <h2 id="bound">怎么判断 bound，下一步做什么</h2>
 <table>
   <thead><tr><th>类型</th><th>判断依据</th><th>下一步</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Memory bound</td><td>arithmetic intensity 低于 ridge point；ncu 里 memory throughput 接近峰值，compute 很低</td><td><a href="kernel-fusion.html">kernel fusion</a>；少读写 HBM；向量化访存</td></tr>
-    <tr><td class="nw">Compute bound</td><td>arithmetic intensity 高于 ridge point；compute throughput 接近峰值</td><td>用 tensor core；降精度</td></tr>
-    <tr><td class="nw">两个都低</td><td>warp 在 stall，或者 <a href="occupancy.html">occupancy</a> 太低</td><td>看 Warp State Statistics 和 Occupancy 两节</td></tr>
+    <tr><td class="nw">Memory bound</td><td>arithmetic intensity 低于 ridge point；memory throughput 接近峰值，compute 很低</td><td><a href="kernel-fusion.html">kernel fusion</a>；少读写 HBM；向量化访存</td></tr>
+    <tr><td class="nw">Compute bound</td><td>高于 ridge point；compute throughput 接近峰值</td><td>用 tensor core；降精度</td></tr>
+    <tr><td class="nw">两个都低</td><td>warp 在 stall，或 <a href="occupancy.html">occupancy</a> 太低</td><td>看 Warp State Statistics 和 Occupancy 两节</td></tr>
   </tbody>
 </table>
-<p>手算华为那道题。公式和 roofline 见 <a href="matmul-roofline.html#roofline">roofline</a>。A100 的 ridge point 约 153 FLOP/B，0.5 远低于它，所以是 memory bound。它的上限是 0.5 × 2,039 GB/s ≈ 1.0 TFLOPS，只有峰值 312 TFLOPS 的 0.3%。这时候加算力没有用，要减少读写的 byte。</p>
+<p>手算华为那道题，公式见 <a href="matmul-roofline.html#roofline">roofline</a>。A100 的 ridge point 约 153 FLOP/B，0.5 远低于它，是 memory bound。上限是 0.5 × 2,039 GB/s ≈ 1.0 TFLOPS，只有峰值 312 TFLOPS 的 0.3%，加算力没有用。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>先用 nsys 看全局，再用 ncu 看单个 kernel</li>
-  <li>nsys 是 timeline：GPU 空等、launch 间隙、memcpy、最耗时的 kernel</li>
-  <li>ncu 是单个 kernel 的硬件指标：memory 和 compute throughput、occupancy、warp stall</li>
-  <li>memory throughput 接近峰值是 memory bound，compute throughput 接近峰值是 compute bound，两个都低就看 stall 和 occupancy</li>
-  <li>memory bound 做 fusion、少读写；compute bound 用 tensor core、降精度</li>
+  <li>先用 nsys 看整条 timeline，再用 ncu 看单个 kernel 的硬件指标</li>
+  <li>memory throughput 接近峰值是 memory bound，做 fusion、少读写</li>
+  <li>compute throughput 接近峰值是 compute bound，用 tensor core、降精度</li>
+  <li>两个都低就看 warp stall 和 occupancy</li>
   <li>0.5 FLOP/B 远低于 ridge point，是 memory bound</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>Nsight Systems 能看到指令级流水吗？</summary>
-  <p>这是卓驭 AI infra 校招一面 2026-03-03 的原题。不能，它的粒度是一次 API 调用或一个 kernel。指令级的统计在 ncu 里，Instruction Statistics 和 Source Counters 两节能对到 SASS 指令。</p>
+  <p>卓驭校招一面 2026-03-03 原题。不能，它的粒度是一次 API 调用或一个 kernel。指令级的统计在 ncu 的 Instruction Statistics 和 Source Counters 两节。</p>
 </details>
 <details>
   <summary>warp stall 有哪几类原因？</summary>
-  <p>ncu 的 Warp State Statistics 按原因分。long scoreboard 是在等 global 或 local memory 的数据，short scoreboard 多是在等 shared memory，barrier 是在 block 的同步点等别的 warp。</p>
+  <p>long scoreboard 在等 global 或 local memory 的数据，short scoreboard 多在等 shared memory，barrier 在同步点等别的 warp。</p>
 </details>
 <details>
-  <summary>为什么不只用 torch.profiler？</summary>
-  <p>FlashVector 论文说它的 summary 太粗。agent 需要 nsys 和 ncu 的精确 kernel trace，还要准确的 tensor shape，做 roofline 分析时才少 hallucinate。</p>
-</details>
-<details>
-  <summary>把 profiler 的输出喂给 agent 有用吗？</summary>
-  <p>有用。KernelBench 里 R1 在 Level 2 的 fast_1 是 36%，加 execution feedback 到 62%，再加 profiler feedback 到 72%（见 <a href="kernel-agent-design.html">kernel agent 设计</a>）。</p>
+  <summary>agent 为什么要用 Nsight，不用 torch.profiler？</summary>
+  <p>FlashVector 说 torch.profiler 的 summary 太粗，agent 要精确的 kernel trace 和 tensor shape，做 roofline 分析时才少 hallucinate。profiler feedback 的收益见 <a href="kernel-agent-design.html">kernel agent 设计</a>。</p>
 </details>
 <details>
   <summary>最慢的 kernel 快了 2 倍，整体为什么只快一点？</summary>
-  <p>要看它在 timeline 上占多少。占 60% 的 kernel 快 2 倍，整体是 \(1/(0.4+0.3)\approx 1.43\) 倍（见 <a href="amdahl.html">Amdahl's law</a>）。端到端还要另外测（见 <a href="local-vs-e2e.html">局部和端到端</a>）。</p>
+  <p>占 timeline 60% 的 kernel 快 2 倍，整体只有 \(1/(0.4+0.3)\approx 1.43\) 倍（见 <a href="amdahl.html">Amdahl's law</a> 和 <a href="local-vs-e2e.html">局部和端到端</a>）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html">Nsight Compute Profiling Guide</a>（Sections and Rules 的各节名称，§2.4.7 的 stall 原因，§2.9 Roofline Charts）· <a href="https://docs.nvidia.com/nsight-systems/UserGuide/index.html">Nsight Systems User Guide</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.2 · ml-八股 08 第 3 题 · 面经出处见 面试题与 JD 3.1、3.3 节</p>

@@ -18,13 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Trace</dt>
-  <dd>一次 run 从头到尾的完整记录，形状是一棵树。像一张带时间的购物小票，每一步花了多久、用了多少 token 都列在上面。</dd>
+  <dd>一次 run 的完整记录，形状是一棵树。像带时间的购物小票，每一步的耗时和 token 都列着。</dd>
   <dt>Span</dt>
-  <dd>trace 里的一个节点，有开始时间和结束时间。一次 model call 是一个 span，一次 tool call 也是一个 span。sub-agent 是挂在下面的一棵子树。</dd>
+  <dd>trace 里的一个节点，有开始和结束时间。一次 model call 或 tool call 是一个 span。sub-agent 是子树，主 agent 把 trace id 和当前 span 的 id 传给它。</dd>
   <dt>Metrics</dt>
-  <dd>把很多个 run 的 span 汇总出来的数字。<span class="eg">成功率、步数、每个 task 的 token、p50 和 p95 latency。</span></dd>
+  <dd>把很多个 run 的 span 汇总出来的数字。</dd>
   <dt>Transcript</dt>
-  <dd>一次 run 里模型读到的和写出的原文。metrics 只说明这个 run 失败了，原因要读 transcript。</dd>
+  <dd>一次 run 里模型读到的和写出的原文。读了才知道是 tool 描述有歧义、context 里丢了约束，还是 agent 绕过了检查（见 <a href="reward-hacking.html">reward hacking</a>）。</dd>
 </dl>
 
 <h2 id="figs">看图：一次 run 的 trace 树</h2>
@@ -68,64 +68,51 @@
   <text class="m" x="418" y="252">8 s</text>
   <text class="acc" x="476" y="252">58k</text>
 </svg>
-<figcaption>图 1：数字是示意。一个 run 是一棵 trace 树，每一行是一个 span。橙色是 model call，蓝色是 tool call，虚线框是 sub-agent 的子树。这个 run 慢在 benchmark 这个 tool call。它贵在最后一次 model call，因为 benchmark 的输出整段进了 context。</figcaption>
+<figcaption>图 1：数字是示意。橙色是 model call，蓝色是 tool call，虚线框是 sub-agent 的子树。这个 run 慢在 benchmark 这个 tool call，贵在最后一次 model call，因为 benchmark 的输出整段进了 context。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I trace each run as a tree of spans: one span per model call and one per tool call, with a sub-agent as a subtree. Each span records latency, input and output tokens, the tool's arguments, and whether it succeeded. On top of that I aggregate metrics: success rate, step count, tokens and cost per task, and p50 and p95 latency. When a run is slow or expensive, the trace shows which span the time or the tokens went to, and I can break it down by tool or by step. I still read raw transcripts, because metrics tell me a run failed, not why.</p></div>
+<div class="answer"><p>I trace each run as a tree of spans: one per model call and one per tool call, with a sub-agent as a subtree. Each span records latency, input and output tokens, the tool's arguments, and whether it succeeded. On top I aggregate metrics: success rate, step count, tokens and cost per task, and p50 and p95 latency. When a run is slow or expensive, the trace shows which span the time or the tokens went to. I still read raw transcripts, because metrics tell me a run failed, not why.</p></div>
 
 <h2 id="record">三层各记什么</h2>
 <table>
   <thead><tr><th>层</th><th>记什么</th><th>用来回答</th></tr></thead>
   <tbody>
     <tr><td class="nw">Span</td><td>latency、input 和 output token、tool 参数、成功或失败</td><td>这一步花了多少</td></tr>
-    <tr><td class="nw">Trace</td><td>一次 run 的全部 span，带上 task id、model 版本和 harness 版本</td><td>这个 run 为什么失败，时间和 token 去了哪</td></tr>
+    <tr><td class="nw">Trace</td><td>全部 span，带 task id、model 版本和 harness 版本</td><td>这个 run 为什么失败，时间和 token 去了哪</td></tr>
     <tr><td class="nw">Metrics</td><td>成功率、步数、每个 task 的 token 和成本、p50 和 p95 latency</td><td>这一版整体变好还是变差</td></tr>
   </tbody>
 </table>
 
 <h2 id="debug">Token 突然变多，按这个顺序查</h2>
 <ol>
-  <li>先在 metrics 上分组，按版本、task 类别和 tool 看，是所有 run 都涨还是某一类涨</li>
-  <li>再分清涨的是每次 model call 的 input，还是 model call 的次数</li>
-  <li>每次的 input 变大，就查 tool result 是否变大，比如某个 tool 开始返回整份日志（对策见 <a href="context-compaction.html">context compaction</a>）</li>
-  <li>次数变多，就查重试是否变多，有没有重复同一个 action（见 <a href="tool-failure-retry.html">tool 失败与重试</a>）</li>
-  <li>token 数没怎么变、成本却涨了，就查 prefix cache 是否 miss，比如 system prompt 或 tool 定义被改过（见 <a href="kv-cache.html">KV cache</a>）</li>
-  <li>最后挑几条最贵的 trace 读 transcript，确认原因</li>
+  <li>先在 metrics 上按版本、task 类别和 tool 分组，看是都涨还是某一类涨</li>
+  <li>再分清涨的是每次 model call 的 input 还是次数</li>
+  <li>input 变大，就查 tool result 是否变大，比如某个 tool 开始返回整份日志（对策见 <a href="context-compaction.html">context compaction</a>）</li>
+  <li>次数变多，就查重试和重复的 action（见 <a href="tool-failure-retry.html">tool 失败与重试</a>）</li>
+  <li>token 没怎么变、成本却涨了，就查 prefix cache 是否 miss，比如 system prompt 或 tool 定义被改过（见 <a href="kv-cache.html">KV cache</a>）</li>
+  <li>最后挑几条最贵的 trace 读 transcript</li>
 </ol>
-<p>手算一下第 3 条。context 是累加的，一个 tool result 多出 5000 token，之后每次 model call 都要把它再读一遍。它在第 5 步进来，run 一共 20 步，就多出 5000 × 15 = 75000 个 input token。</p>
-<p>慢了也用同一个办法。按 span 分解，看时间花在 model call、tool call 还是排队上。</p>
+<p>第 3 条的算例。context 是累加的，一个 tool result 多出 5000 token，之后每次 model call 都要再读一遍。它在第 5 步进来，run 一共 20 步，就多出 5000 × 15 = 75000 个 input token。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>一次 run 一个 trace，每次 model call 和 tool call 一个 span，sub-agent 是子树</li>
-  <li>span 里记 latency、input 和 output token、tool 参数、成功或失败</li>
-  <li>metrics 看成功率、步数、每个 task 的 token 和成本、p50 和 p95 latency</li>
-  <li>慢了按 span 分解，看是模型、tool 还是排队</li>
+  <li>span 里记 latency、token、tool 参数、成功或失败</li>
+  <li>metrics 看成功率、步数、token、成本、p50 和 p95 latency</li>
+  <li>慢了按 span 分解，看是 model call、tool call 还是排队</li>
   <li>token 变多查三样：tool result 变大、重试变多、cache miss</li>
   <li>metrics 只说明失败了，原因要读 transcript</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>执行时间长，一定是异常吗？</summary>
-  <p>不一定，跑 benchmark 的 task 本来就慢。阈值按 task 类别分开定，和同类的 p95 比。字节 AI 大模型开发平台一面问过这一句。</p>
-</details>
-<details>
-  <summary>Metrics、log、trace 有什么区别？</summary>
-  <p>metrics 是汇总后的数字，适合报警和看趋势。log 是一条条独立的事件。trace 把一个 run 的事件按父子关系串起来，适合定位哪一步出了问题。</p>
-</details>
-<details>
-  <summary>有 sub-agent 时，trace 怎么串起来？</summary>
-  <p>整个 run 共用一个 trace id。主 agent 把当前 span 的 id 传给 sub-agent，sub-agent 的 span 都挂在它下面。</p>
+  <summary>执行时间长，一定是异常吗？（字节原题）</summary>
+  <p>不一定，跑 benchmark 的 task 本来就慢。阈值按 task 类别分开定，和同类的 p95 比。</p>
 </details>
 <details>
   <summary>怎么记录每轮实验的耗时、token、结果和失败路线？</summary>
-  <p>每个 run 写一条记录，有 task id、版本、成功与否、步数、token、latency 和 trace 的路径。失败的 run 再标上失败类型，方便统计，也避免下次重试同一条路线（见 <a href="agent-knowledge-base.html">knowledge base</a>）。</p>
-</details>
-<details>
-  <summary>有了 metrics，为什么还要人读 transcript？</summary>
-  <p>读了才知道是 tool 描述有歧义、context 里丢了约束，还是 agent 绕过了检查（见 <a href="reward-hacking.html">reward hacking</a>）。Etched 的 kernel 岗 JD 专门写了要细读 transcript。</p>
+  <p>每个 run 写一条记录，有 task id、版本、成功与否、步数、token、latency 和 trace 的路径。失败的 run 再标上失败类型，避免下次重试同一条路线（见 <a href="agent-knowledge-base.html">knowledge base</a>）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/c890c6cef18d437cb44bba5980b398bd">牛客：阿里控股 Agent Infra 一面</a> · <a href="https://www.nowcoder.com/discuss/917561494512861184">牛客：字节火山方舟 Managed Agent 一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/b406c87436a54864bfc0cf4a20299f62">牛客：影石 AI Agent 一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/fa50ef5521f84cb788f911cd31e5a98a">牛客：字节 AI大模型开发平台一面</a>（「执行时间长是否一定代表异常？不同任务是否应使用同一规则？」）· <a href="https://prachub.com/interview-experiences/tiktok-intern-software-engineer-interview-experience-agent-metrics-tool-debugging-and-graphs">PracHub：TikTok SWE 实习</a>（tracing 一题是转述，候选人答 trace ID 和 span ID 串链路）· <a href="https://jobs.ashbyhq.com/etched/885d8a6d-b1ce-4feb-89f5-f6ac9bef8ca7">Etched JD</a> · ml-八股 08 第 36 题</p>

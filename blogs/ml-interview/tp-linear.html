@@ -18,29 +18,31 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Tensor parallelism (TP)</dt>
-  <dd>把一层里的大 weight matrix 切成 \(t\) 份放到 \(t\) 张卡上，每卡只存、只算自己那份，像几个人分工填一张大表。<span class="eg">例：\(h = 8192\)，MLP 第一层 weight 是 [8192, 32768]；\(t = 8\) 时每卡只放 [8192, 4096]。</span></dd>
+  <dd>把每层的 weight matrix 切成 \(t\) 份放到 \(t\) 张卡上，每卡只存、只算自己那份。<span class="eg">例：\(h = 8192\)，MLP 第一层 weight 是 [8192, 32768]，\(t = 8\) 时每卡只放 [8192, 4096]。</span></dd>
   <dt>Column parallel</dt>
   <dd>weight 按列切。每卡拿完整输入 \(X\)，算出输出的几列，拼起来就是完整输出。<span class="eg">例：\(A\) 是 [8, 32]，\(t = 2\) → 每卡 \(A_i\) 是 [8, 16]，\(Y_i = XA_i\) 是 [n, 16]。</span></dd>
   <dt>Row parallel</dt>
-  <dd>weight 按行切，输入也按列切成对应的块。每卡算出的是完整形状、但只是一部分的和，要加起来才对。<span class="eg">例：\(XB = X_1B_1 + X_2B_2\)，两项都是 [n, 8]。</span></dd>
+  <dd>weight 按行切，输入跟着按列切。每卡算出完整形状的部分和，加起来才对。<span class="eg">例：\(XB = X_1B_1 + X_2B_2\)，两项都是 [n, 8]。</span></dd>
   <dt>All-reduce</dt>
-  <dd>每卡一个同形状 tensor，求和后每卡都拿到总和，详见 <a href="allreduce.html">all-reduce</a>。<span class="eg">例：rank 0 有 (1, 2)、rank 1 有 (3, 4) → 两卡都变成 (4, 6)。</span></dd>
+  <dd>每卡一个同形状 tensor，求和后每卡都拿到总和，详见 <a href="allreduce.html">all-reduce</a>。</dd>
+  <dt>All-reduce 与 concatenate 的区别</dt>
+  <dd>这里的 all-reduce 做逐元素求和，不是等待所有 GPU 后把结果拼长。例如 column backward 的两份 dX contribution 是 [1, 3] 和 [2, 4]，结果是 [3, 7]，不是 [1, 3, 2, 4]。all-gather 才是收集各卡的块，让每卡拿到完整集合（可沿切分维 concatenate）。基本 TP MLP 中 column forward 的输出保持分块，直接交给 row，无须真的拼起来。这里假设不开 sequence parallelism，row 输入已分块、上游 dY 已在各卡可用；row backward 各卡直接计算自己的 dX_i = dY·A_iᵀ，无须 TP communication。</dd>
   <dt>f / g operator</dt>
-  <dd>Megatron 插在并行区两头的一对通信算子。f：forward 原样传、backward all-reduce；g：forward all-reduce、backward 原样传。</dd>
+  <dd>Megatron 插在并行区两头的一对通信算子。f 只在 backward all-reduce，g 只在 forward all-reduce，另一个方向原样传。</dd>
 </dl>
 
 <h2 id="figs">看图：column / row 怎么切，MLP 怎么接</h2>
 <figure class="fig">
 <svg viewBox="0 0 520 428.0" role="img" aria-label="t 等于 2 时的两种切法：column parallel 每卡用完整的 X 乘 A 的一半列，输出拼起来；row parallel 每卡用 Y 和 B 的对应一块算出部分和，再 all-reduce 相加"><defs><marker id="tpl1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="tpl1-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="tpl1-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><rect x="0" y="4" width="14" height="14" rx="3" class="f1"/><text x="20" y="15" text-anchor="start" class="m">GPU0 的那份</text><rect x="104" y="4" width="14" height="14" rx="3" class="f2"/><text x="124" y="15" text-anchor="start" class="m">GPU1 的那份</text><rect x="208" y="4" width="14" height="14" rx="3" class="box"/><text x="228" y="15" text-anchor="start" class="m">两卡各存一整份</text><text x="0" y="48" text-anchor="start" class="hd">Column parallel：A 按列切</text><rect x="16" y="62" width="40" height="40" rx="6" class="box"/><text x="36" y="86.5" text-anchor="middle">X</text><text x="72" y="87" text-anchor="middle">×</text><rect x="88" y="62" width="80" height="40" rx="6" class="f1"/><text x="128" y="86.5" text-anchor="middle">A<tspan dy="3" font-size="12">1</tspan></text><rect x="168" y="62" width="80" height="40" rx="6" class="f2"/><text x="208" y="86.5" text-anchor="middle">A<tspan dy="3" font-size="12">2</tspan></text><text x="264" y="87" text-anchor="middle">=</text><rect x="280" y="62" width="80" height="40" rx="6" class="f1"/><text x="320" y="86.5" text-anchor="middle">XA<tspan dy="3" font-size="12">1</tspan></text><rect x="360" y="62" width="80" height="40" rx="6" class="f2"/><text x="400" y="86.5" text-anchor="middle">XA<tspan dy="3" font-size="12">2</tspan></text><text x="36" y="119" text-anchor="middle" class="m">[bs, h]</text><text x="128" y="119" text-anchor="middle" class="m">[h, 2h]</text><text x="320" y="119" text-anchor="middle" class="m">[bs, 2h]</text><text x="208" y="119" text-anchor="middle" class="m">[h, 2h]</text><text x="400" y="119" text-anchor="middle" class="m">[bs, 2h]</text><text x="482" y="78" text-anchor="middle" class="m">拼起来</text><text x="482" y="95" text-anchor="middle" class="m">= XA [bs, 4h]</text><text x="0" y="145" text-anchor="start" class="m">forward 不通信；backward 时 dX 是部分和，要 all-reduce（f）</text><text x="0" y="196" text-anchor="start" class="hd">Row parallel：B 按行切，输入 Y 也按列切</text><rect x="16" y="272" width="80" height="40" rx="6" class="f1"/><text x="56" y="296.5" text-anchor="middle">Y<tspan dy="3" font-size="12">1</tspan></text><rect x="96" y="272" width="80" height="40" rx="6" class="f2"/><text x="136" y="296.5" text-anchor="middle">Y<tspan dy="3" font-size="12">2</tspan></text><text x="56" y="329" text-anchor="middle" class="m">[bs, 2h]</text><text x="136" y="329" text-anchor="middle" class="m">[bs, 2h]</text><text x="192" y="297" text-anchor="middle">×</text><rect x="208" y="212" width="40" height="80" rx="6" class="f1"/><text x="228" y="256.5" text-anchor="middle">B<tspan dy="3" font-size="12">1</tspan></text><rect x="208" y="292" width="40" height="80" rx="6" class="f2"/><text x="228" y="336.5" text-anchor="middle">B<tspan dy="3" font-size="12">2</tspan></text><text x="200" y="230" text-anchor="end" class="m">[2h, h]</text><text x="200" y="364" text-anchor="end" class="m">[2h, h]</text><text x="272" y="297" text-anchor="middle">=</text><text x="352" y="263" text-anchor="middle" class="m">两个部分和，各 [bs, h]</text><rect x="292" y="272" width="40" height="40" rx="6" class="f1"/><text x="312" y="296.5" text-anchor="middle">Y<tspan dy="3" font-size="12">1</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">1</tspan></text><rect x="372" y="272" width="40" height="40" rx="6" class="f2"/><text x="392" y="296.5" text-anchor="middle">Y<tspan dy="3" font-size="12">2</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">2</tspan></text><path d="M312.0,313.0 V336.0" class="ln" marker-end="url(#tpl1-a)"/><path d="M392.0,313.0 V336.0" class="ln" marker-end="url(#tpl1-a)"/><rect x="268" y="338" width="252" height="34" rx="6" class="box"/><text x="394" y="359.5" text-anchor="middle" class="hd">all-reduce（g）：Z = Y<tspan dy="3" font-size="12">1</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> + Y</tspan><tspan dy="3" font-size="12">2</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">2</tspan></text><text x="394" y="390" text-anchor="middle" class="m">Z：[bs, h]，两卡都拿到一整份</text><text x="0" y="418" text-anchor="start" class="m">forward 的输出是部分和，要 all-reduce（g）；backward 不通信</text></svg>
-<figcaption>图 1：\(t = 2\)，所以每卡分到 \(4h/t = 2h\)。橙色是 GPU0 拿的那份，蓝色是 GPU1 的，灰色是两卡各存一整份。上面 column parallel 把 \(A\) 按列切，每卡用完整的 \(X\) 算出输出的一半列，拼起来就是 \(XA\)。下面 row parallel 把 \(B\) 按行切、输入 \(Y\) 跟着按列切，每卡算出的形状已经是完整的 [\(bs\), \(h\)]，但只是一部分的和，all-reduce 相加后才对。</figcaption>
+<figcaption>图 1：\(t = 2\)，每卡分到 \(4h/t = 2h\)。Column parallel 的每卡输出拼起来就是 \(XA\)。Row parallel 的每卡输出是 [\(bs\), \(h\)] 的部分和，all-reduce 相加后才对。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 520 298" role="img" aria-label="MLP 在两张卡上的数据流：column 的输出经过本卡的 GeLU 直接作为 row 的输入，中间不通信，最后 g 做一次 all-reduce"><defs><marker id="tpl2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="tpl2-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="tpl2-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="190" y="18" text-anchor="middle" class="hd">GPU0</text><text x="410" y="18" text-anchor="middle" class="hd">GPU1</text><rect x="92" y="30" width="416" height="32" rx="6" class="box"/><text x="300" y="50.5" text-anchor="middle">X [bs, h]：两卡各一整份</text><path d="M190.0,62 V74" class="ln" marker-end="url(#tpl2-a)"/><path d="M410.0,62 V74" class="ln" marker-end="url(#tpl2-a)"/><rect x="92" y="76" width="416" height="32" rx="6" class="stale"/><text x="300" y="96" text-anchor="middle" class="m">f：forward 原样复制；backward 在这里 all-reduce dX</text><path d="M190.0,108 V120" class="ln" marker-end="url(#tpl2-a)"/><path d="M410.0,108 V120" class="ln" marker-end="url(#tpl2-a)"/><rect x="92" y="122" width="196" height="32" rx="6" class="f1"/><text x="190" y="142.5" text-anchor="middle">X × A<tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> → [bs, 2h]</tspan></text><rect x="312" y="122" width="196" height="32" rx="6" class="f2"/><text x="410" y="142.5" text-anchor="middle">X × A<tspan dy="3" font-size="12">2</tspan><tspan dy="-3"> → [bs, 2h]</tspan></text><path d="M190.0,154 V166" class="ln" marker-end="url(#tpl2-a)"/><path d="M410.0,154 V166" class="ln" marker-end="url(#tpl2-a)"/><rect x="92" y="168" width="196" height="32" rx="6" class="f1"/><text x="190" y="188.5" text-anchor="middle">GeLU（本卡算）→ Y<tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> [bs, 2h]</tspan></text><rect x="312" y="168" width="196" height="32" rx="6" class="f2"/><text x="410" y="188.5" text-anchor="middle">GeLU（本卡算）→ Y<tspan dy="3" font-size="12">2</tspan><tspan dy="-3"> [bs, 2h]</tspan></text><path d="M190.0,200 V212" class="ln" marker-end="url(#tpl2-a)"/><path d="M410.0,200 V212" class="ln" marker-end="url(#tpl2-a)"/><rect x="92" y="214" width="196" height="32" rx="6" class="f1"/><text x="190" y="234.5" text-anchor="middle">Y<tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> × B</tspan><tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> → 部分和 [bs, h]</tspan></text><rect x="312" y="214" width="196" height="32" rx="6" class="f2"/><text x="410" y="234.5" text-anchor="middle">Y<tspan dy="3" font-size="12">2</tspan><tspan dy="-3"> × B</tspan><tspan dy="3" font-size="12">2</tspan><tspan dy="-3"> → 部分和 [bs, h]</tspan></text><path d="M190.0,246 V258" class="ln" marker-end="url(#tpl2-a)"/><path d="M410.0,246 V258" class="ln" marker-end="url(#tpl2-a)"/><rect x="92" y="260" width="416" height="32" rx="6" class="box"/><text x="300" y="280.5" text-anchor="middle" class="hd">g：all-reduce，Z = Y<tspan dy="3" font-size="12">1</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> + Y</tspan><tspan dy="3" font-size="12">2</tspan><tspan dy="-3">B</tspan><tspan dy="3" font-size="12">2</tspan></text><path d="M86,122 H80 V246 H86" class="ln"/><text x="74" y="180" text-anchor="end" class="m">中间</text><text x="74" y="196" text-anchor="end" class="m">零通信</text></svg>
-<figcaption>图 2：两种切法在 MLP 里首尾相接，颜色同图 1。column 算出的 \(XA_i\) 正好是 row 要的那块输入，GeLU 逐元素、在本卡就能算，所以括号里的三步完全不通信。forward 只在最后的 g 做 1 次 all-reduce；虚线框 f 在 forward 什么都不做，backward 时在这里 all-reduce dX。</figcaption>
+<figcaption>图 2：MLP 在两张卡上的数据流。括号里的三步都在本卡算，forward 只在最后的 g 做 1 次 all-reduce，虚线框 f 只在 backward 时 all-reduce dX。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Tensor parallelism splits each weight matrix across t GPUs. Column-parallel splits the output columns: every GPU sees the full input and computes a slice of the output, so the forward needs no communication, but the input gradient is a partial sum and is all-reduced in backward. Row-parallel splits the input rows: each GPU computes a full-size partial sum, so the forward needs an all-reduce. Megatron's MLP is column then row, since GeLU is elementwise and runs locally: one all-reduce forward, one backward. Attention splits by heads: QKV column-parallel, output projection row-parallel. Memory drops by t, but the all-reduces are on the critical path, so TP stays within a node.</p></div>
+<div class="answer"><p>Tensor parallelism splits each weight matrix across t GPUs. Column-parallel splits the output columns: every GPU sees the full input and computes a slice of the output, so forward needs no communication, but the input gradient is a partial sum, all-reduced in backward. Row-parallel splits the input rows: each GPU computes a full-size partial sum, so forward needs an all-reduce. Megatron's MLP is column then row, since GeLU is elementwise and runs locally: one all-reduce forward, one backward. Attention splits by heads: QKV column-parallel, output projection row-parallel. Memory drops by t, but the all-reduces are on the critical path, so TP stays within a node.</p></div>
 
 <h2>推导 / 关键公式</h2>
 <p>\(X\) 是 [\(bs\), \(h\)]，MLP 是 \(Z = \mathrm{GeLU}(XA)\,B\)，\(A\) 是 [\(h\), \(4h\)]，\(B\) 是 [\(4h\), \(h\)]：</p>
@@ -53,13 +55,13 @@
     <tr><td class="nw">backward 通信</td><td>dX 是部分和 → all-reduce（f）</td><td>无</td></tr>
   </tbody>
 </table>
-<p><b>为什么通信位置正好相反</b>：forward \(Y_j = \sum_k X_k A_{kj}\) 对输入维 \(k\) 求和，backward \(dX_k = \sum_j dY_j A_{kj}\) 对输出维 \(j\) 求和。<b>哪一步的求和维度被切开了，哪一步就要 all-reduce</b>：column 切 \(j\)，所以 backward 的 dX 是 partial sum；row 切 \(k\)，所以 forward 的输出是 partial sum。例：\(X = [1, 2]\)、\(A = [[1, 2], [3, 4]]\)、\(dY = [1, 1]\)，column 下 GPU0 算出 [1, 3]、GPU1 算出 [2, 4]，相加才是完整的 dX = [3, 7]。</p>
+<p><b>为什么通信位置正好相反</b>：forward \(Y_j = \sum_k X_k A_{kj}\) 对输入维 \(k\) 求和，backward \(dX_k = \sum_j dY_j A_{kj}\) 对输出维 \(j\) 求和。<b>哪一步的求和维度被切开了，哪一步就要 all-reduce</b>。column 切 \(j\)，backward 的 dX 是 partial sum。row 切 \(k\)，forward 的输出是 partial sum。例：\(X = [1, 2]\)、\(A = [[1, 2], [3, 4]]\)、\(dY = [1, 1]\)，column 下两卡算出 [1, 3] 和 [2, 4]，相加才是 dX = [3, 7]。</p>
 <div class="deriv">
   <h3 id="mlp">MLP 为什么先 column 后 row</h3>
   \[ \mathrm{GeLU}([XA_1, XA_2]) = [\mathrm{GeLU}(XA_1), \mathrm{GeLU}(XA_2)] \]
-  <p>GeLU 逐元素，每卡对自己那几列直接算，结果正好是 row parallel 要的输入块，中间零通信。反过来先按行切：</p>
+  <p>GeLU 逐元素，每卡对自己那几列直接算，结果正好是 row 要的输入块。反过来先按行切：</p>
   \[ \mathrm{GeLU}(X_1A_1 + X_2A_2) \ne \mathrm{GeLU}(X_1A_1) + \mathrm{GeLU}(X_2A_2) \]
-  <p>GeLU 之前就得 all-reduce，多一次同步。</p>
+  <p>GeLU 之前就得 all-reduce，数据从 \(h\) 宽变成 \(4h\) 宽。第二层 column 的输出接 residual 前还要一次 all-gather。通信量约 4.5 倍，省的 memory 也少。</p>
   <h3 id="attention">Attention：按 head 切</h3>
   <p>\(W_Q, W_K, W_V\) 做 column parallel，每卡拿 \(a/t\) 个完整的 head，attention 在本卡算完；\(W_O\) 做 row parallel，最后 1 次 all-reduce。所以 \(a\) 要能被 \(t\) 整除。</p>
 </div>
@@ -95,29 +97,21 @@ print(np.allclose(bad, gelu(X @ A)))        # False</code></pre>
   <li>Row：weight 按行切、输入按列切；forward 部分和 → all-reduce；backward 无通信</li>
   <li>MLP 先 column 后 row：GeLU 逐元素可本地算，forward、backward 各只 1 次 all-reduce</li>
   <li>Attention：QKV 按 head 做 column，output projection 做 row</li>
-  <li>pros：weight、optimizer state、block 内 activation 都 /\(t\)；cons：all-reduce 在 critical path 上（限单机 NVLink），LayerNorm、dropout 仍是整份（→ <a href="sequence-parallel.html">SP</a>）</li>
+  <li>pros：weight、optimizer state、block 内 activation 都 /\(t\)；cons：all-reduce 在 critical path 上，\(t\) 限单机 NVLink（→ <a href="tp-communication.html">TP communication</a>），LayerNorm、dropout 仍是整份（→ <a href="sequence-parallel.html">SP</a>）</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>反过来先 row 后 column 行不行？</summary>
-  <p>结果能对，但 GeLU 前要 all-reduce，GeLU 的 [\(bs\), \(4h\)] activation 每卡一整份。第二层 column 的输出又是切开的，接 residual 前还要 all-gather。all-reduce 的数据从 \(h\) 宽变成 \(4h\) 宽，再加一次 all-gather，通信量约 4.5 倍，省的 memory 也少。</p>
-</details>
-<details>
   <summary>bias 怎么处理？</summary>
-  <p>Column 的 bias 跟着列一起切；row 的 bias 不切，all-reduce 之后加一次。要是每卡在 all-reduce 前各加一遍，bias 就被加了 \(t\) 次。</p>
+  <p>Column 的 bias 跟着列切。Row 的 bias 不切，all-reduce 之后加一次，否则会被加 \(t\) 次。</p>
 </details>
 <details>
   <summary>dropout 的随机数怎么处理？</summary>
-  <p>TP 区域内（attention 里的 dropout）每卡用不同 seed，否则各卡的 head 拿到同一个 mask；TP 区域外（residual 前）用同一个 seed，保证各卡上的副本完全一样。</p>
+  <p>TP 区域内的 dropout 每卡用不同 seed，否则各卡的 head 拿到同一个 mask。区域外用同一个 seed，各卡的副本才一样。</p>
 </details>
 <details>
   <summary>怎么验证你的实现是对的？</summary>
-  <p>固定 seed，和单卡 <code>nn.Linear</code> 对比 output 和 gradient；\(t\) = 1、2、4，有无 bias 都测。没有多卡就用 gloo backend 在 CPU 上起多个进程。</p>
-</details>
-<details>
-  <summary>t 越大越好吗？</summary>
-  <p>不是。每卡计算按 \(1/t\) 降，通信量却不降，GEMM 变小效率下降，\(t\) 超过一台机器的 GPU 数还要走慢得多的跨机网络。见 <a href="tp-communication.html">TP 的 communication</a>。</p>
+  <p>固定 seed，和单卡 <code>nn.Linear</code> 对比 output 和 gradient，\(t\) = 1、2、4、有无 bias 都测。没有多卡就用 gloo backend 起多进程。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1909.08053">Shoeybi et al. 2019, Megatron-LM</a> §3（pp.4–5，eq. 1–3，Fig. 3–4）、Appendix B.2（pp.11–12，dropout RNG）· <a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a> §2.3（p.4）· <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/tensor_parallel/layers.py">Megatron Core <code>layers.py</code></a>（<code>ColumnParallelLinear</code>、<code>RowParallelLinear</code>：row 的 bias 不切、reduce 之后再加）</p>

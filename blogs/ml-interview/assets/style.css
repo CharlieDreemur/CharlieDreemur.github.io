@@ -161,7 +161,9 @@ details p, details li { font-size: .95rem; }
 .tg-k { color: var(--c2); background: var(--c2-soft); border-color: transparent; }
 .tg-asked { color: var(--accent); background: var(--c1-soft); border-color: transparent; }
 .tg-prep { color: var(--accent); border-color: currentColor; border-style: dashed; }
+.tg-src { color: var(--ok); border-color: currentColor; }
 a.tg:hover { border-color: currentColor; border-style: solid; }
+.qa .more { font-family: var(--ui); font-size: .85rem; }
 .kp-tags { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .4rem; margin: .3rem 0 .8rem; }
 .related { font-family: var(--ui); margin-top: 2.2rem; padding-top: .9rem; border-top: 1px solid var(--rule); font-size: .9rem; line-height: 1.9; }
 .related b { display: block; color: var(--muted); font-weight: 600; }
@@ -229,7 +231,10 @@ h3 .code { font-family: var(--mono); font-size: .8rem; font-weight: 400; color: 
 .qa .qt { flex: 1 1 14rem; min-width: 0; }
 .qa .ans { margin: 0; padding: 0 1.1rem .9rem 2.2rem; }
 .tg-key { color: var(--bg); background: var(--accent); border-color: transparent; }
-.only-key .qa:not(.key), .only-key .sub:not(.has-key), .only-key .part:not(.has-key) { display: none; }
+.qa-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .6rem; margin: .45rem 0; padding: .7rem 1rem; border: 1px dashed var(--rule); border-radius: 8px; font-size: .96rem; font-weight: 600; }
+.qa-link .qn { font-family: var(--mono); font-size: .76rem; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.4rem; }
+.qa-link .qt { flex: 1 1 14rem; min-width: 0; }
+.only-key .qa:not(.key), .only-key .qa-link:not(.key), .only-key .sub:not(.has-key), .only-key .part:not(.has-key) { display: none; }
 @media (prefers-reduced-motion: reduce) { .qa > summary::after { transition: none; } }
 
 /* 速成课（infra-course、infra-l*.html） */

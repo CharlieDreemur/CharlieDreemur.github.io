@@ -18,24 +18,24 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Temperature \(T\)</dt>
-  <dd>softmax 之前把 logits 除以 \(T\)，像调"胆子"：\(T\) 小只敢说最可能的词（分布变尖），\(T\) 大敢说冷门词（分布变平），\(T \to 0\) 就是 greedy。<span class="eg">例：logits (2, 0)，T = 1 时概率 0.88 / 0.12；T = 0.5 时 0.98 / 0.02；T = 2 时 0.73 / 0.27。</span></dd>
+  <dd>softmax 之前把 logits 除以 \(T\)，像调"胆子"。\(T\) 小只敢说最可能的词，\(T\) 大敢说冷门词。</dd>
   <dt>Greedy / beam search</dt>
-  <dd>greedy 每步拿概率最高的词；beam search 每步保留 \(B\) 个累计 log prob 最高的 prefix，像下棋多看几条线。两者都是 deterministic。</dd>
+  <dd>greedy 每步拿概率最高的词；beam search 每步保留 \(B\) 个累计 log prob 最高的 prefix。</dd>
   <dt>Top-k</dt>
-  <dd>只在概率前 \(k\) 名里抽签，其余置 0，再 renormalize。不管分布尖还是平，名额都是 \(k\) 个。</dd>
+  <dd>只在概率前 \(k\) 名里抽签，其余置 0，再 renormalize。</dd>
   <dt>Top-p（nucleus）</dt>
-  <dd>从高到低累加概率，一到 \(\ge p\) 就停，留下的集合叫 nucleus，大小随分布自适应。<span class="eg">例：(0.5, 0.3, 0.15, 0.05)，p = 0.9：0.5 → 0.8 → 0.95，留 3 个。</span></dd>
+  <dd>从高到低累加概率，到 \(\ge p\) 就停，留下的集合叫 nucleus。</dd>
   <dt>Degeneration</dt>
-  <dd>开放生成里，greedy / beam 选出的高概率文本平淡、容易陷入重复；完全按原分布 sample 又会抽到 tail 里的怪词，越写越乱。截断 tail 就是两者的折中。</dd>
+  <dd>开放生成里，greedy / beam 的高概率文本平淡，一个短语重复过一次就更容易再重复。按原分布 sample 又会抽到 tail 里的怪词。截断 tail 是折中。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Greedy and beam search are deterministic: beam search keeps the B best prefixes by total log probability, which suits translation, but in open-ended generation it gives bland, repetitive text. Sampling adds diversity. Temperature divides the logits by T before the softmax: T below 1 sharpens the distribution, above 1 flattens it, and T near 0 is greedy; it reshapes but never removes tokens. Top-k and top-p cut off the unreliable tail and renormalize. Top-k keeps a fixed k tokens; top-p keeps the smallest set whose cumulative probability reaches p, so the set shrinks when the model is confident and grows when it isn't. In practice we apply temperature first, then top-p.</p></div>
+<div class="answer"><p>Greedy and beam search are deterministic. Beam search keeps the B best prefixes by total log probability; it suits translation but gives bland, repetitive text in open-ended generation, so there we sample. Temperature divides the logits by T before the softmax: below 1 sharpens the distribution, above 1 flattens it, near 0 is greedy. It reshapes but never removes tokens. Top-k and top-p cut off the unreliable tail and renormalize: top-k keeps a fixed k tokens, top-p keeps the smallest set whose cumulative probability reaches p, so the set adapts to the model's confidence. In practice, temperature first, then top-p.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
   \[ p_i(T) = \frac{e^{z_i/T}}{\sum_j e^{z_j/T}} \;\propto\; p_i(1)^{1/T} \]
-  <p>所以 \(T = 0.5\) 就是把原概率平方再归一化，\(T = 2\) 是开根号再归一化。截断后：</p>
+  <p>\(T = 0.5\) 是把原概率平方再归一化，\(T = 2\) 是开根号。截断后：</p>
   \[ P'(x) = \frac{P(x)}{\sum_{x'\in V} P(x')}\ \ (x \in V),\quad \text{else } 0 \]
   <p>\(V\) 是 top-k 的前 \(k\) 个，或 top-p 中累计 \(\ge p\) 的最短前缀。beam search 的打分：</p>
   \[ \text{score}(y_{1:t}) = \sum_{s=1}^{t} \log p(y_s \mid y_{&lt;s}) \]
@@ -53,7 +53,7 @@
 </table>
 <ul>
   <li><strong>top-k = 2</strong>：每一行都只留 coffee、tea。T = 1 时 renormalize 成 0.5 / 0.8 = 0.625 和 0.375。</li>
-  <li><strong>top-p = 0.9</strong>：留下 2 → 3 → 4 个，分布越平留得越多。T = 1 时三个都除以 0.95：0.526、0.316、0.158。</li>
+  <li><strong>top-p = 0.9</strong>：留下 2 → 3 → 4 个，分布越平留得越多。</li>
   <li><strong>temperature</strong> 只改形状：milk 在哪一行都不是 0。</li>
 </ul>
 
@@ -76,30 +76,26 @@
   <li>temperature：softmax\((z/T)\)；\(T&lt;1\) 变尖，\(T&gt;1\) 变平，\(T\to0\) = greedy；只改形状，不截断</li>
   <li>top-k：固定 \(k\) 个；分布尖时混进烂词，分布平时又砍掉好词</li>
   <li>top-p：累计 \(\ge p\) 的最小集合，大小自适应；\(p\) 常取 0.9–0.95</li>
-  <li>greedy / beam：deterministic，适合翻译等有标准答案的任务；开放生成容易重复</li>
+  <li>greedy / beam：deterministic，适合翻译；开放生成容易重复</li>
   <li>常组合使用：先 temperature，再 top-k / top-p</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>temperature 和 top-k 有什么区别？（Office Copilot 原题）</summary>
-  <p>temperature 改整个分布的形状，所有 token 都还有概率；top-k 只砍掉 tail，留下的 token 之间比例不变。所以常叠加。先除以 \(T\) 调形状，再截断防止抽到怪词。</p>
+  <p>temperature 改整个分布的形状，所有 token 都还有概率。top-k 只砍掉 tail，留下的 token 比例不变，所以两者常叠加。</p>
 </details>
 <details>
   <summary>举个 beam search 比 greedy 好的例子？</summary>
-  <p>第一步 A 0.5、B 0.4；A 后面最好的词 0.4，B 后面最好的词 0.9。greedy 走 A，得 0.5 × 0.4 = 0.20；beam（B = 2）同时留着 B，找到 0.4 × 0.9 = 0.36。</p>
+  <p>第一步 A 0.5、B 0.4；A 后面最好的词 0.4，B 后面 0.9。greedy 走 A 得 0.5 × 0.4 = 0.20；beam（B = 2）留着 B，找到 0.4 × 0.9 = 0.36。</p>
 </details>
 <details>
   <summary>beam search 为什么偏爱短句？</summary>
-  <p>每多一个 token 就多加一个负的 log prob，长句天然吃亏，所以要除以长度或加 length penalty。原始 Transformer 翻译用 beam size 4、\(\alpha = 0.6\)。</p>
-</details>
-<details>
-  <summary>开放生成为什么不用 beam search？</summary>
-  <p>最高概率的文本往往 generic。而且一个短语重复一次，下一次重复的概率更高，形成正反馈，陷入循环。所以聊天、写作用 sampling。</p>
+  <p>每多一个 token 就多加一个负的 log prob，长句吃亏，所以要加 length penalty。原始 Transformer 用 beam size 4、\(\alpha = 0.6\)。</p>
 </details>
 <details>
   <summary>参数怎么选？</summary>
-  <p>要准确（代码、事实问答、抽取）就用低 \(T\) 或 greedy，随机性越大 hallucination 风险越高；要多样（写作、brainstorm）就 \(T\) 接近 1，配 top-p 0.9–0.95。</p>
+  <p>要准确（代码、事实问答）用低 \(T\) 或 greedy，随机性越大 hallucination 风险越高。要多样（写作、brainstorm）用 \(T\) 接近 1 配 top-p。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1904.09751">Holtzman et al. 2020（nucleus sampling）</a> Abstract（p.1）、§3.1–3.3 eq. 2–4（pp.4–6）、Fig. 4（p.5）、§5.2（p.9）· <a href="https://arxiv.org/abs/1805.04833">Fan et al. 2018</a> §5.4（pp.5–6，top-k）· <a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §6.1（p.8）· <a href="https://arxiv.org/abs/2311.05232">Huang et al. 2023</a> §3.3.1（p.11）</p>

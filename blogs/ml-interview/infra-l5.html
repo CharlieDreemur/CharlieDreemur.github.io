@@ -12,30 +12,29 @@
 <main>
 
 <h1>v4：Tensor Parallel 与 Sequence Parallel</h1>
-<p class="lead">v3 的 ZeRO 把 model state 切到了 32 张卡上，但它切的只是“存”。算的时候每卡用的还是完整的 weight（ZeRO-3 要先 all-gather 回来），activation 也一点没切。模型到 70B 以上，这就不够了。这一课换一种切法：把每一层的矩阵乘法本身切成 t 份，t 张卡合算同一层（TP）；再把 TP 漏掉的那部分 activation 沿 sequence 切开（SP）。这是 Megatron 的核心，也是 NVIDIA 考过的原题。</p>
+<p class="lead">ZeRO 切的只是“存”，算的时候每卡用的还是完整的 weight，activation 也没切，模型到 70B 以上就不够了。这一课把每一层的矩阵乘法本身切成 t 份，t 张卡合算同一层（TP），再把 TP 漏掉的那部分 activation 沿 sequence 切开（SP）。这是 Megatron 的核心，也是 NVIDIA 考过的原题。</p>
 <p class="meta"><b>面试会这样问</b><q>Explain column-parallel and row-parallel linear layers. What are the pros and cons?</q> · <q>How does Megatron split the MLP and attention, and how many all-reduces does a layer need?</q> · <q>Why do we keep tensor parallelism within a node?</q></p>
 <p class="meta"><b>考过</b>NVIDIA 框架岗 2023 电话面（"Column Parallel和Row Parallel Linear Layer的实现和pros &amp; cons"，写少量 pseudocode，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· NVIDIA DL Algorithm Engineer（"What is Tensor Parallelism (TP)?"，Glassdoor RVW102989764，年份未核实）· NVIDIA High Performance LLM Training Engineer 技术电面（"some model parallelism questions"，Glassdoor RVW105730158）· 华为机考（Megatron MLP 的正确切法）· 牛客多篇（"mlp中第一个矩阵和第二个矩阵分别是行切还是列切"）· 阿里（"tp的allreduce的次数"）· 腾讯混元（"TP 并行规模越大训练速度一定越快吗？"）· 牛客（"Megatron SP的实现方式"）· Microsoft MAI infra onsite 2026（大 embedding 和 LM head 怎么切，<a href="https://www.1point3acres.com/bbs/thread-1189843-1-1.html">1p3a 1189843</a>）</p>
 
 <h2>ZeRO 到 70B 以上会撞上三堵墙</h2>
+<p>就是第 4 课末尾的三个问题，这里补上大模型的数：</p>
 <ul>
-  <li><b>activation 不切</b>：8B 模型、一条 8K tokens 的样本，开了 FlashAttention 还有约 41 GB（每层约 1.14 GB）。ZeRO 只切 model state，不管用多少张卡，每卡都是这 41 GB</li>
-  <li><b>DP 的卡数有上限</b>：DP 每张卡至少要分到 1 条样本。Llama 3 405B 一个 batch 约 16M tokens，按 8K 一条只有约 2000 条，它却用了 16K 张卡</li>
-  <li><b>all-gather 太慢</b>：ZeRO-3 每个 step 每卡要发约 6Ψ bytes（DDP 的 1.5 倍）。70B 就是 420 GB，走 IB 约 8.4 s；而每卡算一条 8K 样本只要 6 × 70B × 8192 ÷ 400 TFLOPS ≈ 8.6 s。通信和计算差不多长，很难藏住</li>
+  <li><b>activation 不切</b>：8B 模型一条 8K 样本就有约 41 GB（每层约 1.14 GB），用多少张卡都不变</li>
+  <li><b>DP 的卡数有上限</b>：Llama 3 405B 一个 batch 约 16M tokens，按 8K 一条只有约 2000 条，它却用了 16K 张卡</li>
+  <li><b>all-gather 太慢</b>：ZeRO-3 每个 step 每卡要发约 6Ψ bytes，70B 就是 420 GB，走 IB 约 8.4 s。而每卡算一条 8K 样本只要 6 × 70B × 8192 ÷ 400 TFLOPS ≈ 8.6 s，通信和计算差不多长，很难藏住</li>
 </ul>
-<p>三个问题指向同一个办法：不再切 batch，而是把每一层的计算本身切开。t 张卡合起来算同一批样本，activation 跟着变小，weight 也不用拼回来。</p>
+<p>办法是把每一层的计算本身切开，activation 跟着变小，weight 也不用拼回来。</p>
 
 <h2>TP 的数学：分块矩阵乘法</h2>
 <p>一个 linear layer 就是 \(Y = XA\)，\(X\) 是 [token 数, h]。把 \(A\) 切成两块放到两张卡上，有两种切法。先看一个能心算的例子：</p>
 \[ X = \begin{bmatrix}1 & 2\end{bmatrix},\quad A = \begin{bmatrix}1 & 2\\ 3 & 4\end{bmatrix},\quad XA = \begin{bmatrix}7 & 10\end{bmatrix} \]
 <ul>
-  <li><b>按列切（column parallel）</b>：GPU0 拿第 1 列，算 1·1 + 2·3 = 7；GPU1 拿第 2 列，算 1·2 + 2·4 = 10。拼起来就是 [7, 10]。每卡都要完整的 \(X\)，结果是“拼”出来的</li>
-  <li><b>按行切（row parallel）</b>：GPU0 拿第 1 行和 \(X\) 的第 1 个数，算 1 × [1, 2] = [1, 2]；GPU1 拿第 2 行和第 2 个数，算 2 × [3, 4] = [6, 8]。逐个相加才是 [7, 10]。每卡只要 \(X\) 的一块，但结果是“加”出来的：形状完整，数值只是一部分（partial sum），要 all-reduce 求和</li>
+  <li><b>按列切（column parallel）</b>：GPU0 拿第 1 列，算 1·1 + 2·3 = 7；GPU1 拿第 2 列，算 1·2 + 2·4 = 10。拼起来就是 [7, 10]</li>
+  <li><b>按行切（row parallel）</b>：GPU0 拿第 1 行和 \(X\) 的第 1 个数，算 1 × [1, 2] = [1, 2]；GPU1 拿第 2 行和第 2 个数，算 2 × [3, 4] = [6, 8]。逐个相加才是 [7, 10]。每卡算出的是 partial sum，形状完整、数值只是一部分，要 all-reduce 求和</li>
 </ul>
 <p>写成一般形式：</p>
 \[ \text{column：}\ X[A_1, A_2] = [XA_1,\ XA_2] \qquad \text{row：}\ [X_1, X_2]\begin{bmatrix}A_1\\ A_2\end{bmatrix} = X_1A_1 + X_2A_2 \]
-<p>像两个人合填一张表：column 是每人填几列，最后贴在一起；row 是每人都填整张表、每格只算一半，最后两张表逐格相加。</p>
-<p><b>为什么两种切法都对</b>：输出的每个数是 \(Y_j = \sum_k X_k A_{kj}\)。column parallel 切的是 \(j\)，也就是不同的输出，它们互不相关，各算各的再拼起来；row parallel 切的是 \(k\)，也就是求和的那一维，一个和可以拆成几段分别算，最后加起来。</p>
-<p class="you"><b>你的背景</b>线性代数里的分块矩阵乘法就是 TP 的全部数学。column parallel 是把右边的矩阵按列分块，row parallel 是把两个矩阵沿相乘的那一维（inner dimension）对应分块。面试时先在白板上写出上面两个等式，再讲通信，最不容易乱。</p>
+<p class="you"><b>你的背景</b>线性代数里的分块矩阵乘法就是 TP 的全部数学。column parallel 是把右边的矩阵按列分块，row parallel 是把两个矩阵沿相乘的那一维（inner dimension）对应分块。面试时先写出上面两个等式，再讲通信，最不容易乱。</p>
 
 <h2>Column 和 Row 各在哪里通信</h2>
 <table>
@@ -49,27 +48,25 @@
   </tbody>
 </table>
 <p>backward 为什么正好反过来：column 的 \(dX = dY_1A_1^\top + dY_2A_2^\top\)，每卡只能算出其中一项，要 all-reduce 相加；row 的输出已经 all-reduce 成完整结果，每卡都有完整的 \(dY\)，自己那块 \(dX_i = dY\,A_i^\top\) 在本卡就能算。</p>
-<p>换成下标看更清楚：forward 是 \(Y_j = \sum_k X_k A_{kj}\)，对 \(k\) 求和；backward 是 \(dX_k = \sum_j dY_j A_{kj}\)，对 \(j\) 求和。column 切的是 \(j\)：forward 的和完整，backward 的和被切开，所以 \(dX\) 是 partial sum；row 切的是 \(k\)，正好相反。例：\(X = [1, 2]\)、\(dY = [1, 1]\)，GPU0 只能算出经过 \(Y_1\) 的那部分 [1, 3]，GPU1 算出经过 \(Y_2\) 的 [2, 4]，相加才是完整的 [3, 7]。</p>
 <h3>完整流程：column parallel，t = 3</h3>
 <p>\(X = [1,\ 2]\)，\(W = [c_1 \mid c_2 \mid c_3] = \begin{bmatrix}1 & 2 & 3\\ 4 & 5 & 6\end{bmatrix}\)，GPU i 拿第 i 列。backward 时假设从后面传回的 \(dY = [1,\ 2,\ 3]\)。</p>
 <table>
   <thead><tr><th>步骤</th><th>GPU0</th><th>GPU1</th><th>GPU2</th><th>通信</th></tr></thead>
   <tbody>
-    <tr><td>forward：\(Y_i = X c_i\)</td><td>9</td><td>12</td><td>15</td><td>无，X 每卡一份</td></tr>
-    <tr><td>backward 收到 \(dY_i\)</td><td>1</td><td>2</td><td>3</td><td>无，每卡只拿自己那列的 gradient</td></tr>
-    <tr><td>\(dW_i = X^\top dY_i\)</td><td>[1, 2]</td><td>[2, 4]</td><td>[3, 6]</td><td>无，正好是自己那列 weight 的 gradient</td></tr>
+    <tr><td>forward：\(Y_i = X c_i\)</td><td>9</td><td>12</td><td>15</td><td>无</td></tr>
+    <tr><td>backward 收到 \(dY_i\)</td><td>1</td><td>2</td><td>3</td><td>无</td></tr>
+    <tr><td>\(dW_i = X^\top dY_i\)</td><td>[1, 2]</td><td>[2, 4]</td><td>[3, 6]</td><td>无，就是自己那列 weight 的 gradient</td></tr>
     <tr><td>dX 的一份：\(dY_i\, c_i^\top\)</td><td>[1, 4]</td><td>[4, 10]</td><td>[9, 18]</td><td>—</td></tr>
     <tr><td>all-reduce 相加（f 的 backward）</td><td>[14, 32]</td><td>[14, 32]</td><td>[14, 32]</td><td>每卡都拿到完整的 dX</td></tr>
   </tbody>
 </table>
-<p>X 在 forward 被三张卡都用了，所以它的 gradient 是三份之和；W 的每一列只在一张卡上用过，它的 gradient 在本卡就算完了。row parallel 正好相反：forward 末尾 all-reduce，backward 时每卡都有完整的 dY，\(dW_i\) 和 \(dX_i\) 都在本卡算完。</p>
-<p><b>换个角度看 backward</b>：column 的 dX = dY·Wᵀ = dY₁·W₁ᵀ + dY₂·W₂ᵀ + dY₃·W₃ᵀ，本身就是一次 row parallel 的 matmul（Wᵀ 按行切），所以要 all-reduce；row 的 dX = dZ·Wᵀ = [dZ·W₁ᵀ | dZ·W₂ᵀ | dZ·W₃ᵀ]，本身是一次 column parallel 的 matmul，所以每卡在本地就拿到自己那块。两种切法的 backward 正好互换。</p>
+<p>X 在 forward 被三张卡都用了，所以它的 gradient 是三份之和。W 的每一列只在一张卡上用过，它的 gradient 在本卡就算完了。</p>
 <p>Megatron 把这两次通信包成一对算子 f 和 g，插在每个 TP block 的入口和出口：</p>
 <ul>
-  <li><b>f（入口）</b>：forward 原样传，backward all-reduce。同一个 \(X\) 被 t 张卡共用，它的 gradient 就是 t 份之和</li>
-  <li><b>g（出口）</b>：forward all-reduce，backward 原样传。\(Y = \sum_i Y_i\)，每份 \(Y_i\) 的 gradient 就是 \(dY\)，每卡本来就有</li>
+  <li><b>f（入口）</b>：forward 原样传，backward all-reduce</li>
+  <li><b>g（出口）</b>：forward all-reduce，backward 原样传，因为每份 \(Y_i\) 的 gradient 就是 \(dY\)，每卡本来就有</li>
 </ul>
-<p>面试要写 pseudocode 时，写到下面这个程度就够了。PyTorch 的 weight 存成 [out, in]，所以 column parallel 切的是 out 那一维（省略了 <code>@staticmethod</code> 和初始化；Megatron Core 里对应 <code>tensor_parallel/mappings.py</code> 和 <code>layers.py</code>）：</p>
+<p>面试要写 pseudocode 时写到下面这个程度就够了。PyTorch 的 weight 存成 [out, in]，所以 column parallel 切的是 out 那一维（省略了 <code>@staticmethod</code> 和初始化）：</p>
 <pre><code>class f(torch.autograd.Function):      # 入口
     def forward(ctx, x):   return x
     def backward(ctx, dx): dist.all_reduce(dx, group=tp_group); return dx
@@ -90,14 +87,14 @@ class RowParallelLinear(nn.Module):     # weight [out, in/t]，bias 不切
 \[ Z = \mathrm{GeLU}\big(X[A_1, A_2]\big)\begin{bmatrix}B_1\\ B_2\end{bmatrix} = \mathrm{GeLU}(XA_1)\,B_1 + \mathrm{GeLU}(XA_2)\,B_2 \]
 <ul>
   <li>第一层 \(A\)（h → 4h）按列切，每卡得到中间结果的几列</li>
-  <li>GeLU 是逐元素的，每卡对自己那几列直接算，不用通信。算完正好就是 row parallel 要的那块输入</li>
+  <li>GeLU 是逐元素的，每卡对自己那几列直接算，算完正好是 row parallel 要的那块输入</li>
   <li>第二层 \(B\)（4h → h）按行切，输出 partial sum，最后由 g 做 1 次 all-reduce</li>
   <li>Qwen3 用的是 SwiGLU：gate 和 up 两个矩阵都按列切，逐元素相乘也在本卡做。t = 8 时每卡拿 12288 ÷ 8 = 1536 列</li>
 </ul>
-<p><b>反过来先 row 后 column 为什么不行</b>：第一层的输出成了 partial sum，而 GeLU 不能分别作用在 partial sum 上。拿 ReLU 举例，两卡的 partial sum 是 3 和 −2：ReLU(3 + (−2)) = 1，ReLU(3) + ReLU(−2) = 3。所以 GeLU 之前就得 all-reduce，而且要 all-reduce 的是 12288 宽的中间结果（h 的 3 倍）。第二层 column 的输出又是切开的列，接 residual 之前还要 all-gather 一次。通信更多，每卡还要存完整的中间 activation。</p>
+<p><b>反过来先 row 后 column 为什么不行</b>：第一层的输出成了 partial sum，而 GeLU 不能分别作用在 partial sum 上。拿 ReLU 举例，两卡的 partial sum 是 3 和 −2：ReLU(3 + (−2)) = 1，ReLU(3) + ReLU(−2) = 3。所以 GeLU 之前就得 all-reduce 12288 宽的中间结果（h 的 3 倍），通信更多，每卡还要存完整的中间 activation。</p>
 
 <h2>Attention：按 head 切</h2>
-<p>每个 head 各算各的，天然可以分开。Qwen3 有 32 个 query head、8 个 KV head（GQA），t = 8 时每卡拿 4 个 query head 和 1 个 KV head：</p>
+<p>每个 head 各算各的。Qwen3 有 32 个 query head、8 个 KV head（GQA），t = 8 时每卡拿 4 个 query head 和 1 个 KV head：</p>
 <ul>
   <li>\(W_Q, W_K, W_V\) 按 head 做 column parallel，每卡的 attention 在本卡算完，不通信</li>
   <li>\(W_O\) 做 row parallel，最后 1 次 all-reduce</li>
@@ -105,14 +102,14 @@ class RowParallelLinear(nn.Module):     # weight [out, in/t]，bias 不切
 </ul>
 
 <h2>一层通信几次，为什么出不了机器</h2>
-<p>attention 和 MLP 各是一个“f → column → 本地计算 → row → g”的 block。forward 时两个 g 各 all-reduce 一次，backward 时两个 f 各 all-reduce 一次：<b>每层 2 + 2 = 4 次</b>，36 层就是每个 micro-batch 144 次。每次 all-reduce 的就是这一层的输出 [b, s, h]：1 × 8192 × 4096 × 2 bytes = 64 MiB。t = 8 的 ring all-reduce 每卡要发 2 × 7/8 × 64 = 112 MiB：</p>
+<p>attention 和 MLP 各是一个“f → column → 本地计算 → row → g”的 block。forward 两个 g、backward 两个 f 各 all-reduce 一次，<b>每层 2 + 2 = 4 次</b>，36 层就是每个 micro-batch 144 次。每次 all-reduce 的是这一层的输出 [b, s, h]，也就是 64 MiB。t = 8 的 ring all-reduce 每卡要发 2 × 7/8 × 64 = 112 MiB：</p>
 <ul>
   <li><b>机内 NVLink</b>（450 GB/s）：一次约 0.26 ms，一层 4 次约 1.0 ms，36 层约 38 ms</li>
   <li><b>跨机 IB</b>（50 GB/s）：一次约 2.3 ms，一层约 9.4 ms，36 层约 338 ms</li>
-  <li><b>对比计算</b>：按 6ND 粗估，一层约 0.19B parameter、8192 个 token，t = 8 时每卡每层的 forward + backward 约 6 × 0.19B × 8192 ÷ 8 ÷ 400 TFLOPS ≈ 3 ms。走 NVLink，通信约是计算的 1/3；走 IB，通信约是计算的 3 倍</li>
+  <li><b>对比计算</b>：按 6ND 粗估，t = 8 时每卡每层的 forward + backward 约 6 × 0.19B × 8192 ÷ 8 ÷ 400 TFLOPS ≈ 3 ms。走 NVLink 通信约是计算的 1/3，走 IB 约是 3 倍</li>
   <li><b>而且藏不住</b>：all-reduce 的结果就是下一个算子的输入，GPU 只能干等，这叫在 critical path 上。DP 的 gradient 可以边 backward 边发，TP 不行</li>
 </ul>
-<p>所以 TP 留在一台机器的 NVLink 里，t ≤ 8。用厨房的比喻：TP 是几个厨房合做同一道菜，每一步都要互相递半成品，只能在同一栋楼里用传菜电梯；换成开货车跨楼送，厨师大部分时间都在等车。</p>
+<p>所以 TP 留在一台机器的 NVLink 里，t ≤ 8。TP 是几个厨房合做同一道菜，每一步都要互相递半成品，只能用同一栋楼里的传菜电梯。换成货车跨楼送，厨师大部分时间都在等车。</p>
 
 <h2>t 开多大：通信 1× / 1.5× / 1.75×</h2>
 <table>
@@ -123,10 +120,10 @@ class RowParallelLinear(nn.Module):     # weight [out, in/t]，bias 不切
     <tr><td>8</td><td>1/8</td><td>112 MiB（1.75×）</td><td>7×</td><td>1536 / 4</td></tr>
   </tbody>
 </table>
-<p>t 每翻一倍，每卡的计算减半，通信却几乎不降（ring 的 \(2(t-1)/t\) 趋近 2），GEMM 也越切越窄、越难跑满 Tensor Core。所以 TP 不是越大越好。memory 放得下就用小一点的 t，最大也只到一台机器的 8 张卡。</p>
+<p>t 每翻一倍，每卡的计算减半，通信却几乎不降（ring 的 \(2(t-1)/t\) 趋近 2），GEMM 也越切越窄、越难跑满 Tensor Core。所以 memory 放得下就用小一点的 t。</p>
 
 <h2>SP：把 TP 漏掉的 activation 也切开</h2>
-<p>TP 只切了 attention 和 MLP 里的 GEMM。夹在 block 之间的 LayerNorm、dropout、residual add，每卡都对完整的 [s, h] 算一遍、存一份，8 张卡存的一模一样。按 Korthikanti 的公式（开 FlashAttention），TP 之后每层 activation 是 \(sbh(10 + 24/t)\) bytes：t = 8 时系数是 13，比不切的 34 只小了 2.6 倍。那个不随 t 变小的 10，就是这些没切的部分。</p>
+<p>TP 只切了 attention 和 MLP 里的 GEMM。夹在 block 之间的 LayerNorm、dropout、residual add，每卡都对完整的 [s, h] 算一遍、存一份。按 Korthikanti 的公式（开 FlashAttention），TP 之后每层 activation 是 \(sbh(10 + 24/t)\) bytes，那个不随 t 变小的 10 就是这些没切的部分。</p>
 <p>这些操作每个 token 各算各的，所以可以沿 sequence 切：每卡只管 8192 ÷ 8 = 1024 个 token。通信只是换个拆法：</p>
 <ul>
   <li>row parallel 之后的 all-reduce 换成 <b>reduce-scatter</b>：求完和，每卡只拿自己那 1024 个 token</li>
@@ -143,21 +140,21 @@ class RowParallelLinear(nn.Module):     # weight [out, in/t]，bias 不切
 </table>
 
 <h2>Embedding 和 LM head：按 vocab 切</h2>
-<p>Qwen3 的 embedding 是 151936 × 4096 ≈ 0.62B 个 parameter，算上 Adam 约 10 GB。Megatron 把它按 vocab（行）切成 8 份，每卡管 18992 个 token id。查表时不归自己管的 token 输出 0，all-reduce 一加，每个 token 正好拿到自己那一行。LM head 也按 vocab 切，其实就是 column parallel，每卡只算 1/8 的 logits：一条 8K 样本的 fp32 logits 有 8192 × 151936 × 4 bytes ≈ 5 GB，切完每卡 0.62 GB。cross-entropy 也不用把 logits 拼回来，每个 token 只 all-reduce 三个数：max、\(\sum e^{z}\) 和目标 logit。</p>
+<p>Qwen3 的 embedding 是 151936 × 4096 ≈ 0.62B 个 parameter，算上 Adam 约 10 GB。Megatron 把它按 vocab（行）切成 8 份，每卡管 18992 个 token id。查表时不归自己管的 token 输出 0，all-reduce 一加，每个 token 正好拿到自己那一行。LM head 也按 vocab 切，就是 column parallel，一条 8K 样本的 fp32 logits 从约 5 GB 降到每卡 0.62 GB。cross-entropy 不用把 logits 拼回来，每个 token 只 all-reduce 三个数：max、\(\sum e^{z}\) 和目标 logit。</p>
 <p class="you"><b>你的经验</b>你在 TikTok 用的 DeepSpeed ZeRO 和 TP 都“切 weight”，区别在算的时候：ZeRO-3 先把完整 weight all-gather 回来再算，每卡算的是自己那几条样本的完整一层；TP 从不拼回 weight，每卡只算每一层的 1/t，同组的卡处理同一批样本。<b>去查一下</b>你用 vLLM 时有没有设过 <code>tensor_parallel_size</code>？vLLM 的 TP 用的也是这套 column / row 切法。</p>
 
 <h2>30 秒英文回答</h2>
 <div class="answer"><p>Tensor parallelism splits each weight matrix across t GPUs. Column-parallel splits the output columns: every GPU takes the full input and produces a slice of the output, so the forward needs no communication, but the input gradient is a partial sum, all-reduced in backward. Row-parallel splits the input dimension: each GPU produces a full-size partial sum, so the forward needs an all-reduce and the backward none. Megatron's MLP is column then row, so GeLU stays local; attention splits by heads. That's two all-reduces forward and two backward per layer. Weights, optimizer state and activations shrink by t, but the all-reduces block the next op, so TP stays on NVLink.</p></div>
 
 <h2>自测</h2>
-<details><summary>Column 和 Row Parallel Linear 怎么实现？pros 和 cons？（NVIDIA 框架岗 2023 原题）</summary><p>Column：weight 按输出切，每卡拿完整输入、算出几列，forward 不通信，backward 用 f 对 \(dX\) 做 all-reduce。Row：weight 按输入切，每卡拿一块输入、算出 partial sum，forward 用 g 做 all-reduce，backward 不通信。两者配对（MLP 先 column 后 row，attention 按 head 切），每层 forward、backward 各 2 次 all-reduce。pros：weight、optimizer state、block 内的 activation 都缩成 1/t，global batch 不变。cons：all-reduce 在 critical path 上，只能放在 NVLink 内。t 大了 GEMM 变窄、通信占比上升。LayerNorm、dropout 的 activation 仍是整份，要靠 SP。</p></details>
-<details><summary>TP 开得越大越快吗？</summary><p>不是。每卡计算按 1/t 降，每卡每次 all-reduce 发的量却是 1× / 1.5× / 1.75×（t = 2 / 4 / 8），通信 ÷ 计算从 t = 2 到 t = 8 涨了 7 倍。GEMM 越切越窄，效率也降。t 超过 8 就要走 IB，一次 all-reduce 从约 0.26 ms 变成约 2.3 ms。</p></details>
-<details><summary>bias 怎么处理？</summary><p>Column 的 bias 跟着输出列一起切，每卡在本地加自己那段。Row 的 bias 不切，all-reduce 之后加一次；如果每卡在 all-reduce 之前各加一遍，bias 就被加了 t 次。</p></details>
-<details><summary>怎么验证你的实现是对的？</summary><p>固定 seed，用同一份完整 weight 切给各卡，和单卡 <code>nn.Linear</code> 对比 output 和 gradient（\(dX\)、\(dW\)、bias 的 gradient），每卡的 \(dW\) 应该等于完整 \(dW\) 对应的那一块。t = 1、2、4 都测，有无 bias 都测。没有多卡就用 gloo backend 在 CPU 上起多个进程。</p></details>
+<details><summary>Column 和 Row Parallel Linear 怎么实现？pros 和 cons？（NVIDIA 框架岗 2023 原题）</summary><p>column 的 forward 不通信，backward 用 f 对 \(dX\) 做 all-reduce，row 正好相反（写法见上面的 pseudocode）。pros：weight、optimizer state、block 内的 activation 都缩成 1/t，global batch 不变。cons：all-reduce 在 critical path 上，只能放在 NVLink 内，t 大了 GEMM 变窄、通信占比上升，LayerNorm、dropout 的 activation 仍是整份，要靠 SP。</p></details>
+<details><summary>TP 开得越大越快吗？</summary><p>不是。通信 ÷ 计算从 t = 2 到 t = 8 涨了 7 倍，GEMM 也越切越窄。t 超过 8 还要走 IB，一次 all-reduce 从约 0.26 ms 变成约 2.3 ms。</p></details>
+<details><summary>bias 怎么处理？</summary><p>Column 的 bias 跟着输出列一起切。Row 的 bias 不切，all-reduce 之后加一次，否则每卡各加一遍，bias 就被加了 t 次。</p></details>
+<details><summary>怎么验证你的实现是对的？</summary><p>固定 seed，用同一份完整 weight 切给各卡，和单卡 <code>nn.Linear</code> 对比 output 和 gradient（\(dX\)、\(dW\)、bias 的 gradient）。t = 1、2、4 都测，有无 bias 都测。没有多卡就用 gloo backend 在 CPU 上起多个进程。</p></details>
 
 <p class="links"><b>想看细一点</b> <a href="tp-linear.html">6.1 TP Linear</a>（NumPy 模拟 t = 2，含反例）· <a href="tp-communication.html">6.2 TP communication</a>（华为的 80 MB 计算题）· <a href="sequence-parallel.html">6.3 Sequence Parallel</a>（SP 下 MLP 每一步的公式）· <a href="vocab-parallel.html">6.4 Vocab parallelism</a>（vocab-parallel cross-entropy 的代码）· <a href="allreduce.html">6.12 all-reduce</a></p>
 
-<div class="next"><b>下一课</b>TP 出不了一台机器，t 最多 8。模型再大，8 张卡放不下一份模型，就要把不同的层放到不同的机器上：pipeline parallel，机器之间只传段边界的 activation，代价是流水线的 bubble。</div>
+<div class="next"><b>下一课</b>模型再大，8 张卡放不下一份模型，就要把不同的层放到不同的机器上。这就是 pipeline parallel，机器之间只传段边界的 activation，代价是流水线的 bubble。</div>
 
 </main>
 </body>

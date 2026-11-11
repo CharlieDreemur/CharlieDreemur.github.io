@@ -18,15 +18,15 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>回归集（regression suite）</dt>
-  <dd>固定的一批 task，按类别分组，每次改动之后全部重跑。像每年体检查同样的项目，这样才能和去年比。</dd>
+  <dd>固定的一批 task，按类别分组，每次改动之后全部重跑。</dd>
   <dt>成功率</dt>
-  <dd>同一个 task 跑 k 次，成功的比例。agent 是 nondeterministic 的，一次通过不代表稳定。<span class="eg">5 次里过 4 次，成功率 80%。</span></dd>
+  <dd>同一个 task 跑 k 次，成功的比例。</dd>
   <dt>Gate</dt>
-  <dd>合并之前必须通过的自动检查，不过就不让合并。</dd>
+  <dd>合并之前必须通过的自动检查。</dd>
   <dt>Hidden task</dt>
-  <dd>平时不拿来调 agent 的一部分 task，只用来最后确认。它防的是把 agent 调成只会做回归集。</dd>
+  <dd>平时不拿来调 agent 的一部分 task，只用来最后确认，防 overfit 回归集。</dd>
   <dt>回流</dt>
-  <dd>把线上失败的 case 加进回归集，同一个错不犯第二次。</dd>
+  <dd>把线上失败的 case 加进回归集。</dd>
 </dl>
 
 <h2 id="figs">看图：改动前后按类别比成功率</h2>
@@ -64,33 +64,33 @@
   <rect class="hot" x="150" y="200" width="290" height="28" rx="4"/>
   <text class="acc" x="295" y="219" text-anchor="middle">gate：有一类下降超过 noise，不合并</text>
 </svg>
-<figcaption>图 1：类别和数字都是示意，类别按 FlashVector 的四层来分。每类 20 个 task，每个跑 5 次。GPU kernel 是这次修的那一类，变好了。model server 掉了 20 个点，超过 noise，所以 gate 不放行。</figcaption>
+<figcaption>图 1：类别和数字都是示意，类别按 FlashVector 的四层来分，每类 20 个 task，每个跑 5 次。GPU kernel 是这次修的那一类。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I keep a fixed regression suite, grouped by category, and rerun all of it after every change, not just the cases I fixed. Agents are nondeterministic, so each task runs several times, and I compare success rates per category with the model version and environment pinned. The gate is simple: a change merges only if no category drops by more than the noise. I also look at the trajectory, meaning tool choices, step count and tokens, because a run can pass for the wrong reason. Production failures get added back into the suite, and I hold out some hidden tasks so I don't overfit to it.</p></div>
+<div class="answer"><p>I keep a fixed regression suite, grouped by category, and rerun all of it after every change, not just the cases I fixed. Agents are nondeterministic, so each task runs several times, and I compare success rates per category with the model version and environment pinned. A change merges only if no category drops by more than the noise. I also check the trajectory, meaning tool choices, step count and tokens, because a run can pass for the wrong reason. Production failures go back into the suite, and I hold out some hidden tasks so I don't overfit to it.</p></div>
 
 <h2 id="chain">Version chain</h2>
 <table>
   <thead><tr><th>版本</th><th>做法</th><th>还剩的问题</th></tr></thead>
   <tbody>
     <tr><td class="nw">v1 只测修好的</td><td>只重跑这次修的那几个 bad case</td><td>别的类别退化了看不到</td></tr>
-    <tr><td class="nw">v2 回归集</td><td>固定一批 task，按类别分组，每次改动全部重跑</td><td>同一个 task 这次过、下次不过</td></tr>
+    <tr><td class="nw">v2 回归集</td><td>每次改动全部重跑回归集</td><td>同一个 task 这次过、下次不过</td></tr>
     <tr><td class="nw">v3 多跑 + gate</td><td>每个 task 跑 k 次；按类别比成功率；没有类别的下降超过 noise 才合并</td><td>回归集越调越熟，分数虚高</td></tr>
     <tr><td class="nw">v4 回流 + hidden task</td><td>线上失败的 case 回流；留一部分 hidden task</td><td>回归集变大，重跑一遍变慢</td></tr>
   </tbody>
 </table>
-<p>比较两版时要固定 model 版本和环境，否则差别可能来自环境。除了最终结果，也要看 tool 选择、步数和 token，因为结果对了也可能是碰巧，成本也可能涨了。回归集由 eval harness 来跑，它和 agent harness 的区别见 <a href="llm-harness.html">LLM harness</a>。回归集变大之后怎么跑得完见 <a href="agent-batch-runs.html">大批量跑 agent</a>。</p>
+<p>环境不固定，两版的差别可能来自环境。结果对了也可能是碰巧，成本也可能涨了，所以还要看 tool 选择、步数和 token。回归集由 eval harness 来跑（见 <a href="llm-harness.html">LLM harness</a>），变大之后怎么跑得完见 <a href="agent-batch-runs.html">大批量跑 agent</a>。</p>
 
 <h2 id="noise">手算：掉多少才算退化</h2>
-<p>一类有 20 个 task，每个跑 5 次，一共 100 个 run。成功率是 80% 时，它的标准误差是 \(\sqrt{0.8 \times 0.2 / 100} = 0.04\)，也就是 4 个点。两版相减，误差约 \(4 \times \sqrt{2} \approx 5.7\) 个点。所以掉 2 个点在 noise 里，掉 20 个点是真的退化。</p>
-<p>同一个 task 的几次 run 并不独立，实际的 noise 比这个数大。稳妥的做法是把未改动的版本重复跑几遍，直接量出 noise（见 <a href="noise-floor.html">noise floor</a>）。</p>
+<p>图里每类有 100 个 run。成功率是 80% 时，它的标准误差是 \(\sqrt{0.8 \times 0.2 / 100} = 0.04\)，也就是 4 个点。两版相减，误差约 \(4 \times \sqrt{2} \approx 5.7\) 个点。所以掉 2 个点在 noise 里，掉 20 个点是真的退化。</p>
+<p>同一个 task 的几次 run 并不独立，实际的 noise 更大。稳妥的做法是把未改动的版本重复跑几遍，直接量出来（见 <a href="noise-floor.html">noise floor</a>）。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>回归集固定，按类别分组，每次改动全部重跑，不只测修好的那几个</li>
+  <li>回归集固定，按类别分组，每次改动全部重跑</li>
   <li>同一个 task 跑 k 次看成功率，一次通过不代表稳定</li>
-  <li>gate 的规则是没有类别的下降超过 noise 才合并</li>
+  <li>gate：没有类别的下降超过 noise 才合并</li>
   <li>比较时固定 model 版本和环境</li>
   <li>除了最终结果，也看 tool 选择、步数、token</li>
   <li>线上失败的 case 回流；留 hidden task 防 overfit</li>
@@ -102,20 +102,8 @@
   <p>确定性检查优先，比如 test 是否通过、输出是否和 reference 相等。review agent 只做补充，并且抽样人工核对（偏差见 <a href="llm-evaluation.html">LLM evaluation</a>）。</p>
 </details>
 <details>
-  <summary>线上 log 是海量的，怎么变成有限的回归集？</summary>
-  <p>随机抽样会被常见的简单 case 占满。先按失败类型分组和去重，每类留几个代表，写上期望结果再入库。这是字节 AI Agent 评测二面的原题。</p>
-</details>
-<details>
-  <summary>k 取多少？</summary>
-  <p>看要分辨多小的差别。成功率的误差按 \(1/\sqrt{N}\) 缩小，想把 noise 减半就要 4 倍的 run。</p>
-</details>
-<details>
-  <summary>Kernel agent 的回归集长什么样？</summary>
-  <p>task 是一组固定的 kernel 或模型，判定交给固定的 verifier。它先比正确性，再比速度，提升超过 noise floor 才算成功（见 <a href="kernel-correctness.html">kernel 正确性</a>）。</p>
-</details>
-<details>
-  <summary>Hidden task 的分数也掉了，说明什么？</summary>
-  <p>说明这次改动只是让 agent 更会做回归集里的 task。先不合并，再看掉的是哪一类。</p>
+  <summary>线上 log 是海量的，怎么变成有限的回归集？（字节原题）</summary>
+  <p>随机抽样会被常见的简单 case 占满。先按失败类型分组和去重，每类留几个代表，写上期望结果再入库。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/fa50ef5521f84cb788f911cd31e5a98a">牛客：字节 AI大模型开发平台一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/3cac2a5686f5478f849d7e64a5a2e124">牛客：字节全栈二面</a> · <a href="https://www.nowcoder.com/feed/main/detail/754ac010a05e4090a05d7ba4d06c757f">牛客：蚂蚁一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/78a34ad9829244f1989aade4bcf0dfdd">牛客：阿里千问技术部一面</a>（「review agent怎么确保他的评价是正确的？」）· <a href="https://www.nowcoder.com/feed/main/detail/0b047c2d6bee4f6e8d6d48a795593f18">牛客：字节 AI Agent 评测二面</a> · <a href="https://prachub.com/interview-experiences/cresta-software-engineer-interview-experience-system-design-round-build-an-eval-platform-for-ai-agents">PracHub：Cresta eval platform</a> · ml-八股 08 第 33 题</p>

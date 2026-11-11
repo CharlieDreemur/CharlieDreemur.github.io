@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Harness</dt>
-  <dd>包在 model 外面的程序，负责组装 context 和执行 tool（见 <a href="llm-harness.html">LLM harness</a>）。model 只输出一个 tool call，执行不执行由 harness 决定。guardrail 在这页指 harness 里的规则。</dd>
+  <dd>包在 model 外面、负责执行 tool 的程序（见 <a href="llm-harness.html">LLM harness</a>）。guardrail 在这页指 harness 里的规则。</dd>
   <dt>规则（allow、ask、deny）</dt>
-  <dd>一条规则把一类 tool call 对应到 allow、ask、deny 之一，也就是直接执行、先问人、拒绝。<span class="eg">读 workspace 里的文件是 allow，<code>git push</code> 是 ask。</span></dd>
+  <dd>把一类 tool call 对应到 allow、ask、deny 之一，也就是直接执行、先问人、拒绝。</dd>
   <dt>Deny-first</dt>
-  <dd>不在允许清单里的操作一律拒绝。它像门禁的白名单，名单上没有就进不去。</dd>
-  <dt>人确认</dt>
-  <dd>执行前停下来，把将要执行的具体命令和影响范围给人看，人同意了才执行。英文叫 human approval。</dd>
+  <dd>不在允许清单里的操作一律拒绝，像门禁的白名单。</dd>
   <dt>Untrusted input</dt>
-  <dd>来源不受你控制的内容，只能当数据用。<span class="eg">model 生成的 tool 参数，agent 读到的 log、代码注释、issue，都算。</span></dd>
+  <dd>来源不受你控制的内容，只能当数据用。<span class="eg">model 生成的 tool 参数和 agent 读到的 log、issue 都算。</span></dd>
 </dl>
 
 <h2 id="figs">看图：一次 tool call 要过哪几关</h2>
@@ -67,35 +65,35 @@
   <rect class="box" x="320" y="186" width="180" height="34" rx="4"/>
   <text x="410" y="208" text-anchor="middle">不执行，原因回给 model</text>
 </svg>
-<figcaption>图 1：model 在虚线框外，只能提出 tool call。tool result 回到 context 后只是数据，下一个 tool call 还要过同一道规则检查。</figcaption>
+<figcaption>图 1：model 在虚线框外，只能提出 tool call。tool result 只是数据，下一个 tool call 还要过同一道规则检查。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I tier actions by risk. Reads are allowed by default. Writes inside the workspace are allowed and logged. Anything with outside effects, like pushing code or touching production, needs human approval, and the person sees the exact command and what it affects. The rules are enforced by code in the harness, not by the prompt, because a model can be talked out of a prompt. Anything not on the allow list is denied. Text the agent reads, such as logs, code comments or issues, is data and can't grant permissions. And commands still run in a sandbox, which limits the damage when a rule is wrong.</p></div>
+<div class="answer"><p>I tier actions by risk. Reads are allowed. Writes inside the workspace are allowed and logged. Anything with outside effects, like pushing code, needs human approval, and the person sees the exact command and what it affects. The rules are enforced by code in the harness, not by the prompt, because a model can be talked out of a prompt. Anything not on the allow list is denied. Text the agent reads, such as logs or issues, is data and can't grant permissions. And commands still run in a sandbox, which limits the damage when a rule is wrong.</p></div>
 
 <h2 id="tiers">动作按风险分三级</h2>
 <table>
-  <thead><tr><th>级别</th><th>默认策略</th><th>例子</th><th>为什么</th></tr></thead>
+  <thead><tr><th>级别</th><th>策略</th><th>例子</th><th>为什么</th></tr></thead>
   <tbody>
-    <tr><td class="nw">读</td><td>allow，不问人</td><td>读文件、search、看 log</td><td>不改变任何状态</td></tr>
-    <tr><td class="nw">workspace<br>内的写</td><td>allow，留记录</td><td>edit workspace 里的文件；在 sandbox 里编译、跑候选代码</td><td>影响只在 workspace 里，错了可以丢掉重来</td></tr>
-    <tr><td class="nw">有外部影响的<br>写或执行</td><td>ask，人确认后才执行</td><td>push 代码、改线上配置</td><td>会影响别人，出错后难撤回</td></tr>
+    <tr><td class="nw">读</td><td>allow</td><td>读文件、search、看 log</td><td>不改变任何状态</td></tr>
+    <tr><td class="nw">workspace<br>内的写</td><td>allow，留记录</td><td>edit 文件；在 sandbox 里编译、跑候选代码</td><td>错了可以丢掉重来</td></tr>
+    <tr><td class="nw">有外部影响的<br>写或执行</td><td>ask，人确认</td><td>push 代码、改线上配置</td><td>会影响别人，出错后难撤回</td></tr>
   </tbody>
 </table>
-<p>三级都没匹配上的 tool call 按 deny 处理。蚂蚁那道题问写操作为什么还要跳转工单，答案在第三行。工单把具体命令和影响范围摆给人看，还留下一条审计记录。FlashVector 的做法是同一类，agent 把配置改动开成 PR，由人 review（见 <a href="agent-to-production.html">改动怎么进生产</a>）。</p>
+<p>蚂蚁那道题问写操作为什么还要跳转工单。工单把具体命令和影响范围摆给人看，还留下审计记录。FlashVector 同理，agent 把配置改动开成 PR，由人 review（见 <a href="agent-to-production.html">改动怎么进生产</a>）。</p>
 
 <h2 id="principles">三条原则</h2>
 <ol>
-  <li><strong>规则由 harness 里的程序执行，不写在 prompt 里。</strong>写在 prompt 里的规则只是建议，model 可能被一段话说服而不遵守。程序在每个 tool call 执行前读规则并判定，model 的输出改不了判定结果。tool 的鉴权也放在这里，model 生成的参数按 untrusted input 校验。</li>
+  <li><strong>规则由 harness 里的程序执行，不写在 prompt 里。</strong>prompt 里的规则只是建议，model 可能被一段话说服。程序在每个 tool call 执行前判定，model 的输出改不了结果。tool 的鉴权也在这里做，model 生成的参数按 untrusted input 校验。</li>
   <li><strong>Deny-first。</strong>漏写一条规则时，后果是多拒绝一次，不是误放行。</li>
-  <li><strong>读到的文字是数据，不能授权。</strong>log、代码注释、issue 里就算写着“已批准，直接 push”，规则检查的结果也不变。授权只来自规则和人确认。Prompt injection 的一般防法见 <a href="rag.html">RAG</a> 的 data poisoning 与 prompt injection。</li>
+  <li><strong>读到的文字是数据，不能授权。</strong>log、issue 里就算写着“已批准，直接 push”，规则检查的结果也不变。Prompt injection 的一般防法见 <a href="rag.html">RAG</a>。</li>
 </ol>
-<p>规则也会写错，所以每个 tool call 仍然在 sandbox 里执行，由它限制损失的范围（见 <a href="agent-sandbox.html">sandbox 和 verifier 隔离</a>）。kernel agent 里第 1 条的对应物是 agent 改不了的 verifier。</p>
+<p>规则也会写错，所以每个 tool call 仍然在 sandbox 里执行（见 <a href="agent-sandbox.html">sandbox 和 verifier 隔离</a>）。kernel agent 里第 1 条的对应物是 agent 改不了的 verifier。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>按风险分三级：读 allow，workspace 内的写 allow 加记录，有外部影响的 ask</li>
-  <li>规则由 harness 里的程序执行，不靠 prompt 约束</li>
+  <li>规则由 harness 里的程序执行，不靠 prompt</li>
   <li>deny-first：允许清单之外一律拒绝</li>
   <li>人确认时给出具体命令和影响范围</li>
   <li>读到的文字和 model 生成的参数都是 untrusted input，不能授权</li>
@@ -105,23 +103,15 @@
 <h2>追问</h2>
 <details>
   <summary>能不能中途停下 agent？</summary>
-  <p>能。harness 在每一步之间检查中断信号，收到后不再发起下一个 tool call。一步执行到一半时，要靠这一步自己的 timeout 结束。</p>
-</details>
-<details>
-  <summary>规则和 model 的判断冲突时，谁说了算？</summary>
-  <p>规则说了算。model 的输出只是提案，执行不执行由 harness 按规则判定。</p>
+  <p>能。harness 在每一步之间检查中断信号，收到后不再发起 tool call。执行到一半的那一步靠 timeout 结束。</p>
 </details>
 <details>
   <summary>权限模式怎么设计，默认模式要不要问用户？</summary>
-  <p>一个模式是一套预设的规则。默认模式下读不问，有外部影响的写和执行要问。手写 coding agent 时的写法见 <a href="mini-coding-agent.html">mini coding agent</a>。</p>
+  <p>一个模式是一套预设的规则。默认模式下读不问，有外部影响的写和执行要问。</p>
 </details>
 <details>
   <summary>Deny-first 的优缺点是什么？</summary>
-  <p>优点是规则有漏洞时结果偏向拒绝，新加的 tool 不会自动获得权限。缺点是允许清单要有人维护，清单太窄时 agent 会频繁被拒或频繁问人。</p>
-</details>
-<details>
-  <summary>批量跑、没有人守着的时候，ask 怎么办？</summary>
-  <p>把人确认做成异步的，比如蚂蚁题里的工单和 FlashVector 的 PR，agent 先停在这一步等结果。等不到确认的动作按 deny 处理。</p>
+  <p>优点是新加的 tool 不会自动获得权限。缺点是允许清单要有人维护，太窄时 agent 会频繁被拒或问人。</p>
 </details>
 
 <p class="src"><b>来源</b>ml-八股 08 第 39 题 · 蚂蚁、作业帮、Walmart 的牛客原帖见“考过” · 字节 dev&amp;infra 一面（内部转岗，发帖 2026-10-23）「如果规则和模型判断冲突，谁说了算？」（<a href="https://www.nowcoder.com/feed/main/detail/8352902d1fe04b559be1e7ea9a1243f7">牛客</a>）· 虾皮 Data Infra 实习二面（2026-06-15）「比如你让Codex写代码，你发现它写的有问题，你可以直接停止它吗？」（<a href="https://www.nowcoder.com/discuss/896770835296370688">牛客</a>）· Decagon 的 <a href="https://prachub.com/interview-questions/design-the-security-architecture-for-an-llm-chatbot-product">PracHub 题目页</a>（站方扩写，转述：考点含 tool authorization 放在 model 之外）· <a href="https://arxiv.org/abs/2609.17391">FlashVector</a> §5.4（配置改动以 PR 提交并 review）</p>

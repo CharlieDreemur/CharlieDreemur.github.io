@@ -169,6 +169,70 @@
   var ST = { "对": "st-ok", "过了一遍": "st-seen", "没过": "st-fail", "未做": "st-none" };
   var WEAK = ["没过", "过了一遍", "对"];   // 一个知识点有几条记录时，显示最弱的那条
 
+  /* CPSC:BEGIN CPSC 4880 的题，由 tools/ml-速查/build_cpsc4880.py 生成，不要手改 */
+  var CPSC = [
+    ["A1.1", "a1-1", "Self-attention 的时间复杂度是多少？推导一下。", ["Transformer", "LLM inference"], "transformer-complexity"],
+    ["A1.2", "a1-2", "为什么 prefill 是 compute-bound、decode 是 memory-bandwidth-bound？这对优化方向意味着什么？", ["Transformer", "LLM inference"], null],
+    ["A1.3", "a1-3", "KV cache 是什么？为什么能缓存？它省了什么、没省什么？", ["Transformer", "LLM inference"], "kv-cache"],
+    ["A1.4", "a1-4", "用一句话解释 FlashAttention。", ["Transformer", "LLM inference"], "flashattention"],
+    ["A1.5", "a1-5", "FlashAttention 减少 FLOPs 了吗？为什么更快？解决不了什么？", ["Transformer", "LLM inference"], "flashattention"],
+    ["A1.6", "a1-6", "为什么 attention logits 要除以 √d_k？", ["Transformer", "LLM inference"], "attention-scaling"],
+    ["A2.1", "a2-1", "MQA / GQA 和 MHA 有什么区别？为什么要用？", ["LLM inference", "Transformer"], "mqa-gqa-mla"],
+    ["A2.2", "a2-2", "MLA 怎么压缩 KV cache？和 GQA 的本质区别？", ["LLM inference", "Transformer"], "mqa-gqa-mla"],
+    ["A3.1", "a3-1", "SSM（如 Mamba）处理长文本相对 Transformer 的主要优势是什么？代价是什么？", ["Transformer", "LLM inference"], null],
+    ["A3.2", "a3-2", "序列变长时，KV cache 和 SSM state 的显存分别怎么增长？", ["Transformer", "LLM inference"], null],
+    ["A3.3", "a3-3", "Mamba 的 selection 是什么？为什么需要？", ["Transformer", "LLM inference"], null],
+    ["A3.4", "a3-4", "Mamba-2 的核心想法（SSD）是什么？相比 Mamba-1 牺牲了什么、换来了什么？", ["Transformer", "LLM inference"], null],
+    ["A3.5", "a3-5", "Lightning Attention（MiniMax-01）的主要想法和取舍？", ["Transformer", "LLM inference"], null],
+    ["A3.6", "a3-6", "KDA（Kimi K3）怎么更新记忆？forget gate 和 delta rule 各做什么？", ["Transformer", "LLM inference"], null],
+    ["A4.1", "a4-1", "NSA 的主要想法是什么？为什么要在训练时就用稀疏，而不是只在推理时？", ["Transformer", "LLM inference"], null],
+    ["A4.2", "a4-2", "DSA（DeepSeek-V3.2）的主要想法是什么？", ["Transformer", "LLM inference"], null],
+    ["A4.3", "a4-3", "\"只读一部分历史\"（NSA / DSA）和\"压缩成固定状态\"（SSM / linear attention）各放弃了什么？", ["Transformer", "LLM inference"], null],
+    ["A5.1", "a5-1", "前沿模型为什么混合不同的 sequence-mixing 层？用 Kimi K3 或 Nemotron 3 Ultra 说明各层的分工。", ["Transformer"], null],
+    ["A6.1", "a6-1", "为什么用稀疏模型？routing 怎么工作？", ["Transformer", "分布式训练"], "moe-expert-parallel"],
+    ["A6.2", "a6-2", "为什么需要 load balancing？两种方法分别是什么？", ["Transformer", "分布式训练"], "moe-expert-parallel"],
+    ["A6.3", "a6-3", "MoE 带来哪些额外成本？", ["Transformer", "分布式训练"], "moe-expert-parallel"],
+    ["A7.1", "a7-1", "RoPE 怎么工作？为什么能编码相对位置？", ["Transformer"], "rope"],
+    ["A7.2", "a7-2", "RoPE 模型为什么在训练长度之外会失效？YaRN 怎么解决？", ["Transformer"], "rope"],
+    ["A7.3", "a7-3", "Kimi K3 为什么在 MLA 层不用位置编码（NoPE）？token 顺序信息从哪来？", ["Transformer"], null],
+    ["A7.4", "a7-4", "MRoPE 怎么工作？", ["Transformer"], null],
+    ["A8.1", "a8-1", "MTP 是什么？训练和推理时各有什么用？", ["LLM inference", "LLM 训练"], null],
+    ["A9.1", "a9-1", "把图像接入 LLM 的 late fusion（Qwen2.5-VL）和 early fusion（Chameleon）各有什么取舍？", ["Transformer"], null],
+    ["A9.2", "a9-2", "多模态 LLM 是否需要每种模态各自的 encoder / decoder？", ["Transformer"], null],
+    ["A9.3", "a9-3", "Kimi K3 怎么处理视觉输入？", ["Transformer"], null],
+    ["B1.1", "b1-1", "Kaplan 和 Chinchilla 对\"怎么分配计算\"的结论有什么不同？为什么现在的模型又常被训练到超过 compute-optimal？", ["LLM 训练"], null],
+    ["B2.1", "b2-1", "过滤、去重、质量分类器各做什么？", ["LLM 训练"], null],
+    ["B2.2", "b2-2", "怎么公平地评测一个数据集（DCLM）？小模型的结果能预测大模型吗？", ["LLM 训练"], null],
+    ["B2.3", "b2-3", "Mid-training / annealing 的主要目标有哪些？", ["LLM 训练"], null],
+    ["B2.4", "b2-4", "MiniMax-01 怎么判断重复高质量数据是有用还是会过拟合？", ["LLM 训练"], null],
+    ["B2.5", "b2-5", "Data mix 怎么定（RegMix、Llama 3）？为什么不能全用\"高质量\"数据？", ["LLM 训练"], null],
+    ["B3.1", "b3-1", "大规模训练不稳定有哪些来源？normalization、precision、optimizer 三类修法分别针对什么？", ["训练与优化", "LLM 训练"], null],
+    ["B3.2", "b3-2", "Chameleon：QK-Norm、norm reordering、z-loss 各解决什么？", ["训练与优化", "LLM 训练"], null],
+    ["B3.3", "b3-3", "Switch：selective precision、小 init、expert dropout 各解决什么？", ["训练与优化", "LLM 训练"], null],
+    ["B3.4", "b3-4", "MiniMax-01：PostNorm 和 PreNorm 有什么区别？为什么选 PostNorm？", ["训练与优化", "LLM 训练"], null],
+    ["B3.5", "b3-5", "Nemotron 3 Ultra：NVFP4 预训练怎么做？切到 BF16 后为什么发散、怎么修？", ["训练与优化", "LLM 训练"], "nemotron-3-ultra"],
+    ["B3.6", "b3-6", "Muon：weight decay 和 update RMS 匹配为什么能稳定扩展？", ["训练与优化", "LLM 训练"], null],
+    ["B4.1", "b4-1", "Muon 的核心想法是什么？解决什么问题？", ["训练与优化", "LLM 训练"], null],
+    ["B4.2", "b4-2", "RLP 的核心想法是什么？和普通的 post-training 有什么区别？", ["训练与优化", "LLM 训练"], null],
+    ["C1.1", "c1-1", "后训练 pipeline 有哪些阶段，各做什么？", ["LLM 训练"], "rlhf-dpo-grpo"],
+    ["C1.2", "c1-2", "偏好优化（InstructGPT、DPO）和 RLVR（DeepSeek-R1）在\"需要什么\"和\"优化什么\"上有什么不同？", ["LLM 训练"], "rlhf-dpo-grpo"],
+    ["C2.1", "c2-1", "Preference RM、verifier、rubric、teacher：哪个 dense、哪个 sparse？各自怎么被 policy 钻空子？", ["LLM 训练"], null],
+    ["C3.1", "c3-1", "哪些方法 on-policy、哪些 off-policy？off-policy 数据带来什么问题？", ["LLM 训练"], null],
+    ["C4.1", "c4-1", "KL 在 RLHF、DPO、蒸馏里分别控制什么？", ["LLM 训练"], null],
+    ["C4.2", "c4-2", "forward 和 reverse KL 有什么区别？", ["LLM 训练"], null],
+    ["C5.1", "c5-1", "为什么用 on-policy 蒸馏？和 SFT、RL 相比各有什么优劣？", ["LLM 训练"], null],
+    ["C6.1", "c6-1", "LLM RL 的计算花在哪？为什么要让它更快？", ["LLM 训练"], null],
+    ["C6.2", "c6-2", "Async RL 怎么做？代价是什么？Async RLHF 的主要发现？", ["LLM 训练"], null],
+    ["C6.3", "c6-3", "Olmo 3 用了哪些效率技巧？", ["LLM 训练"], null],
+    ["C6.4", "c6-4", "全对或全错的组（zero-std）为什么浪费？怎么处理？", ["LLM 训练"], null],
+    ["C6.5", "c6-5", "RL 里的 Matthew effect 是什么？NGU 怎么解决？", ["LLM 训练"], null],
+    ["C6.6", "c6-6", "RLVE 怎么从数据角度提升效率？", ["LLM 训练"], null],
+    ["D1.1", "d1-1", "为什么要在基础模型里用双曲几何？", ["Deep Learning"], null],
+    ["P1", "p-1", "Attention Is All You Need：问题、主要想法、主要结果、局限？", ["Transformer"], "transformer-architecture"],
+    ["G1.1", "g1-1", "Kimi K3 的 Attention Residuals 是什么？解决什么问题？", ["Transformer"], null]
+  ];
+  /* CPSC:END */
+
   /* KP:BEGIN 公司和分类标签，由脚本生成，不要手改 */
   var CATS = ["Classic ML", "Deep Learning", "训练与优化", "Transformer", "LLM inference", "LLM 训练", "RAG 与 Search", "Agent", "Evaluation", "分布式训练", "训练系统", "GPU 与性能", "C++"];
   var TARGETS = ["Microsoft", "NVIDIA", "Apple", "Unity"];
@@ -305,7 +369,7 @@
       var t = KP[it[1]] || {}, co = {};
       for (var c in (t.co || {})) co[c] = t.co[c];
       var p = { num: it[0], file: it[1], href: it[1] + ".html", title: it[2], star: !!it[3], sec: g.sec,
-                k: t.k || ["未分类"], co: co, more: t.more || [], mock: [], order: 1e6 };
+                k: t.k || ["未分类"], co: co, more: t.more || [], mock: [], order: 1e6, src: [], refs: [] };
       flat.push(p);
       byFile[p.file] = p;
     });
@@ -320,13 +384,31 @@
       if (!p) {
         var t = KP[it[0]] || {};
         p = { num: it[0], file: null, href: it[1], title: it[2] + "（还没有速查页）", star: false, sec: MOCK.sec,
-              k: t.k || ["未分类"], co: {}, more: [], mock: [], order: 1e6 };
+              k: t.k || ["未分类"], co: {}, more: [], mock: [], order: 1e6, src: [], refs: [] };
         flat.push(p);
       }
       p.mock.push(it[0]);
       if (!p.co.Apple) p.co.Apple = "prep";
       p.order = Math.min(p.order, mockIndex);
     });
+  });
+
+  // ---------- 专题：速成课的每一课、CPSC 4880 的每一题，和知识点列在同一张表里 ----------
+  // 和某个速查页讲同一个知识点的题不另列一行，只给那一页加一个指向题目的标签
+  var SRC = ["速成课", "CPSC 4880"];
+  (window.COURSE_LESSONS || []).forEach(function (l, i) {   // course.js 的 LESSONS：[文件, 标题, 简介, 分类]
+    flat.push({ num: "L" + i, file: null, href: l[0] + ".html", title: l[1], star: false, sec: "Training Infra 速成课",
+                k: l[3] || ["未分类"], co: { NVIDIA: "prep" }, more: [], mock: [], order: 1e6, src: ["速成课"], refs: [] });
+  });
+  CPSC.forEach(function (q) {   // [题号, 锚点, 标题, 分类, 对应的速查页或 null]
+    var p = q[4] && byFile[q[4]];
+    if (p) {
+      p.refs.push({ label: "CPSC " + q[0], href: "index.html#" + q[1] });
+      if (p.src.indexOf("CPSC 4880") < 0) p.src.push("CPSC 4880");
+      return;
+    }
+    flat.push({ num: q[0], file: null, href: "index.html#" + q[1], title: q[2], star: false, sec: "CPSC 4880",
+                k: q[3], co: {}, more: [], mock: [], order: 1e6, src: ["CPSC 4880"], refs: [] });
   });
 
   function progressOf(p) {
@@ -375,11 +457,12 @@
   function match(p, f) {
     if (f.co === "★") { if (!p.star) return false; }
     else if (f.co === "其他公司") { if (!p.more.length) return false; }
+    else if (SRC.indexOf(f.co) >= 0) { if (p.src.indexOf(f.co) < 0) return false; }
     else if (f.co && !p.co[f.co]) return false;
     if (f.st && statusOf(p) !== f.st) return false;
     if (f.k && p.k.indexOf(f.k) < 0) return false;
     if (f.q) {
-      var hay = [p.num, p.title, p.k.join(" "), Object.keys(p.co).join(" "), p.more.join(" "), p.mock.join(" ")].join(" ").toLowerCase();
+      var hay = [p.num, p.title, p.k.join(" "), Object.keys(p.co).join(" "), p.more.join(" "), p.mock.join(" "), p.src.join(" ")].join(" ").toLowerCase();
       if (hay.indexOf(f.q.toLowerCase()) < 0) return false;
     }
     return true;
@@ -396,6 +479,8 @@
       li.appendChild(el("span", { class: "tg " + (asked ? "tg-asked" : "tg-prep"), title: asked ? "面经里这家考过" : "在这家的备考清单里" }, c));
     });
     if (p.more.length) li.appendChild(el("span", { class: "tg", title: "面经里还有这些公司考过：" + p.more.join("、") }, "+" + p.more.length));
+    if (p.refs.length) p.refs.forEach(function (r) { li.appendChild(el("a", { class: "tg tg-src", href: r.href, title: "课程复习里的同一题" }, r.label)); });
+    else p.src.forEach(function (x) { li.appendChild(el("span", { class: "tg tg-src", title: "来自这个专题" }, x)); });
     p.k.forEach(function (k) { li.appendChild(el("span", { class: "tg tg-k", title: "知识分类" }, k)); });
     var st = statusOf(p);
     li.appendChild(el("span", { class: "st " + ST[st] }, st));
@@ -411,7 +496,8 @@
     var f = readHash();
     var count = function (test) { return flat.filter(test).length; };
     var groups = [
-      { key: "co", label: "公司", opts: TARGETS.map(function (c) { return [c, c, count(function (p) { return p.co[c]; })]; })
+      { key: "co", label: "来源", opts: TARGETS.map(function (c) { return [c, c, count(function (p) { return p.co[c]; })]; })
+          .concat(SRC.map(function (x) { return [x, x, count(function (p) { return p.src.indexOf(x) >= 0; })]; }))
           .concat([["其他公司", "其他公司", count(function (p) { return p.more.length; })], ["★", "★ 被问过", count(function (p) { return p.star; })]]) },
       { hidden: true, key: "st", label: "掌握", opts: ["未做", "过了一遍", "没过", "对"].map(function (s) { return [s, s, count(function (p) { return statusOf(p) === s; })]; }) },
       { key: "k", label: "分类", opts: CATS.map(function (k) { return [k, k, count(function (p) { return p.k.indexOf(k) >= 0; })]; }) }
@@ -516,6 +602,7 @@
       tags.appendChild(el("a", { class: "tg " + (asked ? "tg-asked" : "tg-prep"), href: "index.html#co=" + encodeURIComponent(c), title: asked ? "面经里这家考过" : "在这家的备考清单里" }, c));
     });
     if (p.mock.length) tags.appendChild(el("span", { class: "tg", title: "Apple 第一轮 mock 的题号" }, p.mock.join(" / ")));
+    p.refs.forEach(function (r) { tags.appendChild(el("a", { class: "tg tg-src", href: r.href, title: "课程复习里的同一题" }, r.label)); });
     main.insertBefore(tags, bar.nextSibling);
     withProgress(function () {
       var st = statusOf(p);

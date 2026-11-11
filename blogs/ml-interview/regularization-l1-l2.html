@@ -18,21 +18,21 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Regularization</dt>
-  <dd>在 loss 后面加一项"复杂度罚款"：loss = data loss + \(\lambda\) × penalty。像报销规定：每花一笔都要交罚款，于是钱只花在真正值得的地方。目的是降 variance、防 overfitting（见 <a href="overfit-bias-variance.html">overfit / bias-variance</a>）。</dd>
+  <dd>loss = data loss + \(\lambda\) × penalty。目的是防 overfitting（见 <a href="overfit-bias-variance.html">overfit / bias-variance</a>）。</dd>
   <dt>L2（Ridge、weight decay）</dt>
-  <dd>罚平方和 \(\lambda\sum_j w_j^2\)：大 weight 重罚、小 weight 几乎不罚，所以都被压小，但没有动力压到正好 0。
+  <dd>罚平方和 \(\lambda\sum_j w_j^2\)。大 weight 重罚、小 weight 几乎不罚，所以都被压小，但不会正好到 0。
     <span class="eg">例：\(w = 3\) 罚 9，\(w = 0.1\) 只罚 0.01。</span></dd>
   <dt>L1（Lasso）</dt>
-  <dd>罚绝对值之和 \(\lambda\sum_j |w_j|\)：不管 weight 大小，每单位都按同一个单价罚。用处不大的 feature 抵不上这个单价，最划算的就是直接砍成 0。
+  <dd>罚绝对值之和 \(\lambda\sum_j |w_j|\)。不管 weight 大小都按同一个单价罚，用处不大的 feature 直接被砍成 0。
     <span class="eg">例：\(w = 0.1\) 也要罚 0.1，比 L2 狠 10 倍。</span></dd>
   <dt>Sparse 与 feature selection</dt>
-  <dd>sparse = 大部分 weight 正好是 0。weight 为 0 的 feature 不参与预测，相当于自动做了 feature selection，也更好解释。</dd>
+  <dd>大部分 weight 正好是 0，相当于自动做了 feature selection。</dd>
   <dt>\(\lambda\)（sklearn 里叫 alpha）</dt>
-  <dd>罚款力度。\(\lambda = 0\) 就是普通的 least squares；太小 → overfit，太大 → 有用的 weight 也被压没 → underfit。用 cross-validation 选。</dd>
+  <dd>penalty 的力度，太小 overfit，太大 underfit。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Both add a weight penalty to the loss: L1 adds λ·Σ|w|, L2 adds λ·Σw². L2 shrinks all weights but almost never to exactly zero; L1 sets many weights exactly to zero, so it also selects features. Why: L1's gradient has constant magnitude λ however small the weight is, so it pushes the weight all the way to zero; L2's gradient, 2λw, fades as the weight shrinks. Geometrically, the L1 ball has corners on the axes; probabilistically, L2 is a Gaussian prior and L1 a Laplace prior. I'd use L1 when few features matter, L2 by default or with correlated features, elastic net for both, and pick λ by cross-validation.</p></div>
+<div class="answer"><p>Both add a weight penalty to the loss: L1 adds λ·Σ|w|, L2 adds λ·Σw². L2 shrinks all weights but almost never to exactly zero; L1 sets many to exactly zero, so it also selects features. L1's gradient has constant magnitude λ however small the weight is, so it pushes the weight all the way to zero; L2's gradient, 2λw, fades as the weight shrinks. Geometrically, the L1 ball has corners on the axes. As priors, L2 is Gaussian and L1 is Laplace. I'd use L1 when few features matter, L2 by default or with correlated features, elastic net for both, and pick λ by cross-validation.</p></div>
 
 <h2>一张表</h2>
 <table>
@@ -49,24 +49,23 @@
 <h2>推导</h2>
 <div class="deriv">
   <h3 id="sparse">为什么 L1 会到 0：只看一个 weight</h3>
-  <p>不加 regularization 时最优解是 \(a\)，loss 在附近近似为 \(\tfrac12(w - a)^2\)（L2 项写成 \(\tfrac{\lambda}{2}w^2\)，结果更好看）：</p>
+  <p>不加 regularization 时最优解是 \(a\)，loss 在附近近似为 \(\tfrac12(w - a)^2\)，L2 项写成 \(\tfrac{\lambda}{2}w^2\)：</p>
   \[ \text{L2:}\quad \min_w\ \tfrac12(w-a)^2 + \tfrac{\lambda}{2}w^2 \;\Longrightarrow\; w = \frac{a}{1+\lambda} \]
   \[ \text{L1:}\quad \min_w\ \tfrac12(w-a)^2 + \lambda|w| \]
   \[ \Longrightarrow\; w = \operatorname{sign}(a)\,\max(|a| - \lambda,\ 0) \]
-  <p>\(|w|\) 在 0 处的 subgradient 是 \([-1, 1]\)，所以只要 \(|a| \le \lambda\)（data 的拉力不超过 \(\lambda\)），\(w\) 就停在正好 0；L2 只有 \(a = 0\) 时才得到 0。</p>
+  <p>\(|w|\) 在 0 处的 subgradient 是 \([-1, 1]\)，所以只要 \(|a| \le \lambda\)，\(w\) 就停在正好 0。L2 只有 \(a = 0\) 时才得到 0。</p>
   <p>手算，\(\lambda = 1\)：\(a = 3\) → L2 得 1.5，L1 得 2；\(a = 0.5\) → L2 得 0.25，L1 得 <strong>0</strong>。L2 按比例缩，L1 每个都减 \(\lambda\)、减到 0 为止。</p>
   <h3 id="geometry">几何与 MAP</h3>
-  <p>等价于在 \(\|w\|_1 \le B\) 里最小化 loss。等高线（椭圆）往外扩，最容易先碰到菱形在坐标轴上的角，角上某些坐标正好是 0；L2 的圆没有角（Bishop Fig. 3.4）。概率上 L2 = Gaussian prior，L1 = Laplace prior，推导见 <a href="regression.html#map">regression.html#map</a>。</p>
+  <p>等价于在 \(\|w\|_1 \le B\) 里最小化 loss。等高线往外扩，最容易先碰到菱形在坐标轴上的角，角上某些坐标正好是 0。L2 的圆没有角（Bishop Fig. 3.4）。MAP 的推导见 <a href="regression.html#map">regression</a>。</p>
 </div>
 
 <h2 id="choose-lambda">λ 怎么选</h2>
-<p><strong>一句话：用 cross-validation 试出来。</strong></p>
 <ol>
-  <li>先 standardize 每个 feature（所有 weight 共用一个 \(\lambda\)，尺度不同就罚得不公平）；intercept 不罚。</li>
+  <li>先 standardize 每个 feature，因为所有 weight 共用一个 \(\lambda\)。intercept 不罚。</li>
   <li>取一串按 log 等距的 \(\lambda\)，每个做 5-fold CV，算平均 validation MSE。</li>
   <li>选 CV MSE 最小的 \(\lambda\)（想更 sparse 可以用 one-standard-error rule 选更大的），再在全部数据上重新训练。</li>
 </ol>
-<p>例：100 个样本、20 个 feature，只有前 3 个有用（真实 weight 为 3、−2、1.5），noise \(\sigma = 1\)。Lasso：</p>
+<p>例：100 个样本、20 个 feature，只有前 3 个有用，noise \(\sigma = 1\)。Lasso：</p>
 <table>
   <thead><tr><th>\(\lambda\)（alpha）</th><th>0.01</th><th>0.03</th><th>0.1</th><th>0.3</th><th>1</th></tr></thead>
   <tbody>
@@ -74,7 +73,7 @@
     <tr><td class="nw">非零 weight 个数</td><td>20</td><td>18</td><td><strong>7</strong></td><td>3</td><td>3</td></tr>
   </tbody>
 </table>
-<p>选 \(\lambda = 0.1\)：留下 3 个真的和 4 个很小的 weight，其余 13 个正好是 0。\(\lambda = 1\) 把有用的 weight 也压得太小，CV MSE 涨到 4.93，是 underfit。</p>
+<p>选 \(\lambda = 0.1\)，留下 3 个真的和 4 个很小的 weight，其余 13 个正好是 0。\(\lambda = 1\) 把有用的 weight 也压得太小，是 underfit。</p>
 
 <h2>必答点</h2>
 <ul>
@@ -87,20 +86,16 @@
 
 <h2>追问</h2>
 <details>
-  <summary>10,000 个 feature，大概 50 个有用，用哪个？</summary>
-  <p>L1：它把其余 weight 压到正好 0，直接告诉你哪些有用，\(\lambda\) 用 CV 选。有用的 feature 之间高度相关时，换 Elastic Net。</p>
-</details>
-<details>
   <summary>Feature 高度相关时 L1 会怎样？</summary>
-  <p>Lasso 往往只留其中一个，选谁很随意。把同一个 feature 复制一份，Lasso 给这两列 (1.89, 0)，Ridge 给 (1.00, 1.00)。Elastic Net（L1 + L2）会把相关的 feature 一起留下（Murphy §11.4.8）。</p>
+  <p>把同一个 feature 复制一份，Lasso 给这两列 (1.89, 0)，Ridge 给 (1.00, 1.00)。Elastic Net 会把相关的 feature 一起留下（Murphy §11.4.8）。</p>
 </details>
 <details>
   <summary>Weight decay 和 L2 regularization 是一回事吗？</summary>
-  <p>SGD 下是（差一个 learning rate 的缩放）；Adam 下不是，因为 L2 项的 gradient 会被 Adam 按坐标重新缩放。AdamW 把 weight decay 从 gradient 更新里拆出来单独做（Loshchilov &amp; Hutter）。</p>
+  <p>SGD 下是，差一个 learning rate 的缩放。Adam 下不是，所以有 AdamW，见 <a href="optimizer.html#adamw">optimizer</a>。</p>
 </details>
 <details>
   <summary>L1 在 0 处不可导，怎么优化？</summary>
-  <p>常用 coordinate descent：每次只更新一个 weight，一维的解就是上面的 soft-thresholding（sklearn 的 <code>Lasso</code> 就这么做）。也可以用 proximal gradient：走一步 gradient，再做一次 soft-thresholding。</p>
+  <p>常用 coordinate descent，每次只更新一个 weight，一维的解就是上面的 soft-thresholding。也可以用 proximal gradient，走一步 gradient 再做一次 soft-thresholding。</p>
 </details>
 <details>
   <summary>为什么不直接罚非零 weight 的个数（L0）？</summary>

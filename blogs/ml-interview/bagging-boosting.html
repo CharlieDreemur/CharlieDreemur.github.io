@@ -18,25 +18,25 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Bagging（bootstrap aggregating）</dt>
-  <dd>请 B 个专家，每人看一份 bootstrap 数据（从 N 个样本里有放回地抽 N 次），独立打分后取平均或投票。各人的随机误差互相抵消，降 variance，bias 不变，所以 base 用 deep tree。<span class="eg">例：一个样本 N 次都没被抽中的概率 \((1-1/N)^N \to 1/e \approx 0.37\)。这约 37% 的 out-of-bag 样本可以直接估 test error。</span></dd>
+  <dd>B 个模型各看一份 bootstrap 数据（有放回地抽 N 次），独立训练后取平均或投票。随机误差互相抵消，降 variance，bias 不变，所以 base 用 deep tree。<span class="eg">例：一个样本没被抽中的概率 \((1-1/N)^N \to 1/e \approx 0.37\)，这些 out-of-bag 样本可以估 test error。</span></dd>
   <dt>Random forest</dt>
-  <dd>Bagging + 每次 split 只在随机一部分 feature 里挑，逼着树长得不一样（decorrelate）。<span class="eg">例：sklearn 分类默认 <code>max_features="sqrt"</code>，16 个 feature 每次只看 4 个。</span></dd>
+  <dd>Bagging + 每次 split 只在随机一部分 feature 里挑，让树之间 decorrelate。</dd>
   <dt>Boosting</dt>
-  <dd>串行训练浅树，每棵专门补前面的错：学生做完题，下一位老师只讲错题。降 bias，但也会把 noise 学进去。</dd>
+  <dd>串行训练浅树，每棵专门补前面的错。降 bias，但树深了很快把 noise 学进去。</dd>
   <dt>GBDT（gradient boosting）</dt>
-  <dd>每棵新树 fit 当前 loss 的 negative gradient，乘 learning rate 后加上去；squared loss 下就是 residual。<span class="eg">例：真实值 10、预测 7 → residual 3，learning rate 0.1 → 预测变成 7.3。</span></dd>
+  <dd>每棵新树 fit 当前 loss 的 negative gradient，乘 learning rate 后加上去。</dd>
   <dt>XGBoost</dt>
-  <dd>GBDT + 二阶导 Hessian（像 Newton 法）+ 显式正则（叶子数、叶子分数的 L2）+ 工程优化（并行找 split、缺失值自动选方向、column subsampling）。</dd>
+  <dd>GBDT + Hessian + 显式正则 + 工程优化（并行找 split、缺失值自动选方向）。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Bagging trains deep trees independently on bootstrap samples and averages them: it cuts variance, keeps bias, and parallelizes. Random forest also samples features at each split to decorrelate the trees, since averaging correlated trees can't remove the ρσ² term. Boosting trains shallow trees sequentially, each fitting the current ensemble's errors; gradient boosting fits the negative gradient, which is the residual for squared loss. It cuts bias but can overfit noise, so we use a small learning rate, shallow trees, subsampling and early stopping. XGBoost adds a second-order Taylor expansion, explicit regularization on leaf count and leaf weights, and parallel, sparsity-aware split finding.</p></div>
+<div class="answer"><p>Bagging trains deep trees independently on bootstrap samples and averages them: it cuts variance, keeps bias, and parallelizes. Random forest also samples features at each split to decorrelate the trees, since averaging can't remove the ρσ² term. Boosting trains shallow trees sequentially, each fitting the current ensemble's errors; gradient boosting fits the negative gradient, the residual for squared loss. It cuts bias but can overfit noise, so we use a small learning rate, shallow trees, subsampling and early stopping. XGBoost adds a second-order Taylor expansion, regularization on leaf count and leaf weights, and parallel, sparsity-aware split finding.</p></div>
 
 <h2 id="compare">对比</h2>
 <table>
   <thead><tr><th></th><th>Random forest</th><th>GBDT</th><th>XGBoost</th></tr></thead>
   <tbody>
-    <tr><td class="nw">训练</td><td>树之间独立，可并行</td><td>串行</td><td>串行；树内部并行找 split</td></tr>
+    <tr><td class="nw">训练</td><td>独立，可并行</td><td>串行</td><td>串行；树内部并行找 split</td></tr>
     <tr><td class="nw">单棵树</td><td>深，high variance</td><td>浅</td><td>浅</td></tr>
     <tr><td class="nw">主要降</td><td>variance</td><td>bias</td><td>bias</td></tr>
     <tr><td class="nw">导数</td><td>不用</td><td>gradient</td><td>gradient + Hessian</td></tr>
@@ -58,7 +58,7 @@
   \[ \mathcal L \approx \sum_i \Big[g_i F(x_i) + \tfrac12 h_i F(x_i)^2\Big] + \gamma J + \tfrac12\lambda\sum_j w_j^2 \]
   \[ w_j^* = -\frac{G_j}{H_j + \lambda} \]
   \[ \text{gain} = \frac12\Big[\frac{G_L^2}{H_L+\lambda} + \frac{G_R^2}{H_R+\lambda} - \frac{(G_L+G_R)^2}{H_L+H_R+\lambda}\Big] - \gamma \]
-  <p>gain &lt; 0 就不 split。\(\lambda\) 把叶子分数往 0 收。</p>
+  <p>gain &lt; 0 就不 split。</p>
 </div>
 
 <h2 id="example">手算例子</h2>
@@ -79,20 +79,12 @@
 
 <h2>追问</h2>
 <details>
-  <summary>为什么 bagging 用 deep tree，boosting 用浅树？</summary>
-  <p>平均只降 variance，所以 bagging 需要 low bias 的 deep tree；boosting 靠叠加降 bias，单棵浅就够，深了很快 overfit。</p>
-</details>
-<details>
-  <summary>Boosting 怎么防 overfit？</summary>
-  <p>小 learning rate、限 depth、每轮 subsample 一部分数据，再在 validation set 上 early stopping 决定树的个数。</p>
-</details>
-<details>
   <summary>Boosting 能并行吗？</summary>
-  <p>树之间不能，第 m 棵依赖前 m−1 棵。XGBoost 在一棵树内部并行。数据按 column 预排序成 block，各 feature 的 split 统计同时算。</p>
+  <p>树之间不能，第 m 棵依赖前 m−1 棵。XGBoost 在树内部并行，数据按 column 预排序成 block。</p>
 </details>
 <details>
   <summary>AdaBoost 和 GBDT 什么关系？</summary>
-  <p>都是逐个往上加模型。AdaBoost 对应 exponential loss，靠加大分错样本的权重；GBDT 适用任意可导 loss，靠 fit negative gradient。</p>
+  <p>AdaBoost 对应 exponential loss，靠加大分错样本的权重；GBDT 适用任意可导 loss，靠 fit negative gradient。</p>
 </details>
 <details>
   <summary>XGBoost 怎么处理缺失值？</summary>

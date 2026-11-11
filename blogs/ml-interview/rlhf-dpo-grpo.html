@@ -18,32 +18,30 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Reward model</dt>
-  <dd>一个打分器：读 prompt 和回答，输出一个分数。用人类"两个里选一个"的偏好来训练，Bradley-Terry 假设分差决定被选中的概率。<span class="eg">例：\(r_a = 2\)、\(r_b = 0\)，\(P(a \succ b) = \sigma(2) = 0.88\)。</span></dd>
+  <dd>读 prompt 和回答，输出一个分数。用人类"两个里选一个"的偏好训练，Bradley-Terry 假设分差决定被选中的概率。<span class="eg">例：\(r_a = 2\)、\(r_b = 0\)，\(P(a \succ b) = \sigma(2) = 0.88\)。</span></dd>
   <dt>Policy 与 reference model</dt>
-  <dd>policy 是正在训练的 LLM；reference（通常是 SFT model）是冻住的起点。像学车时教练坐在旁边，开得离谱就被拉回来。</dd>
+  <dd>policy 是正在训练的 LLM；reference（通常是 SFT model）是冻住的起点。</dd>
   <dt>KL penalty 与 reward hacking</dt>
-  <dd>KL 衡量 policy 离 reference 有多远，远了就扣分。没有它，模型会钻 reward model 的空子刷高分，输出反而变差，这叫 reward hacking。</dd>
+  <dd>KL 衡量 policy 离 reference 有多远，远了就扣分。没有它，模型会钻 reward model 的空子刷高分，这叫 reward hacking。</dd>
   <dt>Advantage 与 critic</dt>
-  <dd>advantage = 这个回答比"平常水平"好多少。PPO 用一个和 policy 差不多大的 value model（critic）估平常水平；GRPO 直接用同一题多个回答的平均分。<span class="eg">例：4 个回答 reward 为 (1, 0, 0, 1)，均值 0.5、std 0.5 → advantage (+1, −1, −1, +1)。</span></dd>
-  <dt>Online 与 offline</dt>
-  <dd>PPO、GRPO 训练中不断用当前模型生成新回答再打分（online）；DPO 只用一份固定的偏好数据（offline），像只看录像复盘、不上场。</dd>
+  <dd>advantage 是这个回答比平常水平好多少。PPO 用和 policy 差不多大的 critic 估平常水平，GRPO 直接用同一题多个回答的平均分。<span class="eg">例：4 个回答 reward 为 (1, 0, 0, 1)，均值 0.5、std 0.5 → advantage (+1, −1, −1, +1)。</span></dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>RLHF has three stages: supervised fine-tuning on demonstrations; a reward model trained on human preference pairs with a Bradley–Terry loss; then PPO to maximize reward minus a KL penalty to the SFT model, which prevents reward hacking. DPO uses the closed-form optimum of that KL-constrained objective to write the reward as β times the policy-to-reference log-ratio, so preference learning becomes a logistic loss on pairs: no reward model, no sampling. GRPO keeps PPO's clipped objective but drops the critic: it samples a group of answers per prompt and uses each answer's reward, normalized within the group, as its advantage. It suits verifiable rewards like math and code.</p></div>
+<div class="answer"><p>RLHF has three stages: SFT on demonstrations; a reward model trained on human preference pairs with a Bradley–Terry loss; then PPO to maximize reward minus a KL penalty to the SFT model, which prevents reward hacking. DPO uses the closed-form optimum of that objective to write the reward as β times the policy-to-reference log-ratio, so preference learning becomes a logistic loss on pairs: no reward model, no sampling. GRPO keeps PPO's clipped objective but drops the critic: it samples a group of answers per prompt and uses each reward, normalized within the group, as the advantage. It suits verifiable rewards like math and code.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
   <h3 id="rlhf">RLHF：reward model → PPO</h3>
   \[ \mathcal{L}_{\text{RM}} = -\log\sigma\big(r(x, y_w) - r(x, y_l)\big) \]
   \[ \max_{\pi}\ \mathbb{E}\Big[\, r(x, y) - \beta \log\frac{\pi(y\mid x)}{\pi_{\text{SFT}}(y\mid x)} \Big] \]
-  <p>\(y_w\) 是人选中的回答，\(y_l\) 是没选中的。第二行是 InstructGPT 的 RL 目标，用 PPO 优化。</p>
+  <p>\(y_w\) 是人选中的回答，\(y_l\) 是没选中的。第二行用 PPO 优化。</p>
   <h3 id="dpo">DPO：把 reward 换成 policy</h3>
   \[ \pi^*(y\mid x) \propto \pi_{\text{ref}}(y\mid x)\, e^{r(x,y)/\beta} \]
   \[ \Rightarrow\ r(x, y) = \beta\log\frac{\pi^*(y\mid x)}{\pi_{\text{ref}}(y\mid x)} + \beta\log Z(x) \]
   <p>代回 \(\mathcal{L}_{\text{RM}}\)，\(Z(x)\) 在 \(r_w - r_l\) 里抵消：</p>
   \[ \mathcal{L}_{\text{DPO}} = -\log\sigma\big(\beta\,(\Delta_w - \Delta_l)\big),\quad \Delta = \log\frac{\pi_\theta(y\mid x)}{\pi_{\text{ref}}(y\mid x)} \]
-  <p>例：一开始 \(\pi_\theta = \pi_{\text{ref}}\)，loss \(= \log 2 = 0.693\)；训到 \(\Delta_w = 2\)、\(\Delta_l = -1\)、\(\beta = 0.1\) 时 loss \(= -\log\sigma(0.3) = 0.554\)。</p>
+  <p>例：一开始 \(\pi_\theta = \pi_{\text{ref}}\)，loss \(= \log 2 = 0.693\)；训到 \(\Delta_w = 2\)、\(\Delta_l = -1\)、\(\beta = 0.1\) 时 loss \(= -\log\sigma(0.3) = 0.554\)。\(\beta\) 越小越允许偏离 reference。</p>
   <h3 id="grpo">GRPO：group 内 normalize 当 advantage</h3>
   \[ \hat A_i = \frac{r_i - \operatorname{mean}(r_1, \dots, r_G)}{\operatorname{std}(r_1, \dots, r_G)} \]
   <p>同一个 prompt 采 \(G\) 个回答，回答里每个 token 都用这个 \(\hat A_i\)，代入 PPO 的 clipped objective。KL 直接加在 loss 里，不放进 reward。</p>
@@ -55,9 +53,8 @@
   <tbody>
     <tr><td class="nw">模型</td><td>policy、reference、reward model、critic</td><td>policy、reference</td><td>policy、reference、reward（无 critic）</td></tr>
     <tr><td class="nw">数据</td><td>online sampling</td><td>offline preference pairs</td><td>online，每个 prompt 采 \(G\) 个</td></tr>
-    <tr><td class="nw">baseline</td><td>critic 估 value（GAE）</td><td>不需要</td><td>group 平均分</td></tr>
-    <tr><td class="nw">优点</td><td>最通用</td><td>简单、稳定、便宜</td><td>省掉 critic 的显存；适合 verifiable reward</td></tr>
-    <tr><td class="nw">缺点</td><td>4 个模型，调参难</td><td>受数据分布限制，没有 exploration</td><td>每个 prompt 要生成多个回答</td></tr>
+    <tr><td class="nw">优点</td><td>最通用</td><td>简单、稳定、便宜</td><td>省掉 critic 的 GPU memory；适合 verifiable reward</td></tr>
+    <tr><td class="nw">缺点</td><td>4 个模型，调参难</td><td>受数据分布限制，没有 exploration</td><td>要生成多个回答</td></tr>
   </tbody>
 </table>
 
@@ -73,23 +70,15 @@
 <h2>追问</h2>
 <details>
   <summary>PPO 的 clipped objective 是什么？</summary>
-  <p>\(\rho = \pi_\theta/\pi_{\text{old}}\)，优化 \(\min\big(\rho A,\ \operatorname{clip}(\rho, 1-\epsilon, 1+\epsilon)A\big)\)，\(\epsilon = 0.2\)。例：\(A = 1\)、\(\rho = 1.5\) 时只算 1.2，再往同方向推没有收益，一步不会走太远。</p>
-</details>
-<details>
-  <summary>DPO 有什么缺点？</summary>
-  <p>offline：只在已有的 preference pair 上学，不能自己生成新回答去探索，数据分布和当前 policy 差得远时效果受限。\(\beta\) 越小越允许偏离 reference。</p>
+  <p>\(\rho = \pi_\theta/\pi_{\text{old}}\)，优化 \(\min\big(\rho A,\ \operatorname{clip}(\rho, 1-\epsilon, 1+\epsilon)A\big)\)，\(\epsilon = 0.2\)。例：\(A = 1\)、\(\rho = 1.5\) 时只算 1.2，再往同方向推没有收益。</p>
 </details>
 <details>
   <summary>GRPO 里一组回答全对或全错会怎样？</summary>
-  <p>reward 全相同，减去均值后 advantage 全是 0，这个 prompt 不提供任何 gradient。太简单或太难的题等于白采样。</p>
+  <p>reward 全相同，减去均值后 advantage 全是 0，这个 prompt 不提供 gradient。太简单或太难的题等于白采样。</p>
 </details>
 <details>
   <summary>为什么 GRPO 适合数学、代码？</summary>
-  <p>答案能用规则判对错（verifiable reward），可以直接当 reward，不用另训 reward model。同一题采多个回答，对错一比就得到 advantage。注意 DeepSeekMath 原文用的还是训练出来的 reward model。</p>
-</details>
-<details>
-  <summary>RLHF 效果有多大？</summary>
-  <p>InstructGPT：人类评估里 1.3B 的 InstructGPT 比 175B 的 GPT-3 更受欢迎，参数少 100 倍。</p>
+  <p>答案能用规则判对错，可以直接当 reward，不用另训 reward model。注意 DeepSeekMath 原文用的还是训练出来的 reward model。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/2203.02155">Ouyang et al. 2022, InstructGPT</a> abstract（p.1）、§3.1（p.6，三步）、§3.5（pp.8–9，eq. 1–2）· <a href="https://arxiv.org/abs/1707.06347">Schulman et al. 2017, PPO</a> §3（p.3，eq. 7）· <a href="https://arxiv.org/abs/2305.18290">Rafailov et al. 2023, DPO</a> §3（p.3）、§4（pp.4–5，eq. 4–7）· <a href="https://arxiv.org/abs/2402.03300">Shao et al. 2024, DeepSeekMath</a> §4.1.1（pp.11–13，eq. 3、Fig. 4）、§4.1.2（p.14）</p>

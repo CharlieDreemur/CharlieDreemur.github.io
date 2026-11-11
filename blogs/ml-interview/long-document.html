@@ -20,13 +20,9 @@
   <dt>Token budget</dt>
   <dd>context window 里能留给 evidence 的额度。<span class="eg">面试官给的数字是 32K。扣掉 instruction、问题和回答，剩下的才能放 chunk。</span></dd>
   <dt>按结构切 chunk</dt>
-  <dd>沿标题和章节切，不是每隔固定长度切一刀。一个 recipe 是一个 chunk，不会被拦腰切开。chunk 和 embedding 的基础见 <a href="rag.html">RAG</a>。</dd>
+  <dd>沿标题和章节切，不是每隔固定长度切一刀，一个 recipe 是一个 chunk。基础见 <a href="rag.html">RAG</a>。</dd>
   <dt>Tree index</dt>
   <dd>leaf 是原文 chunk，parent 是 children 的 LLM summary，一层层往上直到 root。书有目录时，标题层级就是现成的 tree。</dd>
-  <dt>Collapsed tree</dt>
-  <dd>不分层，把所有节点摊平成一个列表，一起按 similarity 排序。</dd>
-  <dt>Map-reduce summarization</dt>
-  <dd>每块各自 summarize（map），再把这些 summary 合起来 summarize（reduce）。</dd>
 </dl>
 
 <h2 id="figs">看图：tree 上怎么找，整本书怎么总结</h2>
@@ -61,7 +57,7 @@
   <text class="m" x="20" y="196">ch 3：summary 的 embedding</text>
   <text class="m" x="20" y="216">3.b：原文的 embedding</text>
 </svg>
-<figcaption>图 1：数字是 query 和节点的 similarity，只作示意。Chapter 3 的 embedding 来自它的 summary，所以比 3.b 泛。Tree traversal 沿粗线一层层往下。Collapsed tree 把 7 个节点一起排序，3.b 排第一。</figcaption>
+<figcaption>图 1：数字是 query 和节点的 similarity，只作示意。Tree traversal 沿粗线一层层往下，collapsed tree 把 7 个节点一起排序，3.b 排第一。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 560 190" role="img" aria-label="用 map-reduce 总结整本书">
@@ -95,7 +91,7 @@
   <rect class="hot" x="210" y="151" width="180" height="30" rx="4"/>
   <text x="300" y="171" text-anchor="middle">book summary</text>
 </svg>
-<figcaption>图 2：没有 query 时用 map-reduce。每章各自 summarize，可以并行。再把这些 summary 合起来 summarize 一次。合起来还超 token budget，就先分组，多做一层。</figcaption>
+<figcaption>图 2：没有 query 时用 map-reduce。每章各自 summarize（map），再把这些 summary 合起来 summarize 一次（reduce）。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
@@ -107,7 +103,7 @@
   <tbody>
     <tr><td class="nw">v1 Rank + budget</td><td>按标题切 chunk，每块和 query 算 similarity，排序后从高到低装满 token budget。面试官说这是 easiest approach</td><td>一个 recipe 被切成几块；专名靠 embedding 不稳</td></tr>
     <tr><td class="nw">v2 Hybrid + 取整节</td><td>加 BM25 匹配专名，命中后取所在的整节</td><td>问得宽时，没有哪个 leaf 足够像</td></tr>
-    <tr><td class="nw">v3 Tree</td><td>parent 是 children 的 summary，各层节点都能被检索到</td><td>建 index 要多次调用 LLM；summary 会丢细节</td></tr>
+    <tr><td class="nw">v3 Tree</td><td>建 tree index，各层节点都能被检索到</td><td>建 index 要多次调用 LLM；summary 会丢细节</td></tr>
   </tbody>
 </table>
 
@@ -115,20 +111,20 @@
 <table>
   <thead><tr><th>追问</th><th>回答</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Chapter 3 和 3.b<br>的 embedding</td><td>Chapter 3 的 embedding 来自它的 summary，概括 3.a–3.c。3.b 的来自自己的原文。具体问题和 3.b 更像，宽问题和 chapter 3 更像</td></tr>
+    <tr><td class="nw">Chapter 3 和 3.b<br>的 embedding</td><td>Chapter 3 的来自它的 summary，概括 3.a–3.c。3.b 的来自自己的原文。所以具体问题和 3.b 更像，宽问题和 chapter 3 更像</td></tr>
     <tr><td class="nw">Flow</td><td>在 root 层取 similarity 最高的 k 个，只在它们的 children 里再取 top-k，一层层往下</td></tr>
     <tr><td class="nw">Where to stop</td><td>到 leaf 停，或者 token budget 装满</td></tr>
-    <tr><td class="nw">What to take</td><td>Tree traversal 把每层选中的节点都留下。Collapsed tree 不分层，所有节点一起排序，按 token budget 截断</td></tr>
+    <tr><td class="nw">What to take</td><td>Tree traversal 把每层选中的节点都留下。Collapsed tree 不分层，所有节点一起按 similarity 排序，按 token budget 截断</td></tr>
     <tr><td class="nw">What to show</td><td>选中节点的文本带上标题路径，按原文顺序排。parent 和它的 child 都选中时只留 child，这一条是设计取舍，RAPTOR 没有这一步</td></tr>
   </tbody>
 </table>
-<p>RAPTOR 的实验里 collapsed tree 比 tree traversal 好。它是在 QASPER 的 20 篇上比的，主实验把上限定在 2000 token，大约是 top-20 个节点。Collapsed tree 其实就是 v1 的做法用在 tree 的节点上。</p>
+<p>RAPTOR 的实验里 collapsed tree 比 tree traversal 好。它是在 QASPER 的 20 篇上比的，主实验把上限定在 2000 token，大约是 top-20 个节点。Collapsed tree 就是 v1 的做法用在 tree 的节点上。</p>
 
 <h2 id="summarize">Case 2：总结整本书</h2>
 <ol>
   <li><strong>切</strong>：按章切，一章还放不下就再按节切</li>
   <li><strong>Map</strong>：每块各自 summarize，可以并行</li>
-  <li><strong>Reduce</strong>：把这些 summary 合起来再 summarize 一次，合起来还超 token budget 就分组多做一层</li>
+  <li><strong>Reduce</strong>：把这些 summary 合起来再 summarize 一次，还超 token budget 就分组多做一层</li>
 </ol>
 <p>有 tree 时，root 层的 summary 就是答案，建 index 时算好并缓存。另一种做法是 refine，带着当前的 summary 顺序读下一块。它不能并行，结果还受顺序影响。</p>
 <p>手算一遍。书有 200K token，token budget 是 32K。按 8K 一块切成 25 块，每块压成 500 token，合起来 12.5K，一次 reduce 就放得下，一共调用 LLM 26 次。</p>
@@ -155,10 +151,6 @@
 <details>
   <summary>文件没有目录和标题，怎么建 tree？</summary>
   <p>先按固定长度切 leaf，再按 embedding 做 clustering，每个 cluster 生成一个 summary 当 parent，重复到聚不动为止。RAPTOR 的 leaf 是 100 token，clustering 用 GMM，一个节点可以属于多个 cluster。</p>
-</details>
-<details>
-  <summary>放在手机上跑，要注意什么？</summary>
-  <p>建 tree 要对每个 parent 调用一次 LLM，所以放在文件进 index 的时候做，结果缓存下来。回答问题时只算一次 query 的 embedding，再调用一次 LLM。</p>
 </details>
 <details>
   <summary>换一个 context 更长的模型，把整本书放进去不行吗？</summary>

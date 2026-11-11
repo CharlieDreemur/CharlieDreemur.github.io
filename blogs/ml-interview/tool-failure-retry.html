@@ -20,39 +20,36 @@
   <dt>Transient error</dt>
   <dd>等一下再发可能就好的错误。<span class="eg">例：timeout、rate limit（HTTP 429）、网络抖动。</span></dd>
   <dt>确定性错误</dt>
-  <dd>同一个调用再发多少次，结果都一样的错误。<span class="eg">例：参数错、文件不存在、权限不够。</span></dd>
+  <dd>重发多少次结果都一样的错误。<span class="eg">例：参数错、文件不存在、权限不够。</span></dd>
   <dt>幂等（idempotent）</dt>
-  <dd>同一个调用执行一次和执行多次，效果相同。<span class="eg">例：把文件内容设成 X 是幂等的，往文件末尾追加一行不是。</span></dd>
+  <dd>同一个调用执行一次和多次，效果相同。<span class="eg">例：把文件内容设成 X 是幂等的，往末尾追加一行不是。</span></dd>
   <dt>Exponential backoff</dt>
-  <dd>每次重试前等的时间翻倍，并且有次数上限。像打电话占线，隔一会儿再拨，越拨间隔越长。</dd>
+  <dd>每次重试前等的时间翻倍，有次数上限。像打电话占线，越拨间隔越长。<span class="eg">例：先等 1 s，最多重试 3 次，最坏一共等 \(1 + 2 + 4 = 7\) s。</span></dd>
   <dt>Checkpoint</dt>
-  <dd>每一步之后把当前状态落盘，像游戏存档。崩了就从最近的存档接着玩。</dd>
+  <dd>把当前状态落盘，像游戏存档。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>I split errors into three kinds. Transient ones, like timeouts and rate limits, are retried by the harness with exponential backoff and a cap, without involving the model. Deterministic ones, like a bad argument or a missing file, go back to the model as the tool result so it can fix the call. Calls with side effects are retried only if they're idempotent; otherwise I check the state first. To prevent loops, the harness stops and escalates when the same call keeps failing. And it checkpoints messages and task state after every step, so a crashed run resumes from the last step instead of starting over.</p></div>
+<div class="answer"><p>I split errors into three kinds. Transient ones, like timeouts and rate limits, the harness retries with exponential backoff and a cap, without involving the model. Deterministic ones, like a bad argument, go back to the model as the tool result so it can fix the call. Calls with side effects are retried only if they're idempotent; otherwise I check the state first. To prevent loops, the harness stops and escalates when the same call keeps failing. And it checkpoints messages and task state after every step, so a crashed run resumes from the last step.</p></div>
 
 <h2 id="types">三类错误，各自谁处理</h2>
 <table>
-  <thead><tr><th>错误类型</th><th>例子</th><th>谁处理</th><th>怎么处理</th></tr></thead>
+  <thead><tr><th>错误类型</th><th>谁处理</th><th>怎么处理</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Transient error</td><td>timeout、rate limit、网络抖动</td><td class="nw">harness</td><td>自动重试，用 exponential backoff，有次数上限。超过上限才把报错交给 model</td></tr>
-    <tr><td class="nw">确定性错误</td><td>参数错、文件不存在、权限不够</td><td class="nw">model</td><td>报错原样当作 tool result 还给 model，让它改调用</td></tr>
-    <tr><td class="nw">有副作用的调用</td><td>写数据库、开 PR、发通知</td><td class="nw">harness 先把关</td><td>幂等才重试。不幂等就先查状态，确认上一次没生效再发</td></tr>
+    <tr><td class="nw">Transient error</td><td class="nw">harness</td><td>exponential backoff 自动重试，超过上限才把报错交给 model</td></tr>
+    <tr><td class="nw">确定性错误</td><td class="nw">model</td><td>报错原样当作 tool result 还给 model，让它改调用</td></tr>
+    <tr><td>有副作用的调用，如写数据库、开 PR</td><td class="nw">harness 先把关</td><td>幂等才重试。不幂等就带 idempotency key，或先查状态确认上一次没生效</td></tr>
   </tbody>
 </table>
-<p>所以“程序判断还是交给 model”的回答是两者分工。从错误码就能看出来的，由程序判断。要理解任务才能改对的，交给 model。</p>
-<p>Exponential backoff 手算一遍，数字是举例。第一次重试前等 1 s，之后每次翻倍，最多重试 3 次，最坏情况一共等 \(1 + 2 + 4 = 7\) s。假设每次调用独立地有 5% 的概率遇到 transient error，连着 4 次都失败的概率是 \(0.05^4 \approx 6 \times 10^{-6}\)。</p>
 
 <h2 id="recover">防死循环和 checkpoint</h2>
-<p><strong>防死循环</strong>。model 可能反复发同一个失败的调用。harness 给每次调用的 tool 名和参数算一个 hash，同一个 hash 连续失败 N 次就停下并上报。相同的 action 反复出现也这样处理。最后用 max steps 兜底。stop condition 的一般讲法见 <a href="search-loop.html#stop">search loop</a>。</p>
-<p><strong>Checkpoint</strong>。每一步之后，harness 把 messages 和 task 状态落盘，里面带上 step 编号和最后一个 tool call 的结果或报错。进程挂了，重启后先读最近的 checkpoint，再从下一步接着跑。最后那一步可能只执行了一半，恢复时把它按有副作用的调用处理。</p>
+<p><strong>防死循环</strong>。harness 给每次调用的 tool 名和参数算 hash，同一个 hash 连续失败或反复出现 N 次就停下并上报，再用 max steps 兜底。stop condition 的一般讲法见 <a href="search-loop.html#stop">search loop</a>。</p>
+<p><strong>Checkpoint</strong>。每一步之后，harness 把 messages 和 task 状态落盘，带上 step 编号和最后一个 tool call 的结果或报错。重启后从最近的 checkpoint 接着跑。最后那一步可能只执行了一半，恢复时按有副作用的调用处理。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>错误分三类：transient error、确定性错误、有副作用的调用</li>
   <li>transient error 由 harness 自动重试，exponential backoff，有上限</li>
-  <li>确定性错误当作 tool result 还给 model，让它改</li>
+  <li>确定性错误当作 tool result 还给 model</li>
   <li>有副作用的调用幂等才重试，否则先查状态</li>
   <li>防死循环：同一个调用连续失败 N 次就停下上报，加 max steps</li>
   <li>checkpoint：每步之后把 messages 和 task 状态落盘</li>
@@ -60,24 +57,20 @@
 
 <h2>追问</h2>
 <details>
-  <summary>tool 调用失败后 model 开始编造结果，怎么办？（蚂蚁原题）</summary>
-  <p>没有成功的 tool result，verifier 就不放行。结果只认 tool 的真实输出，不认 model 的转述。</p>
+  <summary>tool 调用失败后 model 编造结果，怎么办？（蚂蚁原题）</summary>
+  <p>结果只认 tool 的真实输出。没有成功的 tool result，verifier 就不放行。</p>
 </details>
 <details>
-  <summary>Task DAG 里 B、C、D 并行，D 崩了怎么恢复？（字节，作者转述）</summary>
-  <p>每个节点的结果单独落盘。只重跑 D，B 和 C 的结果直接读回来，E 等 D 完成再开始。</p>
+  <summary>Task DAG 里 B、C、D 并行，D 崩了怎么恢复？（字节）</summary>
+  <p>每个节点的结果单独落盘。只重跑 D，B 和 C 的结果读回来。</p>
 </details>
 <details>
-  <summary>上游 LLM API 一直返回 429 怎么办？（Qualified Health，转述）</summary>
-  <p>只靠每个 worker 自己 backoff 不够。在调度层用 token bucket 限流，再加 backpressure，也就是上游忙的时候少派任务（见 <a href="agent-batch-runs.html">大批量跑 agent</a>）。</p>
-</details>
-<details>
-  <summary>一个 timeout 的调用，到底执行了没有？</summary>
-  <p>不知道。所以有副作用的调用要带一个 idempotency key 让对方去重，或者重试前先查状态。</p>
+  <summary>上游 LLM API 一直返回 429 怎么办？（Qualified Health）</summary>
+  <p>每个 worker 自己 backoff 不够。调度层还要限流并加 backpressure，上游忙时少派任务（见 <a href="agent-batch-runs.html">大批量跑 agent</a>）。</p>
 </details>
 <details>
   <summary>让 model 参与错误分析和恢复，行不行？（影石创新原题）</summary>
-  <p>行，确定性错误本来就交给它。transient error 不交给它，因为等一下重发就能好，交给 model 只是多花 token。</p>
+  <p>行，但只交确定性错误，它要理解任务才能改对。transient error 从错误码就能判断，交给 model 只是多花 token。</p>
 </details>
 
 <p class="src"><b>来源</b>面经原帖：<a href="https://www.nowcoder.com/discuss/942819943425245184">作业帮 Golang 实习</a>、<a href="https://www.nowcoder.com/discuss/896770835296370688">虾皮二面</a>、<a href="https://www.nowcoder.com/discuss/893137787367477248">虾皮一面</a>、<a href="https://www.nowcoder.com/feed/main/detail/0ee160a2d38f4b5daaf1965cf975a8f0">字节 Agent 开发日常实习一面</a>、<a href="https://www.nowcoder.com/feed/main/detail/d9d6a1ea1adc41b4a44ca47b535e9994">蚂蚁 AI 应用方向</a>（「如果工具调用失败，模型开始编造结果，怎么处理？」）、<a href="https://www.nowcoder.com/feed/main/detail/b406c87436a54864bfc0cf4a20299f62">影石创新 AI Agent 一面</a>（「是否考虑过让大模型参与错误分析和自动恢复？这种方案有什么优缺点？」） · <a href="https://prachub.com/interview-experiences/qualified-health-software-engineer-interview-experience-a-dismissive-interviewer-and-workflow-system-design">PracHub：Qualified Health</a>（429、checkpoint、幂等的追问） · ml-八股 08 第 35 题 · 中文平台调研笔记 1.9 节</p>

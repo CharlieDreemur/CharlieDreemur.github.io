@@ -18,15 +18,13 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Noise floor</dt>
-  <dd>baseline 一行不改，重复跑几次，指标自己的波动。像体重秤，同一个人连称几次读数也不一样，变化比这个小就不能算数。<span class="eg">FlashVector 端到端测到 ±6%。</span></dd>
+  <dd>baseline 一行不改重复跑几次，指标自己的波动。变化比它小就不能算数。<span class="eg">FlashVector 端到端测到 ±6%。</span></dd>
   <dt>No-op run</dt>
-  <dd>不做任何改动的 baseline run，专门用来量 noise floor。</dd>
-  <dt>接受规则</dt>
-  <dd>提升超过 noise floor 才留下，否则 revert。</dd>
+  <dd>不做任何改动的 baseline run，用来量 noise floor。</dd>
   <dt>加样本重测</dt>
-  <dd>提升落在 noise floor 里时不马上拒绝，多测几倍的样本再看。<span class="eg">FlashVector 对 2–6% 的提升最多加到 8 倍样本。</span></dd>
+  <dd>提升落在 noise floor 里时不马上拒绝，多测几倍的样本再看。</dd>
   <dt>\(1/\sqrt{k}\)</dt>
-  <dd>k 倍样本取平均，平均值的噪声缩小 \(\sqrt{k}\) 倍。<span class="eg">4 倍样本，噪声减半。</span></dd>
+  <dd>k 倍样本取平均，平均值的噪声缩小 \(\sqrt{k}\) 倍。</dd>
 </dl>
 
 <h2 id="figs">看图：+4% 的提升，加样本前后</h2>
@@ -54,11 +52,11 @@
   <path class="ln1" style="stroke-width:2.4" d="M384,134 V176"/>
   <text class="acc" x="390" y="190" text-anchor="middle">候选 +4%</text>
 </svg>
-<figcaption>图 1：横轴是相对 baseline 的变化，蓝色的一段是 noise floor。±6%、8 倍和 2.1% 是 FlashVector 的数字，+4% 的候选是示意。样本加到 8 倍后 noise floor 收窄，同样的 +4% 就落到了外面。</figcaption>
+<figcaption>图 1：横轴是相对 baseline 的变化，蓝色的一段是 noise floor。±6%、8 倍和 2.1% 是 FlashVector 的数字，+4% 的候选是示意。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Before I trust a speedup, I rerun the unchanged baseline several times to see how much the metric moves by itself. That spread is the noise floor. FlashVector measured about plus or minus six percent end to end. A gain above the floor is kept. A gain between two and six percent isn't rejected right away. It's re-measured with up to eight times the samples, because the noise of a mean shrinks as one over root k, so six percent comes down to about 2.1. The same floor also prunes ideas early: if a hypothesis can't beat the noise even in the best case, the agent skips it.</p></div>
+<div class="answer"><p>Before I trust a speedup, I rerun the unchanged baseline several times to see how much the metric moves by itself. That spread is the noise floor. FlashVector measured about plus or minus six percent end to end. A gain above the floor is kept. A gain between two and six percent is re-measured with up to eight times the samples, because the noise of a mean shrinks as one over root k, so six percent comes down to about 2.1. The same floor also prunes ideas early: a hypothesis that can't beat the noise is skipped.</p></div>
 
 <h2 id="rule">接受规则</h2>
 <table>
@@ -66,28 +64,23 @@
   <tbody>
     <tr><td class="nw">超过 6%</td><td>接受</td><td>超过了 noise floor</td></tr>
     <tr><td class="nw">2–6%</td><td>加样本重测，最多 8 倍</td><td>noise floor 按 \(1/\sqrt{k}\) 收紧，8 倍时是 2.1%</td></tr>
-    <tr><td class="nw">低于 2%</td><td>论文没写。按上下文应当是拒绝，这是推断</td><td>样本加到 8 倍也分不开</td></tr>
+    <tr><td class="nw">低于 2%</td><td>论文没写，按上下文推断是拒绝</td><td>样本加到 8 倍也分不开</td></tr>
   </tbody>
 </table>
-<p>FlashVector 在循环里用了三次 noise floor。</p>
-<ol>
-  <li><strong>Diagnose</strong>：预期收益低于 noise floor 的假设直接跳过</li>
-  <li><strong>Verify</strong>：提升超过 noise floor 才留</li>
-  <li><strong>Case 4</strong>：没有配置比现任好出 noise floor 时，agent 放弃改动</li>
-</ol>
+<p>Verify 之外，FlashVector 还有两处用到 noise floor。Diagnose 直接跳过预期收益低于它的假设，因为做出来也测不出来。Case 4 里没有配置比现任好出 noise floor，agent 放弃改动，论文的用词是 declines。</p>
 
 <h2 id="example">手算：6% 怎么变成 2.1%</h2>
 <div class="deriv">
   \[ \text{noise}(k) = \frac{\text{noise}(1)}{\sqrt{k}} \qquad \frac{6\%}{\sqrt{8}} = \frac{6\%}{2.83} \approx 2.1\% \]
 </div>
-<p>k 倍样本取平均，平均值的噪声缩小 \(\sqrt{k}\) 倍。样本加到 4 倍，noise floor 只减半到 3%。想压到 1% 要 36 倍样本，所以越往后越贵。</p>
-<p>论文没写 baseline 重复跑几次。±6% 是标准差、极差还是置信区间，它也没写。比较用 mean、median 还是 p99 同样没写。这三点适合当反问。</p>
-<p>±6% 是端到端的数，论文没给每层各自的 noise floor。kernel 级的 microbenchmark 靠 warmup、取 median 和独占 GPU 降噪，见 <a href="kernel-benchmark.html">kernel benchmark</a>。</p>
+<p>样本加到 4 倍，noise floor 只减半到 3%。想压到 1% 要 36 倍样本，所以越往后越贵。</p>
+<p>论文没写 baseline 重复跑几次，没写 ±6% 是标准差、极差还是置信区间，也没写比较用 mean、median 还是 p99，都适合当反问。</p>
+<p>±6% 是端到端的数，论文没给每层各自的 noise floor。kernel 级的 microbenchmark 怎么降噪见 <a href="kernel-benchmark.html">kernel benchmark</a>。</p>
 
 <h2>必答点</h2>
 <ul>
-  <li>先量 noise floor，做法是 baseline 一行不改重复跑</li>
-  <li>提升超过 noise floor 才留</li>
+  <li>先量 noise floor，baseline 一行不改重复跑</li>
+  <li>提升超过 noise floor 才留，否则 revert</li>
   <li>2–6% 的提升加样本重测，最多 8 倍</li>
   <li>平均值的噪声按 \(1/\sqrt{k}\) 缩小，6% ÷ √8 ≈ 2.1%</li>
   <li>Diagnose 阶段就用它跳过收益太小的假设</li>
@@ -96,24 +89,16 @@
 
 <h2>追问</h2>
 <details>
-  <summary>Diagnose 阶段怎么用 noise floor？</summary>
-  <p>每个假设按“占总时间的比例 × 预期收益”打分。预期收益低于 noise floor 的直接跳过，因为做出来也测不出来。</p>
-</details>
-<details>
   <summary>加样本能把所有噪声都压掉吗？</summary>
-  <p>不能，\(1/\sqrt{k}\) 只对随机波动有效。机器状态的漂移要靠 A/B 交替跑或随机化先后来抵消，CUDA-L1 每轮随机决定 reference 和 candidate 谁先跑。</p>
-</details>
-<details>
-  <summary>没有候选超过 noise floor，agent 怎么办？</summary>
-  <p>放弃改动，保留现有配置。FlashVector 的 Case 4 就是这样处理的，论文的用词是 declines。</p>
+  <p>不能，\(1/\sqrt{k}\) 只对随机波动有效。机器状态的漂移要靠 A/B 交替跑来抵消，或者像 CUDA-L1 那样每轮随机决定谁先跑。</p>
 </details>
 <details>
   <summary>论文的结果表带误差范围吗？</summary>
-  <p>不带。Table 1 的 speedup 没有置信区间，也没写是 load test 还是生产 canary 的数，虽然论文自己给了 ±6% 的 noise floor。</p>
+  <p>不带。Table 1 的 speedup 没有置信区间，也没写是 load test 还是生产 canary 的数。</p>
 </details>
 <details>
   <summary>提升超过 noise floor 就能留了吗？</summary>
-  <p>还要先过正确性（见 <a href="kernel-correctness.html">kernel 正确性</a>）。本层的提升还要在 full-stack load test 上复现（见 <a href="local-vs-e2e.html">局部和端到端</a>）。</p>
+  <p>还要先过正确性（<a href="kernel-correctness.html">kernel 正确性</a>）。本层的提升还要在 full-stack load test 上复现（<a href="local-vs-e2e.html">局部和端到端</a>）。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.2 Verify、§4.2 Diagnose、§5.4（原话 "estimated from repeated no-op runs of the unmodified baseline (±6% end to end)"）· <a href="https://arxiv.org/html/2507.14111">CUDA-L1</a>（随机化先后）· ml-八股 08 第 26 题 · 调研笔记 Unity 的证据和同类对照 1.6 节</p>

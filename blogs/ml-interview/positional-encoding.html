@@ -18,19 +18,17 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Permutation equivariance</dt>
-  <dd>把输入 token 打乱，输出只是跟着同样打乱，每个 token 算出来的结果不变。所以没有位置信息时，"狗咬人"和"人咬狗"里"狗"的表示一模一样，模型等于在看 bag of words。</dd>
+  <dd>把输入 token 打乱，输出只是跟着打乱。没有位置信息时，"狗咬人"和"人咬狗"里"狗"的表示一模一样。</dd>
   <dt>Absolute 与 relative</dt>
-  <dd>absolute 像门牌号："我在第 5 位"；relative 像"他在我左边 2 位"，整句往后挪几位也不变。</dd>
+  <dd>absolute 像门牌号"我在第 5 位"。relative 像"他在我左边 2 位"，整句往后挪几位也不变。</dd>
   <dt>Sinusoidal</dt>
-  <dd>一组转速不同的钟表指针：快的指针区分相邻位置，慢的区分远距离，一个位置的编码就是所有指针的读数。<span class="eg">例：\(d = 4\) 时位置 1 是 (sin 1, cos 1, sin 0.01, cos 0.01) = (0.841, 0.540, 0.010, 1.000)。</span></dd>
-  <dt>Attention bias</dt>
-  <dd>不碰输入，直接在每层的 attention score 上按距离加一个数。<span class="eg">例：ALiBi 8 个 head 的 slope 是 1/2, 1/4, …, 1/256；slope 1/2 的 head 里，距离 3 的 key 被减 1.5。</span></dd>
+  <dd>一组转速不同的钟表指针，快的区分相邻位置，慢的区分远距离，一个位置的编码就是所有指针的读数。<span class="eg">例：\(d = 4\) 时位置 1 是 (sin 1, cos 1, sin 0.01, cos 0.01) = (0.841, 0.540, 0.010, 1.000)。</span></dd>
   <dt>Extrapolation</dt>
-  <dd>推理时序列比训练时长，位置编码还能不能用。learned 表只有训练长度那么多行，超出就查不到。</dd>
+  <dd>推理时序列比训练时长，位置编码还能不能用。</dd>
 </dl>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Self-attention is permutation-equivariant: shuffle the tokens and the outputs are shuffled the same way, so without positions the model sees a bag of words. Absolute encodings add a vector to each input embedding: the original Transformer uses fixed sinusoids at geometrically spaced frequencies, so PE(pos+k) is a linear function of PE(pos); BERT learns one vector per position, which can't go beyond the trained length. Relative methods act inside every attention layer: T5 adds a learned bias per distance bucket, ALiBi subtracts a fixed per-head slope times the distance and extrapolates well, and RoPE rotates q and k so their dot product depends only on the offset. LLaMA and most current open LLMs use RoPE.</p></div>
+<div class="answer"><p>Self-attention is permutation-equivariant: shuffle the tokens and the outputs shuffle the same way, so without positions the model sees a bag of words. Absolute encodings add a vector to each input embedding: the original Transformer uses fixed sinusoids at geometrically spaced frequencies, and BERT learns one vector per position, which can't go beyond the trained length. Relative methods act inside every attention layer: T5 adds a learned bias per distance bucket, ALiBi subtracts a fixed per-head slope times the distance and extrapolates well, and RoPE rotates q and k so their dot product depends only on the offset. Most current open LLMs use RoPE.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
@@ -39,12 +37,12 @@
   <h3 id="sin">Sinusoidal（加到输入 embedding 上）</h3>
   \[ PE_{(pos,\,2i)} = \sin\big(pos/10000^{2i/d}\big) \]
   \[ PE_{(pos,\,2i+1)} = \cos\big(pos/10000^{2i/d}\big) \]
-  <p>波长从 \(2\pi\) 到 \(10000\cdot 2\pi\) 等比增长。每对 (sin, cos) 平移 \(k\) 位等于旋转一个只和 \(k\) 有关的角度，所以 \(PE_{pos+k}\) 是 \(PE_{pos}\) 的线性函数。</p>
+  <p>波长从 \(2\pi\) 到 \(10000\cdot 2\pi\) 等比增长，值域在 [−1, 1]。每对 (sin, cos) 平移 \(k\) 位等于旋转一个只和 \(k\) 有关的角度，所以 \(PE_{pos+k}\) 是 \(PE_{pos}\) 的线性函数，模型容易学相对位置。</p>
   <h3 id="alibi">ALiBi（加到每层 score 上，\(j \le i\)）</h3>
   \[ s_{ij} = q_i\cdot k_j - m\,(i - j) \]
-  <p>\(m\) 每个 head 一个，固定不学；\(h\) 个 head 时是首项和公比都为 \(2^{-8/h}\) 的等比数列。</p>
+  <p>\(m\) 每个 head 一个，固定不学，\(h\) 个 head 时是首项和公比都为 \(2^{-8/h}\) 的等比数列。<span class="eg">例：8 个 head 是 1/2, 1/4, …, 1/256，slope 1/2 的 head 里距离 3 的 key 被减 1.5。</span></p>
   <h3 id="rope">RoPE</h3>
-  <p>按位置旋转 q、k，\(\langle R_m q, R_n k\rangle\) 只依赖 \(n - m\)。详见 <a href="rope.html">RoPE 速查</a>。</p>
+  <p>按位置旋转 q、k，\(\langle R_m q, R_n k\rangle\) 只依赖 \(n - m\)。见 <a href="rope.html">RoPE</a>。</p>
 </div>
 
 <h2 id="compare">几种做法对比</h2>
@@ -64,25 +62,17 @@
   <li>为什么：self-attention 是 permutation equivariant，不加位置 = bag of words</li>
   <li>absolute：sinusoidal（固定、多频率）、learned（不能超过训练长度），加在输入</li>
   <li>relative：T5 bias、ALiBi 加在每层 score 上；RoPE 旋转每层的 q、k</li>
-  <li>外推：learned 不能，sinusoidal 很弱，ALiBi 好；LLaMA 等现在的 LLM 多用 RoPE</li>
+  <li>外推：learned 不能，sinusoidal 很弱，ALiBi 好；现在的 LLM 多用 RoPE</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>sinusoidal 为什么 sin、cos 成对，频率等比？</summary>
-  <p>成对时，平移 \(k\) 位就是一个和 \(pos\) 无关的旋转（linear map），模型容易学相对位置。频率等比，从短距离到长距离都有指针能分辨。值域在 [−1, 1]，不随位置变大。</p>
-</details>
-<details>
   <summary>learned 和 sinusoidal 哪个好？</summary>
-  <p>原论文 Table 3 (E)：几乎一样（BLEU 25.7 vs 25.8）。选 sinusoidal 是希望能外推到比训练更长的序列。</p>
-</details>
-<details>
-  <summary>decoder-only 不加任何 positional encoding 行不行？</summary>
-  <p>行，效果有竞争力（NoPE），probing 显示模型自己学到了绝对位置。作者推测是 causal mask 打破了置换对称：每个 token 能看到的前文个数不同，由此推出位置。</p>
+  <p>原论文 Table 3 (E) 里几乎一样（BLEU 25.7 vs 25.8）。选 sinusoidal 是希望能外推到更长的序列。</p>
 </details>
 <details>
   <summary>ALiBi 为什么能外推？</summary>
-  <p>它不加任何 position embedding，只让距离越远的 key 被罚得越多（recency bias）。更长的距离只是罚得更多，不会出现训练没见过的向量。</p>
+  <p>它没有 position embedding，更长的距离只是罚得更多（recency bias），不会出现训练没见过的向量。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.5（p.6）、Table 3 row (E)（p.9）· <a href="https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html">Dive into Deep Learning</a> §11.6.3 eq. 11.6.2–11.6.3 · <a href="https://arxiv.org/abs/2108.12409">Press et al. 2022（ALiBi）</a> Abstract、§2（pp.3–4）、§3（p.5）· <a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2020（T5）</a> §2.1（p.5）· <a href="https://arxiv.org/abs/2104.09864">Su et al.（RoFormer）</a> §3.2.2 eq. 14–16（p.5）· <a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2019（BERT）</a> Appendix A.2（p.13）· <a href="https://arxiv.org/abs/2211.05100">BigScience 2022（BLOOM）</a> §3.2.3（p.16）· <a href="https://arxiv.org/abs/2302.13971">Touvron et al. 2023（LLaMA）</a> §2.2（p.3）· <a href="https://arxiv.org/abs/2203.16634">Haviv et al. 2022（NoPE）</a> Abstract</p>

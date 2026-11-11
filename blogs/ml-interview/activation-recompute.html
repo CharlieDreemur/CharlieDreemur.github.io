@@ -18,29 +18,29 @@
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Activation</dt>
-  <dd>forward 时存下来给 backward 用的中间结果，像做题的草稿纸（构成见 <a href="training-memory.html">training memory</a>）。<span class="eg">例：GPT-3 一层，\(s = 2048\)、\(b = 1\)，不切分时约 2.9 GB。</span></dd>
+  <dd>forward 时存给 backward 用的中间结果（构成见 <a href="training-memory.html">training memory</a>）。<span class="eg">例：GPT-3 一层，\(s = 2048\)、\(b = 1\)，不切分时约 2.9 GB。</span></dd>
   <dt>Activation recomputation</dt>
-  <dd>像打游戏只在每关开头存档（checkpoint），backward 走到这一关时从存档把 forward 重打一遍，拿回中间结果。用 compute 换 memory。</dd>
+  <dd>像打游戏只在每关开头存档（checkpoint），backward 到这一关时从存档重跑 forward。</dd>
   <dt>Full recomputation</dt>
-  <dd>每层只存输入（\(2sbh\) bytes），整层 forward 重跑。省得最多，代价是多一次完整 forward。</dd>
+  <dd>每层只存输入（\(2sbh\) bytes），整层 forward 重跑，省得最多。</dd>
   <dt>Selective recomputation</dt>
-  <dd>Megatron 的做法是只重算 attention 里的 \(QK^\top\)、softmax、softmax dropout、乘 \(V\)。这些 \(s\times s\) 的张量占显存大头（\(5as/h\) 项），FLOPs 却很少。</dd>
+  <dd>Megatron 只重算 attention 里的 \(QK^\top\)、softmax、softmax dropout、乘 \(V\)。这些 \(s\times s\) 的 tensor 占 GPU memory 大头（\(5as/h\) 项），FLOPs 却很少。</dd>
   <dt>\(\sqrt n\) checkpointing</dt>
-  <dd>\(n\) 层切成 \(k\) 段，只存段边界。backward 时一次只重算一段。<span class="eg">例：\(n = 96\)，\(k = 10\) 时只要存约 \(10 + 96/10 \approx 20\) 层的量，而不是 96 层。</span></dd>
+  <dd>\(n\) 层切成 \(k\) 段，只存段边界，backward 时一次只重算一段。<span class="eg">例：\(n = 96\)、\(k = 10\) 时只存约 \(10 + 96/10 \approx 20\) 层的量。</span></dd>
 </dl>
 
 <h2 id="figs">看图：存什么、多算什么</h2>
 <figure class="fig">
 <svg viewBox="0 0 500 290" role="img" aria-label="GPT-3 一层在 TP 8 加 SP 下存多少 activation：全存 359 MB，其中 s 乘 s 的部分占 80 份、其余 34 份；selective 只重算 s 乘 s 部分，剩 107 MB；full 只存每层输入 2sbh，剩 50 MB，但多一次 forward"><text x="10" y="14" text-anchor="start" class="m">GPT-3 175B 一层（s = 2048、h = 12288、a = 96、b = 1、t = 8 + SP）</text><text x="10" y="44" text-anchor="start" class="hd">全存（不重算）</text><rect x="11" y="54" width="141.2" height="32" rx="4" class="f2"/><text x="81.6" y="75" text-anchor="middle" class="c2">34sbh/t</text><rect x="154.2" y="54" width="334.8" height="32" rx="4" class="f1"/><text x="321.6" y="75" text-anchor="middle" class="acc">5as/h = 80：s×s 的部分</text><text x="10" y="104" text-anchor="start" class="m">每层 359 MB · 96 层 34.4 GB · 额外计算 0</text><text x="10" y="132" text-anchor="start" class="hd">selective：只重算 attention 的 s×s 部分</text><rect x="11" y="142" width="141.2" height="32" rx="4" class="f2"/><text x="81.6" y="163" text-anchor="middle" class="c2">34sbh/t</text><rect x="154.2" y="142" width="334.8" height="32" rx="4" class="stale"/><text x="321.6" y="163" text-anchor="middle" class="m">backward 时重算，不存</text><text x="10" y="192" text-anchor="start" class="m">每层 107 MB · 96 层 10.3 GB · 多 ≈ 2.7% FLOPs</text><text x="10" y="220" text-anchor="start" class="hd">full：每层只存输入</text><rect x="11" y="230" width="65.4" height="32" rx="4" class="box"/><text x="43.7" y="251" text-anchor="middle">2sbh</text><rect x="78.4" y="230" width="410.6" height="32" rx="4" class="stale"/><text x="283.7" y="251" text-anchor="middle" class="m">backward 时整层 forward 重跑</text><text x="10" y="280" text-anchor="start" class="m">每层 50 MB · 96 层 4.8 GB · 多 1 次 forward</text></svg>
-<figcaption>图 1：GPT-3 一层在 TP = 8 + SP 下存多少 activation，长度按 sbh/t 的倍数画。橙色是 attention 里 s×s 的部分（QKᵀ、softmax、dropout），占 80 份，比其余 34 份（蓝色）还多。selective 只把橙色这块改成 backward 时重算，FLOPs 很少，却省掉 70%；full 每层只留输入 2sbh，省得最多，代价是多一次 forward。</figcaption>
+<figcaption>图 1：GPT-3 一层在 TP = 8 + SP 下的 activation，按 sbh/t 的倍数画。橙色是 attention 里 s×s 的部分，selective 只重算这一块。full 每层只留输入 2sbh。</figcaption>
 </figure>
 <figure class="fig">
 <svg viewBox="0 0 520 192" role="img" aria-label="三层网络的时间线：不重算时先 forward 三层再 backward 三层；full recompute 时每层 backward 前先把这层 forward 重跑一遍，总时间从 6 份变成 8 份，多 33%"><rect x="0" y="4" width="22" height="16" rx="3" class="f1"/><text x="30" y="17" text-anchor="start">forward</text><rect x="102" y="4" width="22" height="16" rx="3" class="bwd"/><text x="132" y="17" text-anchor="start">重算的 forward</text><rect x="252" y="4" width="22" height="16" rx="3" class="f2"/><text x="282" y="17" text-anchor="start">backward</text><rect x="97" y="44" width="32" height="34" rx="3" class="f1"/><text x="113" y="66" text-anchor="middle" class="acc">F1</text><rect x="131" y="44" width="32" height="34" rx="3" class="f1"/><text x="147" y="66" text-anchor="middle" class="acc">F2</text><rect x="165" y="44" width="32" height="34" rx="3" class="f1"/><text x="181" y="66" text-anchor="middle" class="acc">F3</text><rect x="199" y="44" width="66" height="34" rx="3" class="f2"/><text x="232" y="66" text-anchor="middle" class="c2">B3</text><rect x="267" y="44" width="66" height="34" rx="3" class="f2"/><text x="300" y="66" text-anchor="middle" class="c2">B2</text><rect x="335" y="44" width="66" height="34" rx="3" class="f2"/><text x="368" y="66" text-anchor="middle" class="c2">B1</text><rect x="97" y="116" width="32" height="34" rx="3" class="f1"/><text x="113" y="138" text-anchor="middle" class="acc">F1</text><rect x="131" y="116" width="32" height="34" rx="3" class="f1"/><text x="147" y="138" text-anchor="middle" class="acc">F2</text><rect x="165" y="116" width="32" height="34" rx="3" class="f1"/><text x="181" y="138" text-anchor="middle" class="acc">F3</text><rect x="199" y="116" width="32" height="34" rx="3" class="bwd"/><text x="215" y="138" text-anchor="middle" class="acc">F3</text><rect x="233" y="116" width="66" height="34" rx="3" class="f2"/><text x="266" y="138" text-anchor="middle" class="c2">B3</text><rect x="301" y="116" width="32" height="34" rx="3" class="bwd"/><text x="317" y="138" text-anchor="middle" class="acc">F2</text><rect x="335" y="116" width="66" height="34" rx="3" class="f2"/><text x="368" y="138" text-anchor="middle" class="c2">B2</text><rect x="403" y="116" width="32" height="34" rx="3" class="bwd"/><text x="419" y="138" text-anchor="middle" class="acc">F1</text><rect x="437" y="116" width="66" height="34" rx="3" class="f2"/><text x="470" y="138" text-anchor="middle" class="c2">B1</text><text x="0" y="66" text-anchor="start" class="hd">不重算</text><text x="0" y="130" text-anchor="start" class="hd">full</text><text x="0" y="146" text-anchor="start" class="hd">recompute</text><text x="412" y="66" text-anchor="start" class="m">每层 2 + 4 = 6</text><path d="M402,40 V156" class="grid"/><text x="96" y="98" text-anchor="start" class="m">forward 存下每层所有中间结果</text><text x="96" y="170" text-anchor="start" class="m">forward 只存每层输入</text><path d="M404,158 V164 H502 V158" class="ln1"/><text x="504" y="182" text-anchor="end" class="acc">每层 2 + 4 + 2 = 8，多 33%</text></svg>
-<figcaption>图 2：用 3 层示意时间线，F 是 forward，B 是 backward，按 FLOPs 画长度（forward 2、backward 4）。不重算时，forward 存好所有中间结果，backward 直接用。full recompute 时 forward 只存每层输入，backward 走到哪一层，就先把这层的 forward 重跑一遍（虚线框），拿回中间结果再算 backward。多出来的正好是一次 forward：6 变 8，多 33%；实测慢 39%，见最后一个追问。</figcaption>
+<figcaption>图 2：3 层的时间线，按 FLOPs 画长度（forward 2、backward 4）。full recompute 时 backward 到哪一层就先重跑这层的 forward（虚线框），多出一次 forward，6 变 8，多 33%。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Activations saved for backward often dominate training memory, so instead of keeping them all we keep checkpoints, usually each layer's input, and rerun that layer's forward pass during backward to regenerate the rest. It trades compute for memory. Full recomputation keeps only 2sbh bytes per layer but costs one extra forward pass, so training goes from about 6ND to 8ND FLOPs, roughly 30 to 40 percent slower. Megatron's selective recomputation only recomputes the attention core, QKᵀ, softmax, dropout and attention over V, which holds most of the memory but few FLOPs: for GPT-3 it saves 70% of activation memory for about 2.7% more FLOPs.</p></div>
+<div class="answer"><p>Activations saved for backward often dominate training memory, so we keep only checkpoints, usually each layer's input, and rerun that layer's forward during backward, trading compute for memory. Full recomputation keeps only 2sbh bytes per layer but costs one extra forward pass, so training goes from about 6ND to 8ND FLOPs, roughly 30–40% slower. Megatron's selective recomputation redoes only the attention core, QKᵀ, softmax, dropout and attention over V, which holds most of the memory but few FLOPs: for GPT-3 it saves 70% of activation memory for about 2.7% more FLOPs.</p></div>
 
 <h2>关键公式</h2>
 <div class="deriv">
@@ -55,7 +55,7 @@
 </div>
 
 <h2 id="example">手算例子：GPT-3 175B</h2>
-<p>\(s = 2048\)、\(h = 12288\)、\(a = 96\)、\(b = 1\)、TP \(t = 8\) + SP，96 层（PP 第一个 stage 也要存满 \(L\) 层）：</p>
+<p>\(s = 2048\)、\(h = 12288\)、\(a = 96\)、\(b = 1\)、TP \(t = 8\) + SP，96 层：</p>
 <table>
   <thead><tr><th>方案</th><th>每层</th><th>96 层</th><th>额外计算</th></tr></thead>
   <tbody>
@@ -77,11 +77,11 @@
 <h2>追问</h2>
 <details>
   <summary>PyTorch 里怎么用？</summary>
-  <p><code>torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False)</code> 包住一个 Transformer block。forward 只留输入，backward 时重新调用 <code>block</code>。默认保存 RNG 状态，重算时 dropout 的 mask 一致。</p>
+  <p><code>torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False)</code> 包住一个 Transformer block。默认保存 RNG 状态，重算时 dropout 的 mask 一致。</p>
 </details>
 <details>
   <summary>和 FlashAttention 什么关系？</summary>
-  <p>FlashAttention 只存输出和 softmax 的统计量，backward 时从 Q、K、V 分块重算 attention matrix，本身就是一种 selective checkpointing。因为少读写 HBM，backward 反而更快。用了它，selective recompute 要省的那部分基本已经省掉了。</p>
+  <p><a href="flashattention.html">FlashAttention</a> 不存 attention matrix，backward 时分块重算，本身就是一种 selective checkpointing。用了它，selective recompute 要省的那部分基本已经省掉。</p>
 </details>
 <details>
   <summary>显存不够还有哪些办法？</summary>
@@ -89,7 +89,7 @@
 </details>
 <details>
   <summary>为什么 full recompute 实测慢 39%，不是 33%？</summary>
-  <p>33% 只算 FLOPs。论文的解释是，baseline 在 backward 里把 all-reduce 和 weight gradient 的计算 overlap 了，backward 变短，多出来的那次 forward 占比就超过 33%。</p>
+  <p>33% 只算 FLOPs。论文的解释是，baseline 在 backward 里把 all-reduce 和 weight gradient 的计算 overlap 了，backward 变短，多出来的 forward 占比就超过 33%。</p>
 </details>
 
 <p class="src"><b>来源</b><a href="https://arxiv.org/abs/1604.06174">Chen et al. 2016</a> §4.3（p.5）、§5.4（p.10）· <a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a> §3.5（p.6）· <a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022</a> §5（pp.8–10）、Table 2（p.9）、§6.2 Table 4（pp.10–11）、Appendix A（p.15）· <a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022, FlashAttention</a> §3.1（p.5）· <a href="https://docs.pytorch.org/docs/stable/checkpoint.html">PyTorch torch.utils.checkpoint</a></p>
