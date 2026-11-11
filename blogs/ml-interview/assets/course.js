@@ -44,7 +44,7 @@
     function link(l, text) { return el("a", { href: l[0] + ".html" }, text); }
 
     var bar = el("nav", { class: "sitebar", "aria-label": "课程导航" });
-    bar.appendChild(el("a", { href: "infra-course.html", class: "home" }, "← 课程目录"));
+    bar.appendChild(el("a", { href: "index.html#infra-course", class: "home" }, "← 课程目录"));
     bar.appendChild(el("span", { class: "where" }, "Training Infra 速成课 · 第 " + i + " 课 / 共 " + (LESSONS.length - 1) + " 课"));
     var side = el("span", { class: "step" });
     if (prev) side.appendChild(link(prev, "上一课"));
@@ -53,7 +53,7 @@
     main.insertBefore(bar, main.firstChild);
 
     var pager = el("nav", { class: "pager", "aria-label": "上一课和下一课" });
-    pager.appendChild(prev ? link(prev, "← 第 " + (i - 1) + " 课 " + prev[1]) : el("a", { href: "infra-course.html" }, "← 课程目录"));
+    pager.appendChild(prev ? link(prev, "← 第 " + (i - 1) + " 课 " + prev[1]) : el("a", { href: "index.html#infra-course" }, "← 课程目录"));
     pager.appendChild(next ? link(next, "第 " + (i + 1) + " 课 " + next[1] + " →") : el("a", { href: "index.html" }, "学完了：回到速查目录 →"));
     main.appendChild(pager);
 

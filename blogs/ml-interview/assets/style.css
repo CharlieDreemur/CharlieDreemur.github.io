@@ -192,12 +192,23 @@ a.tg:hover { border-color: currentColor; border-style: solid; }
 .fig .axis { fill: none; stroke: var(--fg); stroke-width: 1; }
 .fig .grid { fill: none; stroke: var(--rule); stroke-width: 1; }
 
-/* 目录页的专题入口 */
-.tracks { list-style: none; padding: 0; margin: 1.5rem 0 0; border-top: 1px solid var(--rule); }
-.tracks li { display: grid; gap: .1rem; margin: 0; padding: .8rem 0; border-bottom: 1px solid var(--rule); }
-.tracks a { font-size: 1.05rem; font-weight: 600; color: var(--fg); text-decoration: none; }
-.tracks a:hover { color: var(--accent); text-decoration: underline; }
-.tracks span { font-size: .92rem; color: var(--muted); }
+/* 目录页的专题：整段内容折叠在目录页里 */
+.track { padding: 0; margin: 0; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; }
+.track:first-of-type { border-top: 1px solid var(--rule); margin-top: 1.5rem; }
+.track > summary { position: relative; display: grid; gap: .1rem; padding: .8rem 2.2rem .8rem 0; list-style: none; }
+.track > summary::-webkit-details-marker { display: none; }
+.track > summary::after { content: ""; position: absolute; right: .4rem; top: 1.25rem; width: .5rem; height: .5rem; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); transition: transform .2s cubic-bezier(.16, 1, .3, 1); }
+.track[open] > summary::after { transform: translateY(.25rem) rotate(-135deg); }
+.track .tt { font-size: 1.05rem; font-weight: 600; }
+.track .td { font-size: .92rem; font-weight: 400; color: var(--muted); }
+.track > summary:hover .tt { color: var(--accent); }
+.track[open] { padding-bottom: 1.6rem; }
+.track p, .track li { font-size: 1rem; }
+.part-h { font-size: 1.05rem; margin: 1.8rem 0 .5rem; }
+h4 { font-size: .98rem; font-weight: 600; margin: 1.3rem 0 .4rem; }
+h4 .code { font-family: var(--mono); font-size: .8rem; font-weight: 400; color: var(--muted); margin-right: .55rem; }
+.track + .links { margin-top: .9rem; }
+@media (prefers-reduced-motion: reduce) { .track > summary::after { transition: none; } }
 
 /* 课程复习页（cpsc4880.html，由 tools/ml-速查/build_cpsc4880.py 生成）：一题一个可折叠的问答 */
 .part-toc { font-family: var(--ui); font-size: .88rem; margin: 1.2rem 0 0; }
@@ -263,7 +274,6 @@ tbody tr + tr td { border-top: 1px solid var(--rule); }
   a { color: inherit; text-decoration: none; }
 }
 
-.tracks + .links { margin-top: .9rem; }
 
 /* 公开版：不显示个人掌握情况 */
 .st { display: none !important; }
