@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 9 课</p>
 <h1>Megatron Core 代码地图与 RL 训推</h1>
 <p class="lead">第 8 课把 TP、PP、CP、EP、DP 拼成了 v7，概念已经齐了。还剩两个缺口：面试官会追问“这在 Megatron 里是怎么写的”；团队现在的一大块工作是 RL post-training，同一份 weight 要在训练和生成两种切法之间来回搬。这一课把前面每一版对到 <code>megatron/core/</code> 的文件上，带读一层 Transformer，再讲 RL 里训练端和 inference 端怎么同步 weight。</p>
 <p class="meta"><b>面试会这样问</b><q>How does Megatron Core set up its process groups?</q> · <q>Walk me through a transformer layer's forward pass under tensor parallelism.</q> · <q>In RL post-training, how do the trainer's weights get to the inference engine?</q></p>

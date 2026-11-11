@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 6 课</p>
 <h1>v5：Pipeline Parallel</h1>
 <p class="lead">v4 的 TP 每层要做 4 次同步 all-reduce，只能留在一台机器的 8 张卡里。模型再大，8 张卡放不下一份模型，就得跨机器切。这一课换个方向切：把 36 层分成几段，放到不同的机器上，机器之间只传段边界的 activation（PP）。代价是流水线会空转，叫 bubble。后半课讲怎么用 schedule 把它缩小。</p>
 <p class="meta"><b>面试会这样问</b><q>Where does the pipeline bubble come from, and how big is it?</q> · <q>Compare GPipe and 1F1B.</q> · <q>Why do we run pipeline parallelism across nodes but tensor parallelism within a node?</q></p>

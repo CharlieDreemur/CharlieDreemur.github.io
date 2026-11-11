@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 4 课</p>
 <h1>v2 → v3：DDP 到 ZeRO / FSDP</h1>
 <p class="lead">v1 在单卡上把能省的都省了，128 GB 的 model state 还是放不下。v2 用 DDP 把训练铺到 32 张卡上，快了约 32 倍，但每张卡仍要放一整份模型，128 GB 一点没少。v3 发现这 32 份里装的全是一模一样的副本，于是用 ZeRO / FSDP 把它们切开，每卡降到 35 GB、19.5 GB，最少 4 GB。你在 TikTok 用的 DeepSpeed 做的就是这件事。</p>
 <p class="meta"><b>面试会这样问</b><q>How does FSDP work?</q> · <q>What do ZeRO stages 1, 2 and 3 shard, and what does each cost in communication?</q> · <q>How does DDP overlap gradient communication with backward?</q></p>

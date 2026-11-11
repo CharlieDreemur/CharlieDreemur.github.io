@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 2 课</p>
 <h1>v1 单卡上的三招：BF16、activation checkpointing、FlashAttention</h1>
 <p class="lead">第 1 课的 v0 在一张 80 GB 的卡上全面超标：model state 128 GB，一条 8K 序列的 activation 约 430 GB，fp32 还算得慢。这一课是 v1：先不加卡，只用三招。BF16 让 matmul 跑上 Tensor Core；FlashAttention 和 activation checkpointing 把 activation 从 430 GB 压到 2.4 GB。代价很小，但 128 GB 的 model state 一点没少。</p>
 <p class="meta"><b>面试会这样问</b><q>Why do we train LLMs in BF16 rather than FP16?</q> · <q>You run out of GPU memory during training. What do you do?</q> · <q>How does FlashAttention save memory and time without reducing FLOPs?</q></p>

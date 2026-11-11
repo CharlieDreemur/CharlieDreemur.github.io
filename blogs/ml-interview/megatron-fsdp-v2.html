@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>Megatron-FSDP v2 是什么？<br>为什么 NVLink domain 内外可以用不同的 ZeRO 级别？</h1>
 <p class="meta"><b>英文问法</b><q>What is Megatron-FSDP v2, and which ZeRO levels can it shard to?</q> · <q>Why would you pick different sharding levels inside and across NVLink domains?</q> · <q>Why does it have its own optimizer instead of reusing the distributed optimizer?</q></p>
 <p class="meta"><b>考过</b><strong>推断，非面经</strong>。没有任何面经问过这道题 · 依据是团队自己的材料：core 0.20.0 release notes 的 Parallelism 一节、PR #5865 和 #6873 的描述、MFSDP design doc、roadmap #6812 · 这些功能在 0.20.0 标着 experimental，下面每条限制都写明是哪个版本的说法</p>

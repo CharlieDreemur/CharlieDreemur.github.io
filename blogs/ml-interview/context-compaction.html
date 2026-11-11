@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Agentic Infra</p>
 <h1>长任务的 context compaction：<br>什么时候压，压什么，对 cache 有什么影响？</h1>
 <p class="meta"><b>英文问法</b><q>How would you handle context limit exceeded in an LLM application?</q> · <q>When do you trigger compaction, and what do you keep?</q> · <q>Does summarizing the history hurt prompt cache hits?</q></p>
 <p class="meta"><b>考过</b>别家面经原题：科大讯飞 AI 应用一面（校招，面试 2026-09-15）「什么时候检测并触发压缩，大 Tool Result 的阈值是什么？」「摘要会影响 KV / Prefix Cache 命中吗，怎样降低影响？」（<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">牛客</a>）、蚂蚁 AI 应用方向技术面（校招，发帖 2026-11-08）「如果压缩把“不能修改生产配置”变成了“修改生产配置”，并写入长期记忆，怎么发现和避免？」（<a href="https://www.nowcoder.com/feed/main/detail/d9d6a1ea1adc41b4a44ca47b535e9994">牛客</a>）、字节 Agent 开发日常实习一面（发帖 2026-10-20，作者按回忆转述）「如果旧信息已经被摘要掉了，后面还要用怎么办」（<a href="https://www.nowcoder.com/feed/main/detail/0ee160a2d38f4b5daaf1965cf975a8f0">牛客</a>） · 英文侧：Mercor SWE 电面 2026-09 的快问快答 "How would you handle context limit exceeded in an LLM application?"（<a href="https://prachub.com/interview-experiences/mercor-software-engineer-interview-experience-applied-ai-tech-screen-with-an-async-refund-debugging-question-and-rapid-fire-llm-questions">PracHub</a>，站方编辑过的面经页） · 中文面经样本里有 24 帖问 context 和 memory 管理 · 没有 Unity 自己的面经原题</p>

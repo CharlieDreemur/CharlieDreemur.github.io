@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>MXFP8、NVFP4 训练做到哪一步了？<br>full-iteration CUDA Graph 为什么 dense 可以、MoE 难？</h1>
 <p class="meta"><b>英文问法</b><q>How far has low-precision training gone in Megatron, and which tensors stay in FP32?</q> · <q>Can the communication be quantized too?</q> · <q>Why can a dense model's whole training iteration go into one CUDA Graph, while MoE is hard?</q></p>
 <p class="meta"><b>考过</b>推断，非面经，没有一条面经问过这页的内容 · 依据是团队自己的材料：<a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.0">core 0.19.0</a> 和 <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0</a> 的 release notes、<a href="https://github.com/NVIDIA/Megatron-LM/pull/7075">PR #7075</a>（full-iteration CUDA Graph）· 多数功能还在变，下面每条都注明版本或 PR</p>

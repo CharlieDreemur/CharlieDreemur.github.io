@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>Generalized Tensor Parallelism（GTP）是什么？<br>它和 TP、ZeRO-3 差在哪，all-gather 怎么藏？</h1>
 <p class="meta"><b>英文问法</b><q>What is Generalized Tensor Parallelism in Megatron Core?</q> · <q>How does GTP_remat differ from TP, and from ZeRO-3 on the data-parallel axis?</q> · <q>How does GTP hide the weight all-gather behind compute, and what happens to the weight gradient?</q></p>
 <p class="meta"><b>考过</b><strong>推断，非面经</strong>。没有任何面经问过 GTP · 依据是团队自己的 GTP 文档（main 分支 2026-11 的版本，开头标着 experimental，要求 TransformerEngine ≥ 2.19）和 core 0.20.0 release notes · 下面的引文和限制都是这一版文档的说法</p>

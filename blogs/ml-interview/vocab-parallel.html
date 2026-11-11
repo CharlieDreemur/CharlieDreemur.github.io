@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>Vocab parallelism：embedding 和 LM head 怎么切？<br>cross-entropy 怎么算才不用 gather logits？</h1>
 <p class="meta"><b>英文问法</b><q>How do you shard a huge embedding table and the LM head?</q> · <q>Why split along the vocabulary, and where does communication happen?</q> · <q>How do you compute cross-entropy without gathering the full logits?</q></p>
 <p class="meta"><b>考过</b>Microsoft MAI infra onsite 2026（整轮围绕大 embedding 和 LM head 的 distributed 切分，一直追问"为什么这么切、通信在哪里发生"，Pass，<a href="https://www.1point3acres.com/bbs/thread-1189843-1-1.html">1p3a 1189843</a>）· 快手（"这个列划分并行是什么？这里没用到all-gather啊？"）</p>

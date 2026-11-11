@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · GPU Kernel</p>
 <h1>Nsight Systems 和 Nsight Compute 有什么区别？<br>怎么判断 kernel 是 memory bound 还是 compute bound？</h1>
 <p class="meta"><b>英文问法</b><q>What's the difference between Nsight Systems and Nsight Compute?</q> · <q>How do you tell whether a kernel is memory bound or compute bound?</q> · <q>An operator has an arithmetic intensity of 0.5 FLOP per byte. What limits it?</q></p>
 <p class="meta"><b>考过</b>都是别家面经原题：新紫光 算子工程师一面 2026-09-21「ncu 和 nsys 的区别和分别的作用」（<a href="https://www.nowcoder.com/feed/main/detail/3c301f1ae6594998aedb25dcd98b7a1b">牛客</a>）· 科大讯飞 推理工程部 AI Infra 一面 2026-10-26「推理时的瓶颈主要在哪？内存瓶颈和计算瓶颈分别怎么定位？」（<a href="https://www.nowcoder.com/discuss/944283905056665600">牛客</a>）· 华为 AI Infra / 大模型部署优化岗 社招一面 2026-09-08「如果一个算子的算术强度是 0.5 FLOP/Byte，它属于什么瓶颈？」（<a href="https://www.nowcoder.com/discuss/926970667176587264">牛客</a>）· 快手 AI Infra 一面 2026-09-28「算子优化常见两类瓶颈是什么」（营销号模板帖，可信度中等，<a href="https://www.nowcoder.com/discuss/943148275572527104">牛客</a>）· Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> 的 GPU kernel 层用 Nsight 做 profile，原话是要 "precise kernel traces (nsys/ncu) instead of torch.profiler's coarser summaries" · 没有 Unity 自己的面经原题</p>

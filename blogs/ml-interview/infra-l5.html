@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 5 课</p>
 <h1>v4：Tensor Parallel 与 Sequence Parallel</h1>
 <p class="lead">v3 的 ZeRO 把 model state 切到了 32 张卡上，但它切的只是“存”。算的时候每卡用的还是完整的 weight（ZeRO-3 要先 all-gather 回来），activation 也一点没切。模型到 70B 以上，这就不够了。这一课换一种切法：把每一层的矩阵乘法本身切成 t 份，t 张卡合算同一层（TP）；再把 TP 漏掉的那部分 activation 沿 sequence 切开（SP）。这是 Megatron 的核心，也是 NVIDIA 考过的原题。</p>
 <p class="meta"><b>面试会这样问</b><q>Explain column-parallel and row-parallel linear layers. What are the pros and cons?</q> · <q>How does Megatron split the MLP and attention, and how many all-reduces does a layer need?</q> · <q>Why do we keep tensor parallelism within a node?</q></p>

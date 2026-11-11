@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 7 课</p>
 <h1>v6：长序列和 MoE：Context Parallel 与 Expert Parallel</h1>
 <p class="lead">v5 用 TP + PP 把大模型放下了，但还有两件事没管。一是 sequence：视频很容易到几万 token，activation 跟着 s 涨，TP 最多只能切 8 份。二是参数：想要更多参数又不想多花 compute，就要用 MoE，而 expert 一多，每张卡都放一份就放不下了。这一课加两维：CP 沿 sequence 切，EP 把 expert 分到不同的卡上。</p>
 <p class="meta"><b>面试会这样问</b><q>Once the sequence is sharded, how do you compute full attention across GPUs?</q> · <q>Implement an MoE layer and show the dimensions.</q> · <q>How do dispatch and combine work under expert parallelism?</q></p>

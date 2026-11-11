@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>Training memory 由什么构成？怎么估？</h1>
 <p class="meta"><b>英文问法</b><q>What takes GPU memory during training?</q> · <q>How much memory does it take to train a 14B model with Adam?</q> · <q>Why does AdamW need 4× the parameter memory?</q> · <q>How many trainable parameters does LoRA add?</q></p>
 <p class="meta"><b>考过</b><strong>NVIDIA Senior MLE 电面 2025-10</strong>（全是计算题：SGD/Adam 各要多少 parameter、每层输出多大、LoRA/QLoRA 的 parameter count 和 initialization，Fail，<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）· NVIDIA DevTech NG 2026（MLP 的维度变化，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· 拼多多（"训练时占用显存的数据有哪些"）· 字节（"14B：FP16 权重大概多大；训练还要加哪些"）· 滴滴（"AdamW 优化器为什么会占用4倍模型参数量显存？"）· Anthropic（"Estimate VRAM and Compare Model Parallelism"，PracHub）</p>

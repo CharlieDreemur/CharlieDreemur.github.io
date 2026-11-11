@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">Training Infra 速成课 · 第 3 课</p>
 <h1>通信 101：GPU 之间怎么传数据</h1>
 <p class="lead">v1 把单卡能省的都省了，可 8B 模型光 model state 就要 128 GB，一张 80 GB 的卡还是放不下，只能上多卡。卡一多，就多出一笔新开销：卡与卡之间传数据（communication）。这一课先学会这门“语言”：几种标准传法（collective）各做什么、每张卡要发多少、在 NVLink 和 InfiniBand 上各要多久。下一课的 DDP 和 ZeRO 全靠它。</p>
 <p class="meta"><b>面试会这样问</b><q>How much data does each GPU send in a ring all-reduce?</q> · <q>What are all-reduce, reduce-scatter, all-gather and all-to-all, and where is each used?</q> · <q>What is RDMA, and what does GPUDirect RDMA skip?</q></p>

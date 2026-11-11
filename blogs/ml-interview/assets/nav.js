@@ -460,6 +460,7 @@
       sum.appendChild(el("span", { class: "toc-count" }, "显示 " + shown.length + " / " + flat.length + " 个知识点　"));
       ["对", "过了一遍", "没过", "未做"].forEach(function (s) { sum.appendChild(el("span", { class: "st " + ST[s] }, s + " " + n[s])); });
       listBox.textContent = "";
+      listBox.setAttribute("data-sort", f.sort);
       var sections = [];
       if (f.sort === "k") {
         CATS.concat(["未分类"]).forEach(function (k) {
@@ -475,7 +476,11 @@
         sections.push([null, shown]);
       }
       sections.forEach(function (s) {
-        if (s[0]) listBox.appendChild(el("h2", {}, s[0] + "（" + s[1].length + "）"));
+        if (s[0]) {
+          var h = el("h2", { class: "sec" }, s[0]);
+          h.appendChild(el("span", { class: "n" }, String(s[1].length)));
+          listBox.appendChild(h);
+        }
         var ol = el("ol", { class: "toc kp-list" });
         s[1].forEach(function (p) { ol.appendChild(row(p)); });
         listBox.appendChild(ol);

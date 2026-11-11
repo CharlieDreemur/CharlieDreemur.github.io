@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Agentic Infra</p>
 <h1>Sub-agent 和 multi-agent：<br>什么时候拆，context 怎么传？</h1>
 <p class="meta"><b>英文问法</b><q>When would you split a task across sub-agents instead of using one agent?</q> · <q>A sub-agent starts with an empty context. What goes into its brief?</q> · <q>Do more agents make the system faster or slower?</q></p>
 <p class="meta"><b>考过</b>别家面经原题：阿里边缘 BU 一面（校招，发帖 2026-09-03）「如何保证传给子 Agent 的上下文足够完整，不会遗漏关键信息？」「引入多层 Agent 和多个子 Agent 后，执行效率是否会变慢？」（<a href="https://www.nowcoder.com/feed/main/detail/bdebbb6088b6405e9eb2bd2c345acb6e">牛客</a>）、蔚来软件开发二面（发帖 2026-09-17）「子Agent返回结果全部正确，但主Agent汇总时出现幻觉，原因是什么，有什么优化方案」（<a href="https://www.nowcoder.com/feed/main/detail/9f92610c99b34894b35be91086df05a2">牛客</a>） · Unity 自己的材料：FlashVector 每个 serving layer 有自己的 layer agent，§6 提到 "parallel agent workflows"，没写并行多少个、怎么协调 · 中文面经样本里有 15 帖问 sub-agent 和 multi-agent · 没有 Unity 自己的面经原题</p>

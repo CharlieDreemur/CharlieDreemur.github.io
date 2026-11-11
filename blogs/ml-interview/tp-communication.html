@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>TP 的 communication：一层几次？每次多少数据？<br>TP 越大越快吗？</h1>
 <p class="meta"><b>英文问法</b><q>How many all-reduces does tensor parallelism need per layer?</q> · <q>How much data does each one move?</q> · <q>Is a larger TP degree always faster?</q> · <q>How would you optimize the TP all-reduce?</q></p>
 <p class="meta"><b>考过</b>阿里（"tp的allreduce的次数"）· 华为机考（"张量并行度为 2 时要做一次 All-Reduce，待同步张量大小为 80MB，网络带宽为 40GB/s…"）· 腾讯混元（"TP 并行规模越大训练速度一定越快吗？"）· 快手（"有什么思路优化中间的allreduce吗？"）</p>

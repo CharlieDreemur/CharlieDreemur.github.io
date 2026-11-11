@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Training Infra</p>
 <h1>all-reduce 每张卡要发多少数据？<br>ring 和 tree 有什么区别？</h1>
 <p class="meta"><b>英文问法</b><q>How much data does each GPU send in a ring all-reduce?</q> · <q>Ring vs tree all-reduce: when is each better?</q> · <q>Implement ring all-reduce.</q></p>
 <p class="meta"><b>考过</b>面经：国内：阿里淘天（"有4块卡，数据被切成了4份…设一次通信量是x，如果要实现一次All Reduce操作，需要多少通信量？"）、阿里（"NCCL中Ring AllReduce、Tree AllReduce的工作原理"）；其他公司：Anthropic Perf/Infra 技术电面（10 个 node、1000 个元素求 distributed mode 和 median，讨论用哪种 collective、tree 还是 ring，<a href="https://www.1point3acres.com/bbs/thread-1188498-1-1.html">1p3a 1188498</a>）</p>

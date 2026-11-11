@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Agentic Infra</p>
 <h1>Tool 调用失败：<br>哪些重试，谁判断，任务怎么恢复？</h1>
 <p class="meta"><b>英文问法</b><q>A tool call fails. Which errors do you retry, and who decides: your code or the model?</q> · <q>How do you stop an agent from calling the same failing tool forever?</q> · <q>The agent service crashes mid-task. How does it resume?</q></p>
 <p class="meta"><b>考过</b>别家面经原题：作业帮 Golang 实习一二面（发帖 2026-10-22）「怎么判断哪些错误应该重试、哪些不应该重试？是由程序判断，还是完全交给模型？」「任务失败后，有没有保存执行上下文？如何记录失败在哪一步，以及当时的状态？」（<a href="https://www.nowcoder.com/discuss/942819943425245184">牛客</a>）、虾皮 Data Infra 实习二面（面试 2026-06-15）「防死循环机制怎么做的？」（<a href="https://www.nowcoder.com/discuss/896770835296370688">牛客</a>）和一面（面试 2026-05-26）「Agent服务突然挂掉了怎么办？」（<a href="https://www.nowcoder.com/discuss/893137787367477248">牛客</a>）、字节 Agent 开发日常实习一面（发帖 2026-10-20，作者按回忆转述）「Task DAG 给了一个场景：ABCDE 里 BCD 依赖 A 并行跑，E 依赖 BCD，如果 D 崩了有没有恢复机制。」（<a href="https://www.nowcoder.com/feed/main/detail/0ee160a2d38f4b5daaf1965cf975a8f0">牛客</a>） · 英文侧：Qualified Health SWE onsite 2026-09，追问上游 LLM API 返回 429 时怎么做 backoff 和 backpressure，以及长任务怎么 "design fault tolerance and state checkpoints to avoid wasting large amounts of token charges"（<a href="https://prachub.com/interview-experiences/qualified-health-software-engineer-interview-experience-a-dismissive-interviewer-and-workflow-system-design">PracHub</a>，站方编辑过的面经页，其余是转述） · 中文面经样本里有 15 帖问可靠性 · 没有 Unity 自己的面经原题</p>

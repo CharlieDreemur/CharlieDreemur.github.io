@@ -11,7 +11,6 @@
 <body>
 <main>
 
-<p class="kicker">面试速查 · Agentic Infra</p>
 <h1>怎么安全地跑 agent 生成的代码？<br>verifier 为什么要放在 sandbox 外面？</h1>
 <p class="meta"><b>英文问法</b><q>How do you safely run code that an agent wrote?</q> · <q>What is gVisor? How is a microVM different from a container?</q> · <q>Why must the verifier live outside the sandbox?</q></p>
 <p class="meta"><b>考过</b>Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> Figure 2 的图中文字 "fixed verifier the agent cannot edit · all candidates run sandboxed"，这句只出现在论文的图里，正文没有展开 · JD：NVIDIA Agentic AI Kernel Generation "integrate agents with compilers, profilers, execution sandboxes, and runtimes"（<a href="https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Product-Manager--AI-Platform-SW---Agentic-AI-Kernel-Generation_JR2016992">JR2016992</a>）、Etched "execution environments where agents can verify their own work"（<a href="https://jobs.ashbyhq.com/etched/885d8a6d-b1ce-4feb-89f5-f6ac9bef8ca7">Ashby</a>） · 别家面经原题：科大讯飞 AI 应用一面（校招，面试 2026-09-15）「Runtime 的沙箱与隔离机制如何做，gVisor 是什么？」「microVM 是什么，与普通 VM、Docker 的区别以及隔离强度如何理解？」（<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">牛客</a>）、字节后端（Agent 方向）实习一面（发帖 2026-04-08）「如果要实现一个代码执行沙箱，你从后端角度如何限制 CPU、内存和网络访问？」（<a href="https://www.nowcoder.com/feed/main/detail/88ddbad36a8845f6916ed4f4605d4394">牛客</a>） · 中文面经样本里有 11 帖问到 sandbox · 没有 Unity 自己的面经原题</p>
