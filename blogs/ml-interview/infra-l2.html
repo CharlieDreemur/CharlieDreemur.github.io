@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课 · 单卡三招</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 2 课</p>
+<h1>v1 单卡上的三招：BF16、activation checkpointing、FlashAttention</h1>
+<p class="lead">第 1 课的 v0 在一张 80 GB 的卡上全面超标：model state 128 GB，一条 8K 序列的 activation 约 430 GB，fp32 还算得慢。这一课是 v1：先不加卡，只用三招。BF16 让 matmul 跑上 Tensor Core；FlashAttention 和 activation checkpointing 把 activation 从 430 GB 压到 2.4 GB。代价很小，但 128 GB 的 model state 一点没少。</p>
+<p class="meta"><b>面试会这样问</b><q>Why do we train LLMs in BF16 rather than FP16?</q> · <q>You run out of GPU memory during training. What do you do?</q> · <q>How does FlashAttention save memory and time without reducing FLOPs?</q></p>
+<p class="meta"><b>考过</b>讯飞（"为什么大模型训练用BF16？"）· 牛客（"是否了解混合精度，FP16 和 BF16 的区别？"）· 字节（"oom怎么办，activation checkpointing原理"）· 牛客（"解决显存不够的方法有哪些"）· 字节（"讲讲 Flash Attention 的原理，矩阵 tiling 的过程说细一点，最好把 shape 也讲清楚。"）</p>
+
+<h2>第一招 BF16：先看一个浮点数怎么存</h2>
+<p>浮点数就是二进制的科学计数法，比如 \(1.5 \times 2^{3}\)。它分三段：</p>
+<ul>
+  <li><b>sign</b>：1 bit，管正负</li>
+  <li><b>exponent</b>：2 的几次方。bit 越多，能表示的数越大也越小，这叫 <b>range</b>，像尺子有多长</li>
+  <li><b>mantissa</b>：1.5 里小数点后那部分。bit 越多，相邻两个数挨得越近，这叫 <b>precision</b>，像尺子上的刻度有多密</li>
+</ul>
+<table>
+  <thead><tr><th>格式</th><th>sign / exponent / mantissa</th><th>最大值</th><th>1 附近相邻两数的间距</th><th>一句话</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">FP32</td><td>1 / 8 / 23</td><td class="nw">3.4e38</td><td class="nw">\(2^{-23}\) ≈ 1.2e-7</td><td>尺子长、刻度密，但每个数 4 bytes</td></tr>
+    <tr><td class="nw">FP16</td><td>1 / 5 / 10</td><td class="nw">65504</td><td class="nw">\(2^{-10}\) ≈ 0.001</td><td>刻度够密，尺子太短：1e-8 存进去变 0，70000 变 inf</td></tr>
+    <tr><td class="nw">BF16</td><td>1 / 8 / 7</td><td class="nw">3.4e38</td><td class="nw">\(2^{-7}\) ≈ 0.008</td><td>尺子和 FP32 一样长，刻度粗</td></tr>
+  </tbody>
+</table>
+<p><b>为什么大模型都选 BF16</b>：</p>
+<ul>
+  <li>和 FP16 一样只占 2 bytes，都能跑满 Tensor Core：H100 上 BF16 是 989 TFLOPS，纯 FP32 只有 67 TFLOPS，差约 15 倍</li>
+  <li>exponent 和 FP32 一样是 8 bit，range 一样大，很小的 gradient 也不会变成 0，所以<b>不需要 loss scaling</b></li>
+  <li>代价是刻度粗（mantissa 只有 7 bit），靠下面的 fp32 master weight 和 fp32 accumulation 补回来</li>
+</ul>
+
+<h2>FP16 为什么要 loss scaling</h2>
+<ul>
+  <li>gradient 常常很小，比如 1e-8。FP16 存不下这么小的数，直接变成 0（underflow），这个 parameter 这一步就白训了</li>
+  <li>办法：backward 之前把 loss 乘一个大数 S，比如 \(2^{16}\) = 65536。chain rule 让所有 gradient 一起放大 S 倍，1e-8 变成 6.6e-4，FP16 存得下了</li>
+  <li>optimizer 更新之前，把 gradient 转成 fp32 再除以 S，变回 1e-8</li>
+  <li>像录音时先把太小的声音放大，播放时再调回来。S 太大会超过 65504 变成 inf，所以实际用 dynamic 的：出现 inf 就跳过这一步、S 减半</li>
+  <li>BF16 的 range 和 FP32 一样，这一套都省了</li>
+</ul>
+
+<h2>Mixed precision 的配方</h2>
+<p>“mixed”的意思是，怕误差的地方用 fp32，其余都用 bf16。</p>
+<ol>
+  <li><b>fp32 master weight</b> 是“正本”，每一步复制出一份 bf16 副本</li>
+  <li>forward、backward 的 matmul 用 <b>bf16 计算</b>：输入是 bf16，Tensor Core 内部用 <b>fp32 accumulation</b>（累加）。softmax、LayerNorm 这类要求和的操作也用 fp32</li>
+  <li>得到 bf16 的 gradient，转成 fp32，更新 fp32 master weight</li>
+</ol>
+<p>两处 fp32 防的是同一件事：大数加小数，刻度太粗，小数就被吃掉。</p>
+<ul>
+  <li><b>master weight</b>：w = 1，这一步的 update 是 1e-4。BF16 在 1 附近的刻度是 0.008，1 + 0.0001 舍入后还是 1，update 丢了；fp32 的刻度是 1e-7，留得住</li>
+  <li><b>accumulation</b>：h = 4096 的一次 dot product 要把 4096 个乘积加起来。和越加越大，后面的小项在 bf16 里同样会被吃掉</li>
+</ul>
+<p><b>注意：mixed precision 不减 model state。</b>第 1 课的表里，fp32 训练每个 parameter 16 bytes，mixed precision 是 2 + 2 + 4 + 4 + 4，还是 16，8B 仍是 128 GB。它省的是另外两样：</p>
+<ul>
+  <li><b>activation</b>：每个数从 4 bytes 变 2 bytes。fp32 存约 860 GB，bf16 约 430 GB（第 1 课的数就是按 16-bit 算的）</li>
+  <li><b>时间</b>：matmul 跑上 Tensor Core；memory-bound 的算子要搬的 bytes 减半</li>
+</ul>
+
+<h2>第二招 FlashAttention：不把 s × s 写回 HBM</h2>
+<p>430 GB 里 90% 是 attention 的 s × s。标准 attention 每个 head 先算 score \(S = QK^\top\)，形状是 s × s：</p>
+<ul>
+  <li>s = 8192 时是 8192² ≈ 6700 万个数，bf16 下每个 head 134 MB，32 个 head 就是 4.3 GB，这还只是一层的 score。加上 softmax 的输出和 dropout，每层约 10.7 GB</li>
+  <li>它还慢：S 写回 HBM，读出来做 softmax，结果再写回，再读出来乘 V。softmax 本身计算很少，时间全花在搬运上（第 0 课的 memory-bound）</li>
+</ul>
+<p>FlashAttention 的做法：</p>
+<ul>
+  <li><b>tiling</b>：把 Q、K、V 切成小块，搬到案板（SRAM）上。每次只算一小块 score，乘上 V 累加进输出，然后这块 score 就扔掉。s × s 从头到尾不写回 HBM，只存输出和每行的 softmax 统计量</li>
+  <li><b>online softmax</b>：softmax 要整行的最大值和总和，可一次只看得到一块。于是边看边记“目前的最大值 m”和“目前的总和”；新来的一块让 m 变大，就把之前的总和和输出都乘上 \(e^{m_\text{old} - m_\text{new}}\) 校正一下。全部看完，结果和一次算整行完全一样，是精确的，不是近似。像边收卷子边算平均分，卷子不用留着</li>
+  <li><b>backward</b>：不存 score，用 Q、K、V 分块重算。FLOPs 略多，但读写 HBM 少得多，所以反而更快</li>
+  <li><b>省多少</b>：去掉 \(5as/h\) 那项，每层 11.9 → 1.14 GB，36 层 430 → 41 GB</li>
+</ul>
+
+<h2>第三招 activation checkpointing：只存每层的输入</h2>
+<ul>
+  <li><b>思路</b>：像打游戏只在每关开头存档。forward 时每层只留输入（checkpoint），其余中间结果用完就扔。backward 走到这一层时，从存档把这一层的 forward 重跑一遍，拿回中间结果，用完再扔</li>
+  <li><b>省多少</b>：每层输入是 [b, s, h]，2sbh = 2 × 8192 × 4096 bytes ≈ 67 MB，36 层 ≈ 2.4 GB。backward 时临时重建一层的 1.14 GB，峰值约 3.6 GB。也就是 41 → 2.4 GB</li>
+  <li><b>代价</b>：多跑一次 forward，FLOPs 从 2 + 4 = 6 变成 2 + 4 + 2 = 8，多约 1/3。MFU 不算重算的 FLOPs，所以开了以后 MFU 会降</li>
+  <li><b>Megatron 的 selective recompute</b>：只重算 attention 里 \(QK^\top\)、softmax、dropout、乘 V 这几步。它们占 memory 的大头（就是 \(5as/h\) 那项），FLOPs 却很少：GPT-3 上省 70% 的 activation，只多约 2.7% 的 FLOPs</li>
+  <li>FlashAttention 本来就不存这部分，所以开了 FlashAttention 以后 selective 能省的不多，要再往下压就靠 full recompute</li>
+</ul>
+<p>把例子里的 activation 串起来看：fp32 约 860 GB → BF16 约 430 GB → 加 FlashAttention 约 41 GB → 加 activation checkpointing 约 2.4 GB，小了两个多数量级。</p>
+
+<h2>OOM 工具箱：按代价从小到大</h2>
+<table>
+  <thead><tr><th>办法</th><th>省什么</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr><td>BF16 mixed precision</td><td>activation 减半，还更快</td><td>几乎没有</td></tr>
+    <tr><td>FlashAttention</td><td>attention 的 s × s：430 → 41 GB</td><td>没有，还更快</td></tr>
+    <tr><td>小 micro-batch + gradient accumulation</td><td>activation 随 b 线性下降</td><td>matmul 变小，GPU 吃不饱</td></tr>
+    <tr><td>activation checkpointing</td><td>41 → 2.4 GB</td><td>多约 1/3 compute</td></tr>
+    <tr><td>ZeRO / FSDP、TP、PP、CP（第 4–7 课）</td><td>把 model state 和 activation 切到多张卡</td><td>communication</td></tr>
+    <tr><td>CPU offload</td><td>把 optimizer state 放到 CPU memory</td><td>走 PCIe，很慢</td></tr>
+  </tbody>
+</table>
+<p>原则：先用不掉速的，再花 compute，最后花 communication。</p>
+<p class="you"><b>去查一下</b>你在 TikTok 用的 DeepSpeed + HF 里，这三招各是一个开关：DeepSpeed config 里的 <code>"bf16": {"enabled": true}</code>；HF 的 <code>gradient_checkpointing=True</code>（或 <code>model.gradient_checkpointing_enable()</code>）；<code>from_pretrained(..., attn_implementation="flash_attention_2")</code>。翻一下当时的 config 和启动脚本，看开了哪几个，sequence length 设的多少。如果 attention 写的是 <code>"sdpa"</code>，PyTorch 也可能在内部选用 FlashAttention 的 kernel。面试官很可能追问：“Why did you turn on gradient checkpointing, and what did it cost?”</p>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>Before adding GPUs, use three tricks. BF16 mixed precision runs matmuls in BF16 on Tensor Cores, with FP32 accumulation and FP32 master weights. BF16 keeps FP32's eight exponent bits, so unlike FP16 it needs no loss scaling. It halves activations and speeds things up, but model state stays at 16 bytes per parameter. FlashAttention computes attention tile by tile in SRAM with an online softmax, so the s-by-s scores never reach HBM: for one 8K sequence on an 8B model, activations drop from about 430 to 41 GB. Activation checkpointing keeps only each layer's input and recomputes the rest in backward: 2.4 GB, for about a third more compute.</p></div>
+
+<h2>自测</h2>
+<details><summary>为什么大模型训练用 BF16，不用 FP16？</summary><p>BF16 有 8 bit exponent，range 和 FP32 一样。小 gradient 不会 underflow，大数也不会超过 65504，不用 loss scaling。代价是 mantissa 只有 7 bit，靠 fp32 master weight 和 fp32 accumulation 补回来。</p></details>
+<details><summary>开了 BF16 mixed precision，8B 模型的 model state 是多少？</summary><p>还是 128 GB：bf16 parameter 2 + bf16 gradient 2 + fp32 master weight 4 + m 4 + v 4 = 16 bytes。省下的是 activation（减半）和时间。</p></details>
+<details><summary>FlashAttention 没有减少 FLOPs，为什么还更快？</summary><p>attention 是 memory-bound。标准实现要把 s × s 的矩阵在 HBM 里写、读好几遍。FlashAttention 分块在 SRAM 里算完，不写 s × s。论文里（A100、GPT-2 medium）HBM 读写从 40.3 GB 降到 4.4 GB，forward + backward 从 41.7 ms 降到 7.3 ms。</p></details>
+<details><summary>full recompute 和 selective recompute 有什么区别？开了 FlashAttention 还要 selective 吗？</summary><p>full：每层只存输入（2sbh），整层重跑 forward，多约 1/3 compute。selective：只重算 attention 里 s × s 的那几步，省大部分 memory，FLOPs 只多几个百分点。FlashAttention 已经不存 s × s，selective 没剩多少可省。要继续压就用 full（41 → 2.4 GB）。</p></details>
+<details><summary>显存不够有哪些办法？按代价排。</summary><p>不掉速的：BF16、FlashAttention → 花 compute 的：更小的 micro-batch 加 gradient accumulation、activation checkpointing → 花通信的：ZeRO/FSDP、TP/PP/CP、CPU offload。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="mixed-precision.html">6.15 mixed precision</a>（dynamic loss scaling、FP8）· <a href="activation-recompute.html">6.14 activation recompute</a>（\(\sqrt n\) checkpointing、selective 的数）· <a href="flashattention.html">6.25 FlashAttention</a>（online softmax 公式、shape、NumPy 代码）· <a href="gradient-accumulation.html">6.20 gradient accumulation</a></p>
+
+<div class="next"><b>下一课</b>三招之后 activation 只剩 2.4 GB，可 model state 还是 128 GB，一张 80 GB 的卡依旧放不下。只能上多卡，而多卡之间要传数据。第 3 课先讲 GPU 之间怎么通信：all-reduce 等五个 collective。</div>
+
+</main>
+</body>
+</html>

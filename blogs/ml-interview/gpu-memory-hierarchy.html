@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Memory Hierarchy 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>GPU memory hierarchy 是怎样的？<br>一个 block 最多多少 thread？</h1>
+<p class="meta"><b>英文问法</b><q>Walk me through the GPU memory hierarchy.</q> · <q>How is shared memory (SRAM) different from HBM?</q> · <q>What's the maximum number of threads per block?</q> · <q>What is occupancy?</q></p>
+<p class="meta"><b>考过</b>面经：NVIDIA DevTech NG 2026（"GPU 内存架构 SRM HBM区别"、"最高多少thread"，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）；国内：NVIDIA 中国 AI Developer 一面（"GPU上的存储, global memory, local memory, shared memory, register的大小, 带宽, 访存延迟大概是在什么级别"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>SM 与 grid / block / warp</dt>
+  <dd>GPU 由很多 SM（Streaming Multiprocessor）组成。kernel 启动成一个 grid，grid 拆成 block，每个 block 整个放在一个 SM 上跑。block 里每 32 个 thread 是一个 warp，同时执行同一条指令。像工厂有很多车间（SM），订单拆成工单（block），一张工单只交给一个车间，车间里 32 人一班（warp）同步干活。warp 和 SIMT 见 <a href="gpu-numpy.html">GPU vs CPU</a>。</dd>
+  <dt>Register</dt>
+  <dd>每个 thread 私有，在 SM 上，最快。访问通常不加额外 cycle。由 compiler 分配，用太多就 spill 到 local memory。<span class="eg">例：每个 SM 64K 个 32-bit register（256 KB），每个 thread 最多 255 个。</span></dd>
+  <dt>Shared memory 与 L1（SRAM）</dt>
+  <dd>每个 SM 上有一块 SRAM（unified data cache），一部分划给 shared memory，剩下当 L1 cache。shared memory 是程序员自己管的 scratchpad，同一个 block 的 thread 共享，像车间里的工作台。<span class="eg">例：H100 每 SM 共 256 KB，其中 shared memory 最多 228 KB，一个 block 最多用 227 KB。</span></dd>
+  <dt>L2 与 HBM（global memory）</dt>
+  <dd>L2 在芯片上、所有 SM 共享；HBM 是片外显存，所有 thread 和 host 都能访问，大但远，像城外的仓库。local memory 名字叫 local，其实也在 HBM 上。<span class="eg">例：H100 的 L2 50 MB；HBM 80 GB、3.35 TB/s（H100 SXM）。</span></dd>
+  <dt>Occupancy</dt>
+  <dd>SM 上活跃的 warp 数 ÷ 最多能放的 warp 数。warp 越多，一个在等内存时就越容易换另一个上来算，latency 就藏住了。<span class="eg">例：每 block 768 thread，一个 SM 最多 2048 thread → 只放得下 2 个 block → 1536/2048 = 75%。</span></dd>
+</dl>
+
+<h2 id="figs">看图：H100 的存储一层套一层</h2>
+<figure class="fig">
+<svg viewBox="0 0 520 392" role="img" aria-label="H100 的存储层级：每个 SM 上有 register 和 256 KB 的 SRAM（shared memory 加 L1），所有 SM 共享 50 MB 的 L2，芯片外是 80 GB 的 HBM"><defs><marker id="gm-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><rect x="10" y="8" width="500" height="306" rx="10" class="stale"/><text x="24" y="30" text-anchor="start" class="hd">GPU 芯片（片上）</text><rect x="24" y="42" width="338" height="196" rx="6" class="box"/><text x="38" y="63" text-anchor="start" class="hd">SM 0</text><text x="350" y="63" text-anchor="end" class="m">≤ 2048 thread、≤ 32 block 驻留</text><rect x="36" y="74" width="314" height="44" rx="6" class="f1"/><text x="193" y="92" text-anchor="middle">register：每个 thread 私有</text><text x="193" y="109" text-anchor="middle" class="m">64K × 32-bit（256 KB）/ SM，≈ 0 额外 cycle</text><rect x="36" y="128" width="314" height="100" rx="6" class="hot"/><text x="48" y="147" text-anchor="start">SRAM：256 KB / SM，两种用法</text><rect x="46" y="156" width="144" height="62" rx="6" class="f1"/><text x="118" y="175" text-anchor="middle" class="hd">shared memory</text><text x="118" y="192" text-anchor="middle" class="m">≤ 228 KB，同一 block</text><text x="118" y="208" text-anchor="middle" class="m">≈ 29 cycle</text><rect x="196" y="156" width="144" height="62" rx="6" class="f1"/><text x="268" y="175" text-anchor="middle" class="hd">L1 cache</text><text x="268" y="192" text-anchor="middle" class="m">其余部分，同一 SM</text><text x="268" y="208" text-anchor="middle" class="m">≈ 41 cycle</text><rect x="372" y="42" width="58" height="196" rx="6" class="box"/><text x="401" y="145" text-anchor="middle">SM 1</text><rect x="440" y="42" width="58" height="196" rx="6" class="box"/><text x="469" y="145" text-anchor="middle">…</text><line x1="193" y1="238" x2="193" y2="258" class="ln"/><line x1="401" y1="238" x2="401" y2="258" class="ln"/><line x1="469" y1="238" x2="469" y2="258" class="ln"/><rect x="24" y="258" width="474" height="44" rx="6" class="box"/><text x="261" y="277" text-anchor="middle">L2 cache：50 MB，所有 SM 共享</text><text x="261" y="294" text-anchor="middle" class="m">≈ 263 cycle</text><path d="M261,304 V334" class="ln" marker-end="url(#gm-ah)" marker-start="url(#gm-ah)"/><text x="270" y="324" text-anchor="start" class="m">出了芯片</text><rect x="10" y="336" width="500" height="48" rx="6" class="f2"/><text x="260" y="356" text-anchor="middle" class="c2">HBM（global、local memory）：80 GB，3.35 TB/s</text><text x="260" y="374" text-anchor="middle" class="m">片外，所有 thread 和 host 都能访问，≈ 479 cycle</text></svg>
+<figcaption>图 1：H100 从里到外的存储。橙红色的都在 SM 上（register、shared memory、L1），蓝色的 HBM 在芯片外。每个 SM 有自己的 register 和一块 256 KB 的 SRAM，这块 SRAM 一部分划给 shared memory（程序员自己管），剩下当 L1；所有 SM 共用一个 50 MB 的 L2；再往外才是 80 GB 的 HBM（cycle 数来自 H800 实测）。一个 block 整个放在一个 SM 上，所以 block 里的 thread 能共用这块 shared memory。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 520 268" role="img" aria-label="各层访问 latency：register 约 0，shared memory 约 29，L1 约 41，L2 约 263，HBM 约 479 个 cycle"><line x1="132" y1="28" x2="132" y2="224" class="grid"/><text x="132" y="240" text-anchor="middle" class="m">0</text><line x1="200.9" y1="28" x2="200.9" y2="224" class="grid"/><text x="200.9" y="240" text-anchor="middle" class="m">100</text><line x1="269.8" y1="28" x2="269.8" y2="224" class="grid"/><text x="269.8" y="240" text-anchor="middle" class="m">200</text><line x1="338.7" y1="28" x2="338.7" y2="224" class="grid"/><text x="338.7" y="240" text-anchor="middle" class="m">300</text><line x1="407.6" y1="28" x2="407.6" y2="224" class="grid"/><text x="407.6" y="240" text-anchor="middle" class="m">400</text><text x="297.3" y="258" text-anchor="middle" class="m">latency（cycles，H800 实测）</text><text x="124" y="44" text-anchor="end">register</text><text x="124" y="59" text-anchor="end" class="m">256 KB / SM</text><rect x="132" y="35" width="2" height="22" rx="3" class="f1"/><text x="140" y="51" text-anchor="start" class="acc">≈ 0</text><text x="124" y="84" text-anchor="end">shared memory</text><text x="124" y="99" text-anchor="end" class="m">≤ 228 KB / SM</text><rect x="132" y="75" width="20" height="22" rx="3" class="f1"/><text x="158" y="91" text-anchor="start" class="acc">≈ 29</text><text x="124" y="124" text-anchor="end">L1 cache</text><text x="124" y="139" text-anchor="end" class="m">256 KB 减 shared</text><rect x="132" y="115" width="28.2" height="22" rx="3" class="f1"/><text x="166.2" y="131" text-anchor="start" class="acc">≈ 41</text><text x="124" y="164" text-anchor="end">L2 cache</text><text x="124" y="179" text-anchor="end" class="m">50 MB</text><rect x="132" y="155" width="181.2" height="22" rx="3" class="box"/><text x="319.2" y="171" text-anchor="start">≈ 263</text><text x="124" y="204" text-anchor="end">HBM（global）</text><text x="124" y="219" text-anchor="end" class="m">80 GB</text><rect x="132" y="195" width="330" height="22" rx="3" class="f2"/><text x="468" y="211" text-anchor="start" class="c2">≈ 479</text><line x1="132" y1="28" x2="132" y2="224" class="axis"/></svg>
+<figcaption>图 2：同样的颜色，横轴是访问一次要等多少个 cycle（H800 上的 microbenchmark）。SM 上的几层都是几十 cycle 以内，L2 跳到约 263，HBM 约 479，差了一个数量级。左边灰字是容量：越远越大，也越慢，所以快的 kernel 要把数据搬进 shared memory 和 register 里反复用。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>From fastest to slowest: per-thread registers, 64K per SM. Each SM has 256 KB of on-chip SRAM on H100, split between L1 and shared memory, a programmer-managed scratchpad shared by a thread block. L2 is on chip and shared by all SMs, 50 MB. Global memory is off-chip HBM, 80 GB at about 3.35 TB/s, with hundreds of cycles of latency; local memory for register spills lives there too. A block has at most 1024 threads and runs on one SM, threads run in 32-wide warps, and an SM holds at most 2048 threads. Fast kernels reuse data in SRAM and registers and keep enough warps resident to hide latency.</p></div>
+
+<h2 id="levels">从快到慢</h2>
+<table>
+  <thead><tr><th>层</th><th>谁能访问</th><th>在哪</th><th>H100（CC 9.0）大小</th><th>latency（cycles）</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">register</td><td>1 个 thread</td><td>SM 上</td><td>64K × 32-bit / SM</td><td>≈ 0 额外</td></tr>
+    <tr><td class="nw">shared memory</td><td>同一 block</td><td>SM 上 SRAM</td><td>≤ 228 KB / SM</td><td>≈ 29</td></tr>
+    <tr><td class="nw">L1 cache</td><td>同一 SM</td><td>同一块 SRAM</td><td>256 KB 减去 shared</td><td>≈ 41</td></tr>
+    <tr><td class="nw">L2 cache</td><td>所有 SM</td><td>片上</td><td>50 MB</td><td>≈ 263</td></tr>
+    <tr><td class="nw">global（HBM）</td><td>所有 thread + host</td><td>片外</td><td>80 GB，3.35 TB/s</td><td>≈ 479</td></tr>
+    <tr><td class="nw">local</td><td>1 个 thread</td><td>片外（HBM）</td><td>register spill</td><td>同 global</td></tr>
+  </tbody>
+</table>
+<p>latency 来自 H800（Hopper）的 microbenchmark。NVIDIA 文档对 global memory 的说法是 "hundreds of clock cycles"。记数量级：SRAM 几十 cycle，L2 几百，HBM 约 500。</p>
+
+<h2 id="limits">Thread 上限（CC 9.0，和 8.0 / 10.0 相同）</h2>
+<table>
+  <thead><tr><th>限制</th><th>值</th></tr></thead>
+  <tbody>
+    <tr><td>threads / block</td><td><strong>1024</strong>（x、y ≤ 1024，z ≤ 64）</td></tr>
+    <tr><td>warp size</td><td>32</td></tr>
+    <tr><td>resident threads / SM</td><td><strong>2048</strong> = 64 warps（CC 8.6、8.9 是 1536）</td></tr>
+    <tr><td>resident blocks / SM</td><td>32</td></tr>
+    <tr><td>registers</td><td>64K / SM，≤ 255 / thread</td></tr>
+  </tbody>
+</table>
+<div class="deriv">
+  \[ \text{occupancy} = \frac{\text{active warps / SM}}{\text{max warps / SM}} \]
+  <p>受三样东西限制，取最紧的那个：thread 数（block 数）、register、shared memory。例：每 thread 64 个 register → 65536/64 = 1024 thread → 50%；每 block 100 KB shared memory → 一个 SM 只放 2 个 block。</p>
+</div>
+
+<h2>必答点</h2>
+<ul>
+  <li>从快到慢：register → shared memory / L1（SM 上 SRAM）→ L2（全卡共享）→ HBM（global、local）</li>
+  <li>SRAM vs HBM：片上、每 SM 几百 KB、几十 cycle、程序员管 vs 片外、几十 GB、几百 cycle</li>
+  <li>block ≤ 1024 thread；warp = 32；H100 每 SM ≤ 2048 thread、≤ 32 block</li>
+  <li>occupancy = active warps / max warps，被 thread、register、shared memory 限制</li>
+  <li>优化：数据搬进 shared memory / register 复用（<a href="matmul-roofline.html">GEMM tiling</a>、<a href="flashattention.html">FlashAttention</a>），保证足够多 warp 藏 latency</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>"最多多少 thread" 到底指什么？</summary>
+  <p>分三个数：一个 block ≤ 1024；一个 SM 同时驻留 ≤ 2048（H100）；整张卡同时驻留 = SM 数 × 2048。一次 launch 的 grid 可以远大于此（x 方向最多 \(2^{31}-1\) 个 block），没轮到的 block 排队等 SM 空出来。</p>
+</details>
+<details>
+  <summary>带宽大概多少？</summary>
+  <p>H800 实测：shared memory 每 SM 每 cycle 128 bytes，按 114 个 SM、1755 MHz 算全卡约 26 TB/s；L2 约是 HBM 的 4 倍；HBM 实测约 1.9 TB/s（H100 SXM 标称 3.35 TB/s）。所以要尽量在 SRAM 里复用数据。</p>
+</details>
+<details>
+  <summary>occupancy 越高越好吗？</summary>
+  <p>不一定。occupancy 只是为了藏 latency，超过某个点就不再变快。每个 thread 多用 register、多算几个元素（ILP 高）时，低 occupancy 也能藏住。block size 取 32 的倍数，128–256 起步试。</p>
+</details>
+<details>
+  <summary>register 用多了会怎样？</summary>
+  <p>占满 register file 会压低 occupancy。超过 255 个或用 <code>-maxrregcount</code> 压低时会 spill 到 local memory，而它在 HBM 上，速度和 global memory 一样慢。</p>
+</details>
+<details>
+  <summary>shared memory 和 L1 怎么分？怎么用？</summary>
+  <p>同一块 SRAM，比例（carveout）可配，H100 的 shared memory 可选 0–228 KB。L1 由硬件自动 cache；shared memory 要自己读写，block 内用 <code>__syncthreads()</code> 同步。一个 block 要超过 48 KB 必须用 dynamic shared memory 显式 opt-in。32 个 bank，访问冲突见 <a href="coalescing-bank-conflict.html">bank conflict</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/programming-model.html#gpu-hardware-model">CUDA Programming Guide</a> §1.2.2–1.2.3.3、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html#gpu-device-memory-spaces">§2.3.3</a>、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html#kernel-launch-and-occupancy">§2.3.7</a>、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html">§5.1.3 Table 30–32</a> · <a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html">CUDA C++ Best Practices Guide</a> §10.2、§10.2.7、§11.1、§11.3、§12.2 · <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html">Hopper Tuning Guide</a> §1.4.1.1、§1.4.2.1–1.4.2.4 · <a href="https://arxiv.org/abs/2402.13499">Luo et al. 2024, Dissecting Hopper</a> Table III–V（pp.6–7） · <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 产品页</a>（H100 SXM：80 GB、3.35 TB/s）</p>
+
+</main>
+</body>
+</html>

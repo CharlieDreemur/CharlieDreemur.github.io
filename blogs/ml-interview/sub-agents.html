@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sub-agent 与 multi-agent 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Sub-agent 和 multi-agent：<br>什么时候拆，context 怎么传？</h1>
+<p class="meta"><b>英文问法</b><q>When would you split a task across sub-agents instead of using one agent?</q> · <q>A sub-agent starts with an empty context. What goes into its brief?</q> · <q>Do more agents make the system faster or slower?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：阿里边缘 BU 一面（校招，发帖 2026-09-03）「如何保证传给子 Agent 的上下文足够完整，不会遗漏关键信息？」「引入多层 Agent 和多个子 Agent 后，执行效率是否会变慢？」（<a href="https://www.nowcoder.com/feed/main/detail/bdebbb6088b6405e9eb2bd2c345acb6e">牛客</a>）、蔚来软件开发二面（发帖 2026-09-17）「子Agent返回结果全部正确，但主Agent汇总时出现幻觉，原因是什么，有什么优化方案」（<a href="https://www.nowcoder.com/feed/main/detail/9f92610c99b34894b35be91086df05a2">牛客</a>） · Unity 自己的材料：FlashVector 每个 serving layer 有自己的 layer agent，§6 提到 "parallel agent workflows"，没写并行多少个、怎么协调 · 中文面经样本里有 15 帖问 sub-agent 和 multi-agent · 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Sub-agent</dt>
+  <dd>主 agent 派出去的另一个 agent，有自己的 context，而且从空白开始。像把一件事交给没开过前面那些会的同事，他只知道你写给他的那张纸。</dd>
+  <dt>Brief</dt>
+  <dd>写给 sub-agent 的任务说明，是它能看到的全部背景。</dd>
+  <dt>Planner 和 worker</dt>
+  <dd>一种编排方式。planner 是负责拆任务和分任务的主 agent，worker 是干活的 sub-agent。</dd>
+  <dt>确定性代码</dt>
+  <dd>普通的程序逻辑，不调 LLM。计数、停止条件、哪个结果留下，都写在这里。</dd>
+  <dt>串行依赖</dt>
+  <dd>后一步要用前一步的结果。这样的两步没法并行。</dd>
+</dl>
+
+<h2 id="figs">看图：planner 分任务，确定性代码收结果</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 236" role="img" aria-label="planner 把任务分给三个 worker，每个 worker 从空 context 加一份 brief 开始，结果由确定性代码收">
+  <defs><marker id="saA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+  <rect class="hot" x="220" y="14" width="120" height="34" rx="4"/>
+  <text class="hd" x="280" y="36" text-anchor="middle">planner</text>
+  <text class="m" x="352" y="36">拆任务，写 brief</text>
+  <path class="ln" d="M280,48 L118,94" marker-end="url(#saA)"/>
+  <path class="ln" d="M280,48 V94" marker-end="url(#saA)"/>
+  <path class="ln" d="M280,48 L442,94" marker-end="url(#saA)"/>
+  <text class="m" x="182" y="64" text-anchor="end">brief</text>
+  <rect class="box" x="40" y="96" width="150" height="50" rx="4"/>
+  <text class="hd" x="115" y="116" text-anchor="middle">worker 1</text>
+  <text class="m" x="115" y="135" text-anchor="middle">空 context + brief</text>
+  <rect class="box" x="205" y="96" width="150" height="50" rx="4"/>
+  <text class="hd" x="280" y="116" text-anchor="middle">worker 2</text>
+  <text class="m" x="280" y="135" text-anchor="middle">空 context + brief</text>
+  <rect class="box" x="370" y="96" width="150" height="50" rx="4"/>
+  <text class="hd" x="445" y="116" text-anchor="middle">worker 3</text>
+  <text class="m" x="445" y="135" text-anchor="middle">空 context + brief</text>
+  <path class="ln" d="M115,146 L236,190" marker-end="url(#saA)"/>
+  <path class="ln" d="M280,146 V190" marker-end="url(#saA)"/>
+  <path class="ln" d="M445,146 L324,190" marker-end="url(#saA)"/>
+  <text class="m" x="404" y="178">结论 + 证据</text>
+  <rect class="f2" x="170" y="192" width="220" height="34" rx="4"/>
+  <text x="280" y="214" text-anchor="middle">确定性代码：收结果，定去留</text>
+</svg>
+<figcaption>图 1：planner 把任务拆开，给每个 worker 写一份 brief。worker 各自从空 context 开始，并行做。worker 只交结论和证据，由确定性代码收，由它决定哪个留下。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I split in three cases: the subtasks are independent, such as trying several kernel variants in parallel; one context can't hold all the tool output; or the judge must be separate from the author. A sub-agent starts with an empty context, so the brief has to carry the goal, the constraints, what has already been tried and the output format. It returns a summary with evidence, not its whole transcript. Deterministic code collects the results and decides what to keep. The cost is more total tokens and coordination overhead, and tasks with serial dependencies get slower when split, so I don't split those.</p></div>
+
+<h2 id="when">什么时候拆，代价是什么</h2>
+<table>
+  <thead><tr><th>情况</th><th>拆不拆</th><th>原因</th></tr></thead>
+  <tbody>
+    <tr><td>子任务互相独立，比如并行试几种 kernel 写法</td><td class="nw">拆</td><td>并行能省 wall time</td></tr>
+    <tr><td>一个 context 装不下全部 tool 输出</td><td class="nw">拆</td><td>worker 自己消化原始输出，只交回结论</td></tr>
+    <tr><td>评审要和作者分开</td><td class="nw">拆</td><td>同一个 agent 既写码又评判，是论文归纳过的一类失败</td></tr>
+    <tr><td>步骤之间有串行依赖</td><td class="nw">不拆</td><td>每多一次交接就多一份 brief 和一次摘要，更慢，还会丢信息</td></tr>
+  </tbody>
+</table>
+<p>代价有两项。总 token 更多，因为每个 worker 都要重新读一遍背景。协调也有开销。手算一遍，数字是举例。4 个独立子任务各要 10 分钟，串行是 40 分钟，并行大约 10 分钟再加写 brief 和汇总的时间。如果单个 agent 做完要 60K token，4 个 worker 各用 30K 就是 120K，时间省了，token 翻倍。</p>
+<p><strong>Brief 写什么</strong>。目标、约束、已经试过的、输出格式，四项都要有。sub-agent 看不到主对话，brief 里漏掉的它就不知道。</p>
+
+<h2 id="peers">同类系统怎么编排</h2>
+<table>
+  <thead><tr><th>系统</th><th>做法</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">KernelFalcon</td><td>控制流写在确定性的 Python 里；默认 4 个并行 worker，各自保留自己的 error context，第一个通过的胜出</td></tr>
+    <tr><td class="nw">Cursor × NVIDIA</td><td>planner 给 worker 分配并重新平衡任务；协调协议是一个 markdown 文件</td></tr>
+    <tr><td class="nw">KernelArc</td><td>按策略分工的并行 agent，每个只改自己的 solution 目录；计数、停止条件、重启都在确定性代码里</td></tr>
+    <tr><td class="nw">FlashVector</td><td>单链循环，每轮随机抽一层，只做一个改动；并行度论文没写</td></tr>
+  </tbody>
+</table>
+
+<h2>必答点</h2>
+<ul>
+  <li>三种情况才拆：子任务独立、一个 context 装不下、评审要和作者分开</li>
+  <li>代价：总 token 更多，协调有开销，有串行依赖的任务拆了更慢</li>
+  <li>sub-agent 从空 context 开始，brief 要带目标、约束、已经试过的、输出格式</li>
+  <li>返回结论和证据，不返回整段 transcript</li>
+  <li>planner 分任务，worker 并行，由确定性代码收结果</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>加了多层 agent 和多个 sub-agent，会不会变慢？（阿里边缘 BU 原题）</summary>
+  <p>有串行依赖的任务拆了更慢，因为每次交接都要写 brief 再做摘要。互相独立的任务并行跑才快。</p>
+</details>
+<details>
+  <summary>怎么保证传给 sub-agent 的 context 不漏关键信息？（阿里边缘 BU 原题）</summary>
+  <p>brief 用固定模板，四项逐项填。大段材料给文件路径，让 sub-agent 自己读，不靠主 agent 转述。</p>
+</details>
+<details>
+  <summary>sub-agent 的结果都对，主 agent 汇总时出了幻觉，怎么办？（蔚来原题）</summary>
+  <p>让 sub-agent 按固定格式返回结论和证据，由确定性代码合并。主 agent 不凭印象重写一遍。</p>
+</details>
+<details>
+  <summary>两个 worker 要改同一个文件怎么办？</summary>
+  <p>每个 worker 用自己的 workspace，KernelArc 就让每个 agent 只改自己的目录，别人的成果只读。合并时的覆写问题见 <a href="mini-coding-agent.html#edit">edit tool 的 hash 检查</a>。</p>
+</details>
+<details>
+  <summary>为什么评审要和作者分开？</summary>
+  <p>一篇用薄 harness 跑 KernelBench 的 workshop 论文归纳了五类失败，其中一类就是同一个 agent 既计划、又写码、又评判。KDA 的做法是 Claude Code 实现，Codex 每轮 review。</p>
+</details>
+
+<p class="src"><b>来源</b>面经原帖：<a href="https://www.nowcoder.com/feed/main/detail/bdebbb6088b6405e9eb2bd2c345acb6e">阿里边缘 BU 一面</a>、<a href="https://www.nowcoder.com/feed/main/detail/9f92610c99b34894b35be91086df05a2">蔚来二面</a> · <a href="https://pytorch.org/blog/kernelfalcon-autonomous-gpu-kernel-generation-via-deep-agents/">KernelFalcon</a> · <a href="https://cursor.com/blog/multi-agent-kernels">Cursor × NVIDIA</a> · <a href="https://arxiv.org/html/2608.17071">KernelArc</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> Algorithm 1、§6 · <a href="https://github.com/mit-han-lab/kernel-design-agents">KDA</a> · <a href="https://ceur-ws.org/Vol-4238/paper5.pdf">GeCoIn 2026 workshop 论文</a>（五类失败） · ml-八股 08 第 38 题 · 同类系统对照表</p>
+
+</main>
+</body>
+</html>

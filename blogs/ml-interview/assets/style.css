@@ -1,0 +1,228 @@
+/* learn-regression 样式：一页面试速查 */
+@import url("https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --bg: #fffdf7;
+  --fg: #1f1d1a;
+  --muted: #6d685e;
+  --rule: #e3ddcf;
+  --panel: #f6f2e8;
+  --accent: #a3391b;
+  --c2: #2b6a8f;
+  --c1-soft: #f4e2d8;
+  --c2-soft: #dde9f1;
+  --ok: #2e7d4f;
+  --serif: "Source Serif 4", "Noto Serif SC", Georgia, "Songti SC", "SimSun", serif;
+  --mono: "JetBrains Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161513;
+    --fg: #e9e5dc;
+    --muted: #a39d90;
+    --rule: #37342e;
+    --panel: #201e1b;
+    --accent: #ec9a74;
+    --c2: #86bbdc;
+    --c1-soft: #3a2a22;
+    --c2-soft: #1e2d38;
+    --ok: #7cc79a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161513;
+  --fg: #e9e5dc;
+  --muted: #a39d90;
+  --rule: #37342e;
+  --panel: #201e1b;
+  --accent: #ec9a74;
+  --c2: #86bbdc;
+  --c1-soft: #3a2a22;
+  --c2-soft: #1e2d38;
+  --ok: #7cc79a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.75;
+  overflow-x: hidden;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 16px 5rem; }
+
+.kicker { font-size: .8rem; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 .3rem; font-weight: 600; }
+h1 { font-size: 1.75rem; line-height: 1.35; font-weight: 600; margin: 0 0 .8rem; }
+h2 { font-size: 1.12rem; font-weight: 600; margin: 2rem 0 .6rem; padding-top: .8rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1rem; font-weight: 600; margin: 1.2rem 0 .4rem; }
+p { margin: 0 0 .9rem; }
+a { color: var(--accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+/* overflow-wrap：很长的标识符（比如 reduce_from_tensor_model_parallel_region）在手机上可以折行，pre 里的代码不受影响 */
+code { font-family: var(--mono); font-size: .85em; background: var(--panel); padding: .08em .35em; border-radius: 3px; font-variant-ligatures: none; overflow-wrap: anywhere; }
+strong { font-weight: 600; }
+ul, ol { padding-left: 1.3rem; margin: 0 0 .9rem; }
+li { margin: .2rem 0; }
+
+/* 题目下方的元信息：英文问法、考过 */
+.meta { font-size: .9rem; color: var(--muted); line-height: 1.65; margin: 0 0 .4rem; }
+.meta b { color: var(--fg); font-weight: 600; margin-right: .4rem; }
+.meta q { font-style: italic; }
+
+/* 概念解释：术语 + 中文形象说明 + 例子 */
+.concepts { margin: .4rem 0 1rem; }
+.concepts dt { font-weight: 600; margin-top: .9rem; }
+.concepts dd { margin: .2rem 0 0; padding-left: .9rem; border-left: 2px solid var(--rule); }
+.concepts .eg { display: block; color: var(--muted); font-size: .94rem; margin-top: .15rem; }
+
+/* 30 秒英文答案 */
+.answer { border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 6px 6px 0; padding: .9rem 1.1rem; margin: .4rem 0 1rem; }
+.answer p { font-style: italic; margin: 0; }
+
+/* 推导：紧凑的独立公式，中间夹一行说明 */
+.deriv .katex-display { margin: .5rem 0; }
+.deriv p { font-size: .94rem; color: var(--muted); margin: .2rem 0 .4rem; }
+
+/* 追问：问题可见，点开看答案，顺便自测 */
+details { border: 1px solid var(--rule); border-radius: 6px; padding: .5rem .9rem; margin: .45rem 0; }
+details > summary { cursor: pointer; font-weight: 600; font-size: .96rem; }
+details[open] > summary { margin-bottom: .45rem; }
+details > :last-child { margin-bottom: 0; }
+details p, details li { font-size: .95rem; }
+
+/* 全站导航（nav.js 生成） */
+.sitebar { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1rem; font-size: .85rem; color: var(--muted); padding-bottom: .6rem; margin-bottom: 1.6rem; border-bottom: 1px solid var(--rule); }
+.sitebar a { color: var(--muted); }
+.sitebar a:hover { color: var(--accent); }
+.sitebar .home { font-weight: 600; color: var(--fg); }
+.sitebar .step { margin-left: auto; display: flex; gap: .9rem; }
+.pager { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 2.4rem; padding-top: .9rem; border-top: 1px solid var(--rule); font-size: .92rem; }
+.toc-search { width: 100%; font: inherit; font-size: .95rem; padding: .5rem .75rem; margin: .4rem 0 .2rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); color: var(--fg); }
+.toc-search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.toc-count { font-size: .85rem; color: var(--muted); margin: .2rem 0 0; }
+.links { font-size: .92rem; color: var(--muted); }
+
+/* 目录页 */
+.toc { list-style: none; padding: 0; margin: .4rem 0 1.2rem; }
+.toc li { border-top: 1px solid var(--rule); padding: .55rem 0; margin: 0; }
+.toc .num { font-family: var(--mono); color: var(--muted); font-size: .85rem; margin-right: .6rem; }
+.toc .star { color: var(--accent); font-weight: 600; margin-left: .4rem; font-size: .9rem; }
+
+/* Mock 进度（nav.js 的 buildMock，状态在 progress.js） */
+.mock h3 { color: var(--muted); font-size: .9rem; margin: 1.1rem 0 .1rem; }
+.mock-list li { display: flex; flex-wrap: wrap; align-items: baseline; }
+.mock-list .num { min-width: 2.6rem; }
+.mock-list a { flex: 1; min-width: 0; }
+.mock-list .toc-sub { flex-basis: 100%; margin-left: 3.2rem; }
+.st { font-size: .78rem; font-weight: 600; line-height: 1.5; white-space: nowrap; padding: 0 .55rem; margin-left: .6rem; border: 1px solid currentColor; border-radius: 999px; }
+.st-ok { color: var(--bg); background: var(--ok); border-color: var(--ok); }
+.st-seen { color: var(--c2); background: var(--c2-soft); }
+.st-fail { color: var(--accent); background: var(--c1-soft); }
+.st-none { color: var(--muted); border-style: dashed; font-weight: 400; }
+.mock-sum { margin: 0 0 .5rem; }
+.mock-sum .st { margin: 0 .5rem 0 0; }
+
+/* 标签和筛选（nav.js 生成；公司和分类标签是 nav.js 里的 KP，掌握情况在 progress.js） */
+.filters { margin: .8rem 0 .5rem; }
+.filters .row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .45rem; margin: .45rem 0; }
+.filters .lab { font-size: .85rem; color: var(--muted); min-width: 2.6rem; }
+.filters .toc-search { flex: 1 1 16rem; width: auto; margin: 0; }
+.filters select { font: inherit; font-size: .88rem; padding: .45rem .6rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); color: var(--fg); }
+.chip { font: inherit; font-size: .84rem; line-height: 1.4; padding: .3rem .8rem; border: 1px solid var(--rule); border-radius: 999px; background: transparent; color: var(--fg); cursor: pointer; }
+.chip:hover { border-color: var(--accent); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.chip .n { margin-left: .35rem; font-size: .76rem; color: var(--muted); }
+.chip[aria-pressed="true"] .n { color: inherit; opacity: .85; }
+.kp-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .45rem; }
+.kp-list .num { min-width: 2.5rem; margin-right: 0; }
+.kp-list a.t { flex: 1 1 15rem; min-width: 0; }
+.kp-list .star { margin-left: 0; }
+.kp-list .st, .kp-tags .st { margin-left: 0; }
+.kp-list .toc-sub { flex-basis: 100%; margin: .1rem 0 0 2.95rem; }
+.tg { font-size: .76rem; line-height: 1.4; white-space: nowrap; padding: .15rem .6rem; border: 1px solid var(--rule); border-radius: 999px; color: var(--muted); text-decoration: none; }
+.tg-k { color: var(--c2); background: var(--c2-soft); border-color: transparent; }
+.tg-asked { color: var(--accent); background: var(--c1-soft); border-color: transparent; }
+.tg-prep { color: var(--accent); border-color: currentColor; border-style: dashed; }
+a.tg:hover { border-color: currentColor; border-style: solid; }
+.kp-tags { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .4rem; margin: .3rem 0 .8rem; }
+.related { margin-top: 2.2rem; padding-top: .9rem; border-top: 1px solid var(--rule); font-size: .9rem; line-height: 1.9; }
+.related b { display: block; color: var(--muted); font-weight: 600; }
+/* inline-block：链接之间没有空白字符，不这样写整行不会折行，同类页面一多就把页面撑出横向滚动 */
+.related a { display: inline-block; margin-right: 1rem; }
+
+/* 示意图：inline SVG，颜色全部走主题变量 */
+.fig { margin: .8rem 0 1.4rem; }
+.fig svg { display: block; width: 100%; max-width: 560px; height: auto; margin: 0 auto; }
+.fig figcaption { font-size: .9rem; color: var(--muted); margin-top: .5rem; line-height: 1.6; }
+.fig text { font-family: var(--serif); fill: var(--fg); font-size: 13px; }
+.fig .m { fill: var(--muted); font-size: 12px; }
+.fig .hd { font-weight: 600; font-size: 13px; }
+.fig .acc { fill: var(--accent); font-weight: 600; }
+.fig .box { fill: var(--panel); stroke: var(--rule); }
+.fig .hot { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
+.fig .bwd { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.fig .stale { fill: none; stroke: var(--rule); stroke-dasharray: 3 3; }
+.fig .ln { fill: none; stroke: var(--muted); stroke-width: 1.3; }
+.fig .ah { fill: var(--muted); }
+.fig .f1 { fill: var(--c1-soft); stroke: var(--accent); }
+.fig .f2 { fill: var(--c2-soft); stroke: var(--c2); }
+.fig .c2 { fill: var(--c2); font-weight: 600; }
+.fig .ln1 { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+.fig .ln2 { fill: none; stroke: var(--c2); stroke-width: 1.4; }
+.fig .ah1c { fill: var(--accent); }
+.fig .ah2c { fill: var(--c2); }
+.fig .axis { fill: none; stroke: var(--fg); stroke-width: 1; }
+.fig .grid { fill: none; stroke: var(--rule); stroke-width: 1; }
+
+/* 速成课（infra-course、infra-l*.html） */
+.lead { font-size: 1.02rem; }
+.you { border: 1px solid var(--rule); border-radius: 6px; padding: .6rem .9rem; margin: .6rem 0 .9rem; font-size: .95rem; }
+.you b { color: var(--accent); margin-right: .4rem; }
+.next { background: var(--panel); border-radius: 6px; padding: .7rem 1rem; margin: 1.4rem 0 0; font-size: .95rem; }
+.next b { color: var(--accent); margin-right: .4rem; }
+.toc .toc-sub { display: block; font-size: .85rem; color: var(--muted); margin-left: 1.9rem; }
+
+/* 手撕代码 */
+pre { background: var(--panel); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0 .6rem; overflow-x: auto; font-size: .8rem; line-height: 1.55; font-variant-ligatures: none; }
+pre code { background: none; padding: 0; font-size: inherit; }
+
+/* 来源 */
+.src { font-size: .88rem; color: var(--muted); margin-top: 1.6rem; }
+.src b { color: var(--fg); font-weight: 600; margin-right: .4rem; }
+
+/* 表格。position: relative 是为了收住格子里公式的隐藏 MathML（KaTeX 把它绝对定位）：
+   表格在手机上横向滚动时，右边格子里的 MathML 会跑到视口外，把整页撑出横向滚动 */
+table { position: relative; border-collapse: collapse; width: 100%; margin: .6rem 0 1rem; font-size: .92rem; display: block; overflow-x: auto; }
+th, td { text-align: left; padding: .4rem .6rem; vertical-align: top; }
+thead th { border-bottom: 1px solid var(--fg); font-weight: 600; }
+tbody tr + tr td { border-top: 1px solid var(--rule); }
+.nw { white-space: nowrap; }
+
+/* 公式 */
+/* position: relative 让 KaTeX 里绝对定位的 MathML 也被这个滚动容器收住，否则宽公式在手机上会把整页撑出横向滚动 */
+.katex-display { position: relative; overflow-x: auto; overflow-y: hidden; padding: .15rem 0; }
+.katex { font-size: 1.04em; }
+
+@media (max-width: 560px) {
+  body { font-size: 16px; }
+  main { padding-top: 1.6rem; }
+  h1 { font-size: 1.45rem; }
+}
+@media print {
+  :root { --bg: #fff; --fg: #000; --panel: #f4f4f4; }
+  body { font-size: 10.5pt; line-height: 1.5; }
+  main { max-width: none; padding: 0; }
+  details { border: 0; padding: 0; }
+  a { color: inherit; text-decoration: none; }
+}
+
+/* 公开版：不显示个人掌握情况 */
+.st { display: none !important; }

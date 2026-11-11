@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Occupancy 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · GPU Kernel</p>
+<h1>Occupancy 受什么限制？<br>是不是越高越好？</h1>
+<p class="meta"><b>英文问法</b><q>What is occupancy and what limits it?</q> · <q>Is higher occupancy always better?</q> · <q>How do you check how many registers a kernel uses, and how do you tune occupancy?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：摩尔线程 AI 算子库及高性能计算工程师一面 2026-10-15「你知道在（CUDA 和 HIP）这两个平台上怎么去看某一个内核的寄存器用量吗？」「有没有学习过、或者看过一些关于（访存吞吐、峰值浮点计算利用率、occupancy）这些比较重要的量的分析，然后运用到算法里面来？」（<a href="https://www.nowcoder.com/feed/main/detail/8f03623a522e4c75a6391f9d3f721c7f">牛客</a>）· NVIDIA AI Infra 校招「Occupancy 受哪些因素影响？如何进行调控？」（AIInfraGuide 的二手整理，收录 2026-04-17，<a href="https://github.com/caomaolufei/AIInfraGuide/blob/main/docs/interview/%E8%8B%B1%E4%BC%9F%E8%BE%BE-AI-Infra-%E6%A0%A1%E6%8B%9B-2.md">GitHub</a>）· 两份 AI infra 面经样本里 occupancy 这个关键词只占 1% 和 0%，偏底层 · Unity 一侧没有直接依据，也没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Occupancy</dt>
+  <dd>SM 上活跃的 warp 数，除以这个 SM 最多能放的 warp 数。像车间里开工的班组占工位的比例。<span class="eg">H100 的一个 SM 最多放 64 个 warp，放了 32 个就是 50%。</span></dd>
+  <dt>Latency hiding</dt>
+  <dd>一个 warp 在等 memory 时，SM 切到别的 warp 继续发指令。warp 越多，越不容易全都在等。</dd>
+  <dt>Register file</dt>
+  <dd>每个 SM 有 65,536 个 register，SM 上所有 thread 一起分。每个 thread 用得越多，放得下的 thread 越少。</dd>
+  <dt>Limiter</dt>
+  <dd>register、shared memory、thread 数三个上限里最紧的那个。occupancy 由它决定。</dd>
+  <dt>Register spill</dt>
+  <dd>register 不够用时，compiler 把值放到 local memory。local memory 在 HBM 上，和 global memory 一样慢。</dd>
+</dl>
+
+<h2 id="figs">看图：三个上限，取最紧的</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 246" role="img" aria-label="一个 SM 最多 64 个 warp，每个 block 是 8 个 warp。thread 数上限允许 8 个 block，register 上限允许 5 个，shared memory 上限允许 4 个。取最小的 4 个 block，也就是 32 个 warp，occupancy 是 50%，limiter 是 shared memory">
+  <text class="hd" x="14" y="20">一个 SM 最多 64 个 warp。每个 block 8 个 warp，能放几个 block？</text>
+  <text x="14" y="58">thread 数</text>
+  <text class="m" x="14" y="74">2,048 ÷ 256</text>
+  <rect class="box" x="170" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="206" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="242" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="278" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="314" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="350" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="386" y="42" width="34" height="30" rx="3"/>
+  <rect class="box" x="422" y="42" width="34" height="30" rx="3"/>
+  <text x="466" y="62">8 个</text>
+  <text x="14" y="116">register</text>
+  <text class="m" x="14" y="132">65,536 ÷ 12,288</text>
+  <rect class="f2" x="170" y="100" width="34" height="30" rx="3"/>
+  <rect class="f2" x="206" y="100" width="34" height="30" rx="3"/>
+  <rect class="f2" x="242" y="100" width="34" height="30" rx="3"/>
+  <rect class="f2" x="278" y="100" width="34" height="30" rx="3"/>
+  <rect class="f2" x="314" y="100" width="34" height="30" rx="3"/>
+  <rect class="stale" x="350" y="100" width="34" height="30" rx="3"/>
+  <rect class="stale" x="386" y="100" width="34" height="30" rx="3"/>
+  <rect class="stale" x="422" y="100" width="34" height="30" rx="3"/>
+  <text class="c2" x="466" y="120">5 个</text>
+  <text x="14" y="174">shared memory</text>
+  <text class="m" x="14" y="190">228 KB ÷ 48 KB</text>
+  <rect class="f1" x="170" y="158" width="34" height="30" rx="3"/>
+  <rect class="f1" x="206" y="158" width="34" height="30" rx="3"/>
+  <rect class="f1" x="242" y="158" width="34" height="30" rx="3"/>
+  <rect class="f1" x="278" y="158" width="34" height="30" rx="3"/>
+  <rect class="stale" x="314" y="158" width="34" height="30" rx="3"/>
+  <rect class="stale" x="350" y="158" width="34" height="30" rx="3"/>
+  <rect class="stale" x="386" y="158" width="34" height="30" rx="3"/>
+  <rect class="stale" x="422" y="158" width="34" height="30" rx="3"/>
+  <text class="acc" x="466" y="178">4 个，最紧</text>
+  <text class="acc" x="14" y="230">occupancy = 4 × 8 ÷ 64 = 50%，limiter 是 shared memory</text>
+</svg>
+<figcaption>图 1：示意的 kernel，每个 block 256 个 thread，每个 thread 48 个 register，每个 block 48 KB shared memory，上限按 H100 算。一个小格是一个 block，虚线格是这个上限下放不进去的。三个上限各允许 8、5、4 个 block，取最小的 4 个。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Occupancy is the number of active warps on an SM divided by the maximum it can hold. It matters because when one warp is waiting on memory, the SM switches to another, which hides the latency. It's capped by whichever runs out first: registers per thread, shared memory per block, or the block size. Higher isn't always better. Once there are enough warps to keep the SM busy, more don't help, and squeezing registers to get there can cause spills. A GEMM that gives each thread more registers to reuse data often runs faster at lower occupancy. So low occupancy is a warning sign, but I judge by measured time.</p></div>
+
+<h2 id="limits">三个上限，手算一遍</h2>
+<p>H100 的一个 SM 最多放 2,048 个 thread（64 个 warp），有 65,536 个 register 和最多 228 KB shared memory（见 <a href="gpu-memory-hierarchy.html#limits">thread 上限</a>）。图里的 kernel 这样算。</p>
+<ul>
+  <li><strong>thread 数</strong>：2,048 ÷ 256 = 8 个 block</li>
+  <li><strong>register</strong>：一个 block 要 256 × 48 = 12,288 个，65,536 ÷ 12,288 取整是 5 个 block</li>
+  <li><strong>shared memory</strong>：228 ÷ 48 取整是 4 个 block</li>
+</ul>
+<p>取最小的 4 个 block，也就是 32 个 warp，occupancy 是 32 ÷ 64 = 50%。把每个 block 的 shared memory 减到 32 KB，这一项放宽到 7 个 block。这时 limiter 换成 register，能放 5 个 block，occupancy 是 62.5%。要到 100%，每个 thread 最多用 65,536 ÷ 2,048 = 32 个 register。</p>
+
+<h2 id="higher">是不是越高越好</h2>
+<p>不是。occupancy 太低一定不好，够用之后再高没有收益，硬提上去还可能更慢。</p>
+<ol>
+  <li>它的作用只是 latency hiding。warp 已经多到 SM 每个 cycle 都有指令可发，再加也不会更快。NVIDIA 的文档说从 66% 提到 100% 通常得不到成比例的加速</li>
+  <li>提高它的办法是压 register 或 shared memory。register 压过头会 spill，shared memory 小了 tile 就小，数据复用变少</li>
+  <li>GEMM 反过来做。每个 thread 多占 register，一次算一小块，occupancy 低了，实际更快（见 <a href="matmul-roofline.html">matmul</a> 的 register tiling）</li>
+</ol>
+<table>
+  <thead><tr><th>要做的事</th><th>办法</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">看 occupancy 和 limiter</td><td>ncu 的 Occupancy 一节，报 theoretical 和 achieved occupancy，以及被 register、shared memory、thread 数里的哪个限制</td></tr>
+    <tr><td class="nw">看 register 用量</td><td>编译时加 <code>-Xptxas -v</code>；ncu 的 Launch Statistics 也报每个 thread 的 register 数</td></tr>
+    <tr><td class="nw">调</td><td><code>__launch_bounds__</code> 限制 register；block size 取 32 的倍数，从 128 到 256 试起；每个 block 少用 shared memory</td></tr>
+  </tbody>
+</table>
+
+<h2>必答点</h2>
+<ul>
+  <li>定义：SM 上活跃的 warp 数 ÷ 最多能放的 warp 数</li>
+  <li>作用是 latency hiding，一个 warp 等 memory 时切到别的 warp</li>
+  <li>三个上限取最紧的：register、shared memory、thread 数</li>
+  <li>不是越高越好：够用之后没有收益；压 register 会 spill；GEMM 用低 occupancy 换 register 里的数据复用</li>
+  <li>怎么看：ncu 的 achieved occupancy 和 limiter，<code>-Xptxas -v</code> 看 register</li>
+  <li>怎么调：<code>__launch_bounds__</code>、block size、shared memory</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>怎么知道 occupancy 是不是这个 kernel 的瓶颈？</summary>
+  <p>在 ncu 里 memory 和 compute throughput 都低、warp 大量时间在 stall 时才怀疑它（见 <a href="nsight-profiling.html#bound">Nsight profiling</a>）。NVIDIA 的文档还给了一个试法：kernel 不改，把 dynamic shared memory 调大，人为压低 occupancy，看时间变不变。</p>
+</details>
+<details>
+  <summary><code>__launch_bounds__</code> 是什么意思？</summary>
+  <p>写在 kernel 上的声明，告诉 compiler 每个 block 最多多少 thread，还可以加上每个 SM 至少放几个 block。compiler 据此限制 register 用量。快手校招问过 launch bound 的含义，出处是 AIInfraGuide 的二手整理。</p>
+</details>
+<details>
+  <summary>block size 越大，occupancy 越高吗？</summary>
+  <p>不是。block 是整个放进 SM 的，block 越大，放不进下一个时空出来的位置越多。只看 register 这一项，上面 256 个 thread 的 block 能放 5 个，是 40 个 warp。换成 512 个 thread 的 block 只放得下 2 个，是 32 个 warp，反而更低。</p>
+</details>
+<details>
+  <summary>fusion 之后 occupancy 掉了怎么办？</summary>
+  <p>先看时间有没有变慢，没有就不用管。变慢了再看 limiter 是 register 还是 shared memory，决定是拆开一部分还是减少占用（见 <a href="kernel-fusion.html#when">kernel fusion</a>）。</p>
+</details>
+<details>
+  <summary>kernel agent 会用到 occupancy 吗？</summary>
+  <p>会。Meta 的 KernelAgent 在 Diagnose 一步用 ncu 指标把 kernel 判成 memory、compute 或 occupancy bound，再选对应的优化（见 <a href="kernel-agent-design.html">kernel agent 设计</a>）。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html">CUDA C++ Best Practices Guide</a> §11.1、§11.1.1、§11.3、§11.4 · <a href="https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html">Nsight Compute Profiling Guide</a>（Occupancy、Launch Statistics 两节）· <a href="https://pytorch.org/blog/kernelagent-hardware-guided-gpu-kernel-optimization-via-multi-agent-orchestration/">KernelAgent</a> · ml-八股 08 第 20 题 · 面经和频率出处见 面试题与 JD 3.1、3.6 节和 NVIDIA 题库笔记 1.8 节、Q2</p>
+
+</main>
+</body>
+</html>

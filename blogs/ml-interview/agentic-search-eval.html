@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic search eval 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>Agentic search 怎么做 offline eval？<br>怎么确定新版本真的更好？</h1>
+<p class="meta"><b>英文问法</b><q>How would you evaluate an agentic search system offline?</q> · <q>Is final-answer accuracy enough?</q> · <q>How do you know version B is really better than version A?</q></p>
+<p class="meta"><b>考过</b>推断，非面经。依据：Agentic Search 评测组 JD 写 "offline and online metrics, and methods for statistical model and search quality assessment"（<a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">200670397</a>）；另一个 JD 写 "quality, reasoning, and tool-use accuracy of agentic systems"（<a href="https://web.archive.org/web/20260607011824/https://jobs.apple.com/en-us/details/200656115">200656115</a>）· 相近原题：字节「如果让你做agent评测，你会怎么做」（<a href="https://www.nowcoder.com/feed/main/detail/588c94198d22410eacad7a4be734c74a">牛客</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Trajectory</dt>
+  <dd>agent 做一道题的全部步骤：每次的 query、tool call、返回结果、最终答案。</dd>
+  <dt>Per-hop recall</dt>
+  <dd>多跳问题里，每一跳需要的 evidence 有没有被检索到。<span class="eg">例：两跳问题，第一跳的 message 找到了，第二跳的 email 没找到 → 1/2。</span></dd>
+  <dt>Fixed corpus</dt>
+  <dd>评测时把可搜的数据（corpus）冻结。BrowseComp-Plus 用冻结的、人工核验的 corpus 代替 live web search，这样结果可复现，也能分开看 retriever 和 LLM 各自的贡献。</dd>
+  <dt>Paired comparison</dt>
+  <dd>A、B 两个版本跑同一批题，逐题比较。比各算各的平均更灵敏，因为题目难度的差异被抵消了。</dd>
+  <dt>Run-to-run variance</dt>
+  <dd>同一道题跑两次，结果可能不同，因为 sampling 和 tool 返回都可能变。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Final-answer accuracy isn't enough, because a right answer can come from a bad path. I'd evaluate three layers on a frozen corpus with gold evidence. Retrieval: per-hop recall of the gold documents. Trajectory: tool selection, argument accuracy, number of searches, and whether it stopped at the right time. Answer: correctness, groundedness, and abstention on unanswerable questions. Because agents are stochastic, I run each task several times. To compare two versions, I use a paired test on the same queries and report a confidence interval, not just two averages.</p></div>
+
+<h2 id="layers">三层指标，加上 cost</h2>
+<table>
+  <thead><tr><th>层</th><th>Metric</th><th>注意</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Retrieval</td><td>per-hop recall、evidence recall@k</td><td>需要标出 gold evidence</td></tr>
+    <tr><td class="nw">Trajectory</td><td>tool selection accuracy、argument accuracy、平均 search 次数</td><td>正确路径不唯一，按 milestone 判，不逐步对比</td></tr>
+    <tr><td class="nw">Answer</td><td>correctness、groundedness、abstention rate</td><td>unanswerable 的题单独统计</td></tr>
+    <tr><td class="nw">Cost</td><td>latency、token</td><td>和质量一起报</td></tr>
+  </tbody>
+</table>
+
+<h2 id="sig">新版本真的更好吗</h2>
+<p>200 道题，A 对 140 道（70%），B 对 150 道（75%）。只看这两个数判断不了。逐题配对：B 对而 A 错的有 18 道，A 对而 B 错的有 8 道。McNemar test：</p>
+\[ \chi^2 = \frac{(18-8)^2}{18+8} \approx 3.85 \]
+<p>自由度为 1 时 0.05 的临界值是 3.84，所以 p 约等于 0.05，刚到显著线的边上。结论是“可能更好，证据还不够”，所以要加题，或者每题多跑几次。不是 0/1 的指标（比如 recall）用 paired bootstrap 算 confidence interval。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>只看最终答案不够：分 retrieval、trajectory、answer 三层</li>
+  <li>corpus 冻结，带 gold evidence，结果才可复现</li>
+  <li>轨迹不唯一 → milestone 匹配</li>
+  <li>每题多跑几次，报方差</li>
+  <li>版本比较用配对检验，报 confidence interval</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>正确轨迹不止一条，怎么评？</summary>
+  <p>不要求步骤完全一致，只检查关键 milestone 有没有达到，以及最终状态对不对。Apple 的 ToolSandbox 就是在任意 trajectory 上检查 intermediate and final milestones。</p>
+</details>
+<details>
+  <summary>没有 gold evidence 怎么办？</summary>
+  <p>合成数据时一起生成。造题的时候就知道答案在哪条数据里，把它记下来。合成数据本身怎么查质量见<a href="synthetic-data-quality.html">合成数据质量</a>。</p>
+</details>
+<details>
+  <summary>答案正确性能用 LLM judge 吗？</summary>
+  <p>能，但要先用人工标注校准。时间、金额、ID 这类字段用规则校验（见<a href="annotation-judge.html">标注与 LLM judge</a>）。</p>
+</details>
+<details>
+  <summary>同一题每次结果不同，怎么报？</summary>
+  <p>每题跑 k 次，报平均成功率和 k 次全对的比例。两个版本比较时用相同的 k、相同的 sampling 参数。</p>
+</details>
+<details>
+  <summary>offline 变好了，online 没变好？</summary>
+  <p>多半是评测集和真实 query 的分布不一致。看 online 的 reformulation 集中在哪类 query，回头检查评测集是否覆盖了这类 query。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">Apple JD 200670397</a> · <a href="https://arxiv.org/abs/2508.06600">BrowseComp-Plus</a>（固定 corpus、人工核验的 supporting documents 和 hard negatives）· <a href="https://arxiv.org/abs/2408.04682">ToolSandbox（Apple）</a>（stateful tool execution、milestone 评测）· <a href="https://arxiv.org/abs/2603.01357">ASTRA-bench（Apple）</a></p>
+
+</main>
+</body>
+</html>

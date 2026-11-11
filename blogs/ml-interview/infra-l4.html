@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 4 课 · DDP 到 ZeRO</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 4 课</p>
+<h1>v2 → v3：DDP 到 ZeRO / FSDP</h1>
+<p class="lead">v1 在单卡上把能省的都省了，128 GB 的 model state 还是放不下。v2 用 DDP 把训练铺到 32 张卡上，快了约 32 倍，但每张卡仍要放一整份模型，128 GB 一点没少。v3 发现这 32 份里装的全是一模一样的副本，于是用 ZeRO / FSDP 把它们切开，每卡降到 35 GB、19.5 GB，最少 4 GB。你在 TikTok 用的 DeepSpeed 做的就是这件事。</p>
+<p class="meta"><b>面试会这样问</b><q>How does FSDP work?</q> · <q>What do ZeRO stages 1, 2 and 3 shard, and what does each cost in communication?</q> · <q>How does DDP overlap gradient communication with backward?</q></p>
+<p class="meta"><b>考过</b>NVIDIA Research Intern（"How does torch FSDP work?"，拿到 offer，Glassdoor RVW102358730，年份未核实）· NVIDIA 框架岗 2023 onsite 第 3 轮（实现 backprop 后追问实现 grad-accumulation，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· NVIDIA DL 全职 VO 2022（讨论"为什么by default grad 要累计"）· 文心（"deepspeed zero1-3"）· 字节（"FSDP2和FSDP1的区别"）· 牛客（"DeepSpeed ZeRO stage1和stage 2的通信量区别，论文和代码实现有没有gap"）· 快手（"DP、TP-SP的计算通信重叠原理"）· xAI ML/Infra 第一轮补全 DP 和 FSDP 的 distributed matmul（<a href="https://www.1point3acres.com/bbs/thread-1171574-1-1.html">1p3a 1171574</a>）</p>
+
+<h2>v2：DDP 的一个 step 做五件事</h2>
+<p>DDP（DistributedDataParallel）是最直接的多卡训练。每张卡做同样的事，只是吃不同的数据。</p>
+<ol>
+  <li><b>复制</b>：32 张卡各放一份完整模型。开始时 rank0 把初始 weight broadcast 给所有卡，保证起点一样</li>
+  <li><b>切 batch</b>：一个 step 的 batch 切成 32 份，每张卡拿自己那份</li>
+  <li><b>各算各的</b>：每张卡用自己的数据 forward、backward，得到自己的 gradient</li>
+  <li><b>all-reduce gradient</b>：求平均，每张卡拿到同一个 gradient。2 张卡的例子：(1, 2) 和 (3, 4) 求和得 (4, 6)，除以 2 得 (2, 3)</li>
+  <li><b>各自更新</b>：起点一样、gradient 一样、optimizer 一样，算出的新 weight 必然一样，所以 weight 本身从来不用传</li>
+</ol>
+<p>每个 step 只同步一次 gradient：16 GB，按第 3 课的 ring 公式，每卡发 2 × 31/32 × 16 = 31 GB。</p>
+
+<h2>bucket：backward 还没算完就开始发</h2>
+<p>backward 从最后一层往前算，最后几层的 gradient 最先算好。DDP 不等全部算完，而是把 gradient 按顺序装进 bucket（默认每个 25 MiB），一个 bucket 装满就立刻异步 all-reduce，GPU 接着算前面层的 backward。好比宴席上做好一道菜就先端出去，不用等一桌菜全做完。</p>
+<ul>
+  <li>8B 的 16 GB gradient 大约装成 600 个 bucket（16 GB ÷ 25 MiB ≈ 610）</li>
+  <li>只要通信跟得上 backward，最后只剩最后一个 bucket 的通信露在外面（exposed），几乎不占 step time</li>
+  <li>bucket 太小，会变成一堆低效的小 collective；只用一个大 bucket，又得等 backward 全部算完</li>
+</ul>
+
+<h2>gradient accumulation 和 global batch</h2>
+<p>一张卡一次只放得下 b 条样本（micro-batch），想要更大的 batch，就连跑 m 个 micro-batch。每次 backward 的 gradient 都加到 <code>.grad</code> 上（PyTorch 默认就是累加），攒满 m 次才更新一次。每个 micro-batch 的 loss 先除以 m，结果才等于大 batch 的平均 gradient。</p>
+\[ \text{global batch} = \text{micro-batch} \times \text{accumulation steps} \times \text{DP size} \]
+<p>例（假设的数）：b = 2、m = 4、32 张卡，一个 step 是 2 × 4 × 32 = 256 条样本。DDP 下前 m − 1 次放进 <code>model.no_sync()</code>，只在本卡攒，最后一次才 all-reduce，通信从 4 次降到 1 次。activation 只按 b 算，所以 accumulation 是拿时间换 memory。</p>
+
+<h2>DDP 的问题：32 份一模一样的 128 GB</h2>
+<p>DDP 快了，memory 却一点没省。每张卡还是 8B × 16 = 128 GB，比 80 GB 还多，所以 8B 全参训练用纯 DDP 根本跑不起来。再看这 128 GB 装的是什么：</p>
+<ul>
+  <li>optimizer state（fp32 master weight、m、v）：8B × 12 = 96 GB。32 张卡上 32 份完全一样，合计 3 TB 存的是同一份东西</li>
+  <li>gradient 在 all-reduce 之后也一样，parameter 更新后也一样</li>
+</ul>
+<p>既然一样，就没必要每张卡都存一整份。ZeRO（Zero Redundancy Optimizer）的想法是，每张卡只保管、只更新 1/N，要用别人那份时再借。像合租，锅碗瓢盆每家只备一部分，缺什么去邻居家借。</p>
+
+<h2>v3：ZeRO 一级一级往下切</h2>
+<table>
+  <thead><tr><th>做法</th><th>切掉什么</th><th>每卡 model state</th><th>N = 32、Ψ = 8B</th><th>每卡每步发送</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">DDP</td><td>不切</td><td class="nw">\(16\Psi\)</td><td class="nw"><strong>128 GB</strong></td><td>all-reduce，31 GB</td></tr>
+    <tr><td class="nw">ZeRO-1</td><td>optimizer state</td><td class="nw">\(4\Psi + 12\Psi/N\)</td><td class="nw">32 + 3 = <strong>35 GB</strong></td><td>reduce-scatter + all-gather，31 GB</td></tr>
+    <tr><td class="nw">ZeRO-2</td><td>再切 gradient</td><td class="nw">\(2\Psi + 14\Psi/N\)</td><td class="nw">16 + 3.5 = <strong>19.5 GB</strong></td><td>同上，31 GB</td></tr>
+    <tr><td class="nw">ZeRO-3 / FSDP</td><td>再切 parameter</td><td class="nw">\(16\Psi/N\)</td><td class="nw"><strong>4 GB</strong></td><td>多一次 all-gather，46.5 GB（1.5×）</td></tr>
+  </tbody>
+</table>
+<p>公式的读法：没切的部分每卡一整份，切了的部分除以 N。比如 ZeRO-1，bf16 param 和 gradient 各 2Ψ 没切，共 4Ψ = 32 GB；12Ψ 的 optimizer state 切成 32 份，每份 3 GB。activation 不在表里，要另算。</p>
+
+<h2>ZeRO-1/2 为什么不多花通信</h2>
+<p>靠的就是第 3 课的等式：all-reduce = reduce-scatter + all-gather。ZeRO 把这两步拆开，在中间插入更新：</p>
+<ol>
+  <li><b>reduce-scatter gradient</b>：每张卡只拿到自己负责的那 1/N 的 gradient 总和</li>
+  <li><b>只更新自己那份</b>：用自己保管的 1/N optimizer state，更新 1/N 的 parameter</li>
+  <li><b>all-gather parameter</b>：把各卡更新好的那份拼回完整的 bf16 parameter，下一步 forward 要用</li>
+</ol>
+<p>2 张卡、2 个 parameter 的例子：gradient (1, 2) 和 (3, 4) reduce-scatter 之后，rank0 拿到第 1 个位置的和 4，rank1 拿到第 2 个位置的和 6。rank0 只用自己的 m、v 更新第 1 个 parameter，rank1 更新第 2 个。最后 all-gather，两张卡又都有完整的新 parameter。发的量和一次 all-reduce 一样，每张卡的 optimizer state 却只存了一半。ZeRO-2 再多做一点：backward 时每个 bucket 一做完 reduce-scatter，不归自己管的 gradient 就立刻释放，所以 gradient 也只剩 1/N。</p>
+
+<h2>ZeRO-3 / FSDP：每层用之前借，用完就还</h2>
+<p>ZeRO-3 连 parameter 也切了，每张卡平时只有每层 1/32 的 weight。PyTorch 里的同一种做法叫 FSDP（Fully Sharded Data Parallel）。模型分成若干 unit（一般一层一个），一个一个处理：</p>
+<ul>
+  <li><b>forward</b>：all-gather 这一层的完整 parameter → 算 forward → 释放不归自己的部分</li>
+  <li><b>backward</b>：再 all-gather 一次（forward 后已经释放了）→ 算 gradient → reduce-scatter，每卡只留自己那 1/N 的 gradient，其余释放</li>
+  <li><b>prefetch</b>：算这一层的时候，下一层的 all-gather 已经发出去了，通信藏在计算后面</li>
+</ul>
+<p>Qwen3-VL-8B 的一层 LLM 约 0.19B parameter（attention 4096 × 10240 ≈ 42M，SwiGLU 的 3 个矩阵 3 × 4096 × 12288 ≈ 151M），bf16 约 0.39 GB。所以每卡 memory ≈ 切好的 4 GB + 正在用和 prefetch 的一两层完整 weight + activation。多出来的 0.5 倍通信，就是 backward 里的第二次 all-gather。</p>
+<p><b>FSDP2 和 FSDP1</b>：FSDP1 把一组 parameter 摊平拼成一个大的 FlatParameter 再切；FSDP2 用 DTensor（PyTorch 的分布式 tensor）把每个 parameter 各自按第 0 维切，更容易和 TP 组合，存取 checkpoint 也更简单。</p>
+
+<h2>另外两个名字</h2>
+<ul>
+  <li><b>Megatron 的 distributed optimizer</b> ≈ ZeRO-1：只切 optimizer state，gradient 用 reduce-scatter 同步，更新完再 all-gather parameter。Megatron 常用 bf16 param + fp32 gradient，所以每卡是 \(6\Psi + 12\Psi/N\)，32 卡约 48 + 3 = 51 GB</li>
+  <li><b>offload</b>（ZeRO-Offload）：把 optimizer state（甚至 parameter）放到 CPU memory，在 CPU 上做 optimizer step。像把东西存进城外的租赁仓库：GPU memory 省了，但每步都要经 PCIe 搬来搬去，CPU 也算得慢，step 会明显变慢</li>
+</ul>
+
+<p class="you"><b>去查一下</b>面试一定会问你在 TikTok 的 setup。翻出当时的 DeepSpeed config（ds_config）和训练日志，把这几项写下来：<code>zero_optimization.stage</code> 是哪一级，为什么选它；有没有 <code>offload_optimizer</code> / <code>offload_param</code>；<code>train_micro_batch_size_per_gpu</code>、<code>gradient_accumulation_steps</code>、<code>train_batch_size</code> 各是多少，验证 micro-batch × accumulation × 32 = global batch（写的是 <code>"auto"</code> 就去 HF TrainingArguments 里找）；每卡 memory 峰值多少，和上表的 model state 对一对，差出来的大头就是 activation。另外，verl 的训练端可以选 FSDP 或 Megatron（配置里 actor 的 <code>strategy</code>），你在 OpenManus-RL 里用的是哪个？</p>
+
+<h2>v3 还剩什么问题</h2>
+<ul>
+  <li><b>activation 不切</b>：ZeRO 只切 model state。一条 8K token 的样本，开 FlashAttention、不开 recompute，36 层的 activation 约 41 GB，每张卡都得自己扛，是 ZeRO-3 那 4 GB 的 10 倍</li>
+  <li><b>DP 卡数 ≤ global batch 的样本数</b>：每张卡至少分到 1 条样本。global batch 256 条，DP 最多 256 张卡；再加卡就只能加大 batch，batch 太大又伤收敛</li>
+  <li><b>70B 以上必须跨机切</b>：70B × 16 = 1120 GB，一台机器 8 × 80 = 640 GB 装不下，ZeRO-3 只能切到多台机器上。于是每一层每个 step 的两次 all-gather 和一次 reduce-scatter 都要走慢 9 倍的 IB</li>
+</ul>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>In DDP every GPU holds a full replica, trains on its own data, and all-reduces gradients bucket by bucket during backward, so every GPU applies the same update. The problem is memory: mixed-precision Adam needs 16 bytes per parameter, 128 GB for an 8B model on every GPU, all identical. ZeRO shards them across data-parallel ranks: stage 1 shards optimizer states, stage 2 adds gradients, stage 3 adds parameters; on 32 GPUs that's 35, 19.5 and 4 GB. Stages 1 and 2 split the all-reduce into a reduce-scatter and an all-gather, so communication is unchanged. Stage 3, which is FSDP, re-gathers each layer's parameters in backward, about 1.5×.</p></div>
+
+<h2>自测</h2>
+<details><summary>How does FSDP work?（NVIDIA Research Intern 原题）</summary><p>每张卡平时只存每个 unit 1/N 的 parameter、gradient 和 optimizer state。forward 到某个 unit 前 all-gather 出完整 parameter，算完就释放；backward 时再 all-gather 一次，算出 gradient 后 reduce-scatter，每卡只留自己那份，再用自己的 optimizer state 更新自己那份 parameter。prefetch 提前发下一个 unit 的 all-gather，让通信和计算 overlap。每卡 model state 是 \(16\Psi/N\) 加上一两个完整 unit，通信约是 DDP 的 1.5 倍。</p></details>
+<details><summary>32 卡训 8B，ZeRO-2 够吗？为什么不直接 ZeRO-3？</summary><p>ZeRO-2 每卡 19.5 GB；加上一条 8K token 样本开了 FlashAttention 的 activation（约 41 GB），合计约 60 GB，放得进 80 GB，再开 recompute 只要约 22 GB。ZeRO-3 再省 15.5 GB，代价是每卡每步多发 15.5 GB（31 → 46.5 GB），而且每层都要等 all-gather。放得下就不值。</p></details>
+<details><summary>8B 在 32 卡上为什么用不着 Megatron 的 TP/PP？</summary><p>ZeRO 已经放得下。DP 每个 step 只同步一次 gradient，能藏在 backward 后面。32 张卡只要 global batch 不少于 32 条样本就分得开。TP 每层要 4 次同步 all-reduce，PP 有 bubble（流水线上的空等），都是额外代价。它们的价值在 70B 以上、超长序列（activation 太大），或者卡多到 global batch 不够分的时候。</p></details>
+<details><summary>ZeRO-1 和 ZeRO-2 的通信量有区别吗？（牛客原题）</summary><p>按论文没有。都是 gradient reduce-scatter 加 parameter all-gather，每卡 2Ψ 个元素（8B、32 卡约 31 GB），和 DDP 的 all-reduce 一样。区别只在 memory：ZeRO-2 在 backward 里按 bucket reduce-scatter，不归自己的 gradient 立刻释放；ZeRO-1 要留一整份 gradient。</p></details>
+<details><summary>micro-batch 4、accumulation 8、64 张卡，global batch 多大？DDP 每个 step all-reduce 几次？</summary><p>4 × 8 × 64 = 2048 条样本。前 7 个 micro-batch 放进 <code>no_sync()</code>，每个 step 只在最后 all-reduce 1 次；不用 <code>no_sync()</code> 就是 8 次。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="dp-zero-fsdp.html">6.6 DP、ZeRO、FSDP 与 distributed optimizer</a>（公式推导、hybrid sharding、手写 FSDP linear）· <a href="gradient-accumulation.html">6.20 gradient accumulation</a>（loss ÷ m 的手算例子和代码）· <a href="overlap.html">6.17 overlap</a>（DDP bucket、FSDP prefetch 的细节）· <a href="training-memory.html">6.10 training memory</a></p>
+
+<div class="next"><b>下一课</b>ZeRO 只切 model state，activation 不切；DP 卡数又被 global batch 卡住；到 70B 以上，每层的 all-gather 还得跨机。下一课的 TP 换个方向切：把每一层的矩阵切成 t 份，parameter 和 activation 一起缩小，通信留在机内的 NVLink 上。</div>
+
+</main>
+</body>
+</html>

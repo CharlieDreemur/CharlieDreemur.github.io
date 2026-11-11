@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallelism 配置速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>给定模型和 cluster，怎么选 parallelism 配置？<br>（含 trillion-parameter training system design）</h1>
+<p class="meta"><b>英文问法</b><q>Given a model and a cluster, how do you choose TP, PP and DP sizes?</q> · <q>Design a distributed training system for a trillion-parameter language model.</q></p>
+<p class="meta"><b>考过</b>NVIDIA Senior SWE, LLM Applications 2025-09 等（trillion-parameter system design，Aced 用户提交，NVIDIA 问过 3 次）· NVIDIA High Performance LLM Training Engineer（Glassdoor RVW105730158）· NVIDIA DL Engineer 慕尼黑 2026（"how distributed training works"，Glassdoor RVW104512401）· NVIDIA DL Engineer HM 轮（"parallel training methods"，Glassdoor RVW98332074）· Meta（"Design a Scalable MoE Pretraining Pipeline"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>3D parallelism：卡数 \(= t\cdot p\cdot N\)</dt>
+  <dd>先把一份模型切成 \(t\times p\) 块放下（TP 切每层的矩阵，PP 按层分段），再把这一整套复制 \(N\) 份，各吃不同的数据（DP）。像一本书太厚，拆成 \(t\times p\) 个分册交给一组人，再组织 \(N\) 组人同时读。<span class="eg">例：t = 8、p = 8，一份模型占 64 卡；1024 卡 → N = 16。</span></dd>
+  <dt>Communication 有轻有重</dt>
+  <dd>TP 每层 forward、backward 各 2 次 all-reduce，挡在计算前面。PP 只在 stage 边界传 activation（point-to-point）。DP 每个 step 才同步一次 gradient。像同桌随时讨论、隔壁传纸条、每周开一次全员会。</dd>
+  <dt>NVLink domain</dt>
+  <dd>一台机器的 8 张卡由 NVLink/NVSwitch 互连，带宽最高；跨机走 InfiniBand，慢得多。所以越重的 communication 放得越靠里。</dd>
+  <dt>Pipeline bubble</dt>
+  <dd>流水线开头要灌满、结尾要排空，这段时间卡在空转，占比 \((p-1)/m\)，\(m\) 是 micro-batch 数。interleaved 1F1B 再除以每卡的 chunk 数。<span class="eg">例：p = 8、m = 96 → 7/96 ≈ 7.3%。</span></dd>
+  <dt>Memory 预算</dt>
+  <dd>model states 16 bytes/param，每卡分到 \(16\Psi/(t\cdot p)\)，再加 activation（见 <a href="training-memory.html">training memory</a>）。它决定一份模型至少切几份。</dd>
+</dl>
+
+<h2 id="figs">看图：TP、PP、DP 在 1024 张卡上怎么摆</h2>
+<figure class="fig">
+<svg viewBox="0 0 540 390" role="img" aria-label="175B 模型在 1024 张卡上的切法：一台机器 8 卡做 TP，8 台机器串成 8 个 PP stage 组成一个 64 卡的 replica，再复制 16 份做 DP；通信越重放得越靠里"><defs><marker id="cf-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="0" y="14" text-anchor="start" class="hd">一个 replica = 一份完整模型 = 8 台 × 8 卡 = 64 卡</text><text x="194" y="36" text-anchor="middle" class="m">每台 8 卡（NVLink 互连）</text><rect x="111" y="43" width="163" height="23" rx="4" class="f1"/><text x="105" y="59" text-anchor="end" class="m">stage 1（node 0）</text><rect x="114" y="46" width="17" height="17" rx="2" class="box"/><rect x="134" y="46" width="17" height="17" rx="2" class="box"/><rect x="154" y="46" width="17" height="17" rx="2" class="box"/><rect x="174" y="46" width="17" height="17" rx="2" class="box"/><rect x="194" y="46" width="17" height="17" rx="2" class="box"/><rect x="214" y="46" width="17" height="17" rx="2" class="box"/><rect x="234" y="46" width="17" height="17" rx="2" class="box"/><rect x="254" y="46" width="17" height="17" rx="2" class="box"/><path d="M286,60.5 V71.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="67" width="163" height="23" rx="4" class="f1"/><text x="105" y="83" text-anchor="end" class="m">stage 2（node 1）</text><rect x="114" y="70" width="17" height="17" rx="2" class="box"/><rect x="134" y="70" width="17" height="17" rx="2" class="box"/><rect x="154" y="70" width="17" height="17" rx="2" class="box"/><rect x="174" y="70" width="17" height="17" rx="2" class="box"/><rect x="194" y="70" width="17" height="17" rx="2" class="box"/><rect x="214" y="70" width="17" height="17" rx="2" class="box"/><rect x="234" y="70" width="17" height="17" rx="2" class="box"/><rect x="254" y="70" width="17" height="17" rx="2" class="box"/><path d="M286,84.5 V95.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="91" width="163" height="23" rx="4" class="f1"/><text x="105" y="107" text-anchor="end" class="m">stage 3（node 2）</text><rect x="114" y="94" width="17" height="17" rx="2" class="box"/><rect x="134" y="94" width="17" height="17" rx="2" class="box"/><rect x="154" y="94" width="17" height="17" rx="2" class="box"/><rect x="174" y="94" width="17" height="17" rx="2" class="box"/><rect x="194" y="94" width="17" height="17" rx="2" class="box"/><rect x="214" y="94" width="17" height="17" rx="2" class="box"/><rect x="234" y="94" width="17" height="17" rx="2" class="box"/><rect x="254" y="94" width="17" height="17" rx="2" class="box"/><path d="M286,108.5 V119.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="115" width="163" height="23" rx="4" class="f1"/><text x="105" y="131" text-anchor="end" class="m">stage 4（node 3）</text><rect x="114" y="118" width="17" height="17" rx="2" class="box"/><rect x="134" y="118" width="17" height="17" rx="2" class="box"/><rect x="154" y="118" width="17" height="17" rx="2" class="box"/><rect x="174" y="118" width="17" height="17" rx="2" class="box"/><rect x="194" y="118" width="17" height="17" rx="2" class="box"/><rect x="214" y="118" width="17" height="17" rx="2" class="box"/><rect x="234" y="118" width="17" height="17" rx="2" class="box"/><rect x="254" y="118" width="17" height="17" rx="2" class="box"/><path d="M286,132.5 V143.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="139" width="163" height="23" rx="4" class="f1"/><text x="105" y="155" text-anchor="end" class="m">stage 5（node 4）</text><rect x="114" y="142" width="17" height="17" rx="2" class="box"/><rect x="134" y="142" width="17" height="17" rx="2" class="box"/><rect x="154" y="142" width="17" height="17" rx="2" class="box"/><rect x="174" y="142" width="17" height="17" rx="2" class="box"/><rect x="194" y="142" width="17" height="17" rx="2" class="box"/><rect x="214" y="142" width="17" height="17" rx="2" class="box"/><rect x="234" y="142" width="17" height="17" rx="2" class="box"/><rect x="254" y="142" width="17" height="17" rx="2" class="box"/><path d="M286,156.5 V167.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="163" width="163" height="23" rx="4" class="f1"/><text x="105" y="179" text-anchor="end" class="m">stage 6（node 5）</text><rect x="114" y="166" width="17" height="17" rx="2" class="box"/><rect x="134" y="166" width="17" height="17" rx="2" class="box"/><rect x="154" y="166" width="17" height="17" rx="2" class="box"/><rect x="174" y="166" width="17" height="17" rx="2" class="box"/><rect x="194" y="166" width="17" height="17" rx="2" class="box"/><rect x="214" y="166" width="17" height="17" rx="2" class="box"/><rect x="234" y="166" width="17" height="17" rx="2" class="box"/><rect x="254" y="166" width="17" height="17" rx="2" class="box"/><path d="M286,180.5 V191.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="187" width="163" height="23" rx="4" class="f1"/><text x="105" y="203" text-anchor="end" class="m">stage 7（node 6）</text><rect x="114" y="190" width="17" height="17" rx="2" class="box"/><rect x="134" y="190" width="17" height="17" rx="2" class="box"/><rect x="154" y="190" width="17" height="17" rx="2" class="box"/><rect x="174" y="190" width="17" height="17" rx="2" class="box"/><rect x="194" y="190" width="17" height="17" rx="2" class="box"/><rect x="214" y="190" width="17" height="17" rx="2" class="box"/><rect x="234" y="190" width="17" height="17" rx="2" class="box"/><rect x="254" y="190" width="17" height="17" rx="2" class="box"/><path d="M286,204.5 V215.5" class="ln2" marker-end="url(#cf-ah2)"/><rect x="111" y="211" width="163" height="23" rx="4" class="f1"/><text x="105" y="227" text-anchor="end" class="m">stage 8（node 7）</text><rect x="114" y="214" width="17" height="17" rx="2" class="box"/><rect x="134" y="214" width="17" height="17" rx="2" class="box"/><rect x="154" y="214" width="17" height="17" rx="2" class="box"/><rect x="174" y="214" width="17" height="17" rx="2" class="box"/><rect x="194" y="214" width="17" height="17" rx="2" class="box"/><rect x="214" y="214" width="17" height="17" rx="2" class="box"/><rect x="234" y="214" width="17" height="17" rx="2" class="box"/><rect x="254" y="214" width="17" height="17" rx="2" class="box"/><rect x="113" y="213" width="19" height="19" rx="2" class="axis"/><text x="300" y="52" text-anchor="start" class="acc">TP = 8：同一台机器的 8 卡</text><text x="300" y="69" text-anchor="start" class="m">每层都 all-reduce，走 NVLink</text><text x="300" y="124" text-anchor="start" class="c2">PP = 8：8 台机器串成流水线</text><text x="300" y="141" text-anchor="start" class="m">stage 之间 p2p 传 activation</text><text x="300" y="158" text-anchor="start" class="m">跨机走 InfiniBand</text><text x="300" y="196" text-anchor="start">每卡 model states：</text><text x="300" y="213" text-anchor="start" class="m">2.8 TB ÷ 64 = 43.75 GB</text><text x="0" y="260" text-anchor="start" class="hd">DP = 16：把这 64 卡复制 16 份，共 8 × 8 × 16 = 1024 卡</text><text x="0" y="278" text-anchor="start" class="m">同一位置的卡（框出的那张）每个 step all-reduce 一次 gradient</text><rect x="114" y="290" width="48" height="48" rx="3" class="f1"/><path d="M114,296 H162" class="grid"/><path d="M120,290 V338" class="grid"/><path d="M114,302 H162" class="grid"/><path d="M126,290 V338" class="grid"/><path d="M114,308 H162" class="grid"/><path d="M132,290 V338" class="grid"/><path d="M114,314 H162" class="grid"/><path d="M138,290 V338" class="grid"/><path d="M114,320 H162" class="grid"/><path d="M144,290 V338" class="grid"/><path d="M114,326 H162" class="grid"/><path d="M150,290 V338" class="grid"/><path d="M114,332 H162" class="grid"/><path d="M156,290 V338" class="grid"/><rect x="114" y="332" width="6" height="6" rx="1" class="axis"/><path d="M117.0,338 V350" class="ln"/><text x="138" y="368" text-anchor="middle" class="m">replica 1</text><text x="138" y="384" text-anchor="middle" class="m">（上图）</text><rect x="194" y="290" width="48" height="48" rx="3" class="f1"/><path d="M194,296 H242" class="grid"/><path d="M200,290 V338" class="grid"/><path d="M194,302 H242" class="grid"/><path d="M206,290 V338" class="grid"/><path d="M194,308 H242" class="grid"/><path d="M212,290 V338" class="grid"/><path d="M194,314 H242" class="grid"/><path d="M218,290 V338" class="grid"/><path d="M194,320 H242" class="grid"/><path d="M224,290 V338" class="grid"/><path d="M194,326 H242" class="grid"/><path d="M230,290 V338" class="grid"/><path d="M194,332 H242" class="grid"/><path d="M236,290 V338" class="grid"/><rect x="194" y="332" width="6" height="6" rx="1" class="axis"/><path d="M197.0,338 V350" class="ln"/><text x="218" y="368" text-anchor="middle" class="m">replica 2</text><rect x="274" y="290" width="48" height="48" rx="3" class="f1"/><path d="M274,296 H322" class="grid"/><path d="M280,290 V338" class="grid"/><path d="M274,302 H322" class="grid"/><path d="M286,290 V338" class="grid"/><path d="M274,308 H322" class="grid"/><path d="M292,290 V338" class="grid"/><path d="M274,314 H322" class="grid"/><path d="M298,290 V338" class="grid"/><path d="M274,320 H322" class="grid"/><path d="M304,290 V338" class="grid"/><path d="M274,326 H322" class="grid"/><path d="M310,290 V338" class="grid"/><path d="M274,332 H322" class="grid"/><path d="M316,290 V338" class="grid"/><rect x="274" y="332" width="6" height="6" rx="1" class="axis"/><path d="M277.0,338 V350" class="ln"/><text x="298" y="368" text-anchor="middle" class="m">replica 3</text><text x="378" y="319" text-anchor="middle" class="hd">…</text><rect x="434" y="290" width="48" height="48" rx="3" class="f1"/><path d="M434,296 H482" class="grid"/><path d="M440,290 V338" class="grid"/><path d="M434,302 H482" class="grid"/><path d="M446,290 V338" class="grid"/><path d="M434,308 H482" class="grid"/><path d="M452,290 V338" class="grid"/><path d="M434,314 H482" class="grid"/><path d="M458,290 V338" class="grid"/><path d="M434,320 H482" class="grid"/><path d="M464,290 V338" class="grid"/><path d="M434,326 H482" class="grid"/><path d="M470,290 V338" class="grid"/><path d="M434,332 H482" class="grid"/><path d="M476,290 V338" class="grid"/><rect x="434" y="332" width="6" height="6" rx="1" class="axis"/><path d="M437.0,338 V350" class="ln"/><text x="458" y="368" text-anchor="middle" class="m">replica 16</text><path d="M117.0,350 H437.0" class="ln"/></svg>
+<figcaption>图 1：本页的 175B、1024 卡例子（t = 8、p = 8、N = 16）。上半部分是一份完整模型：每一行是一台机器，暖色框里的 8 张卡做 TP，每层都要 all-reduce，所以放在 NVLink 最快的机器内部；8 台机器按层分成 8 个 stage，蓝色箭头是 PP 在 stage 之间传 activation，量小，可以跨机。下半部分把这 64 卡复制 16 份做 DP，只有同一位置的卡（图中框出的 stage 8、GPU0）在每个 step 末尾同步一次 gradient，最轻，放在最外层。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I start with a memory budget, then place each kind of parallelism by how much it communicates. Model states take about 16 bytes per parameter plus activations, which tells me how many GPUs one replica needs. Tensor parallelism all-reduces inside every layer, so I keep it within a node on NVLink, usually 8. If the model still doesn't fit, I add pipeline parallelism across nodes, with many more micro-batches than stages to keep the bubble small. Context parallelism handles long sequences and expert parallelism handles MoE. All remaining GPUs go to data parallelism with a sharded optimizer. Then I tune micro-batch size and recomputation and check MFU.</p></div>
+
+<h2 id="how">怎么选：先算账，再按 communication 从重到轻往外套</h2>
+<p><strong>一句话</strong>：TP 放机内（≤ 8），还放不下就跨机加 PP，CP / EP 按需加，剩下的卡全给 DP。</p>
+<ol>
+  <li><strong>算账</strong>：\(16\Psi\) + activation，除以单卡显存 → 一份模型至少几张卡。</li>
+  <li><strong>TP 机内</strong>：\(t\) ≤ 每台 GPU 数（通常 8）；再大 GEMM 变小、通信变多（<a href="tp-communication.html">TP communication</a>）。</li>
+  <li><strong>PP 跨机</strong>：取放得下的最小 \(p\)，保证 \(m \gg p\)，用 interleaved 1F1B（<a href="pipeline-parallel.html">PP</a>）。</li>
+  <li><strong>按需</strong>：sequence 很长加 <a href="context-parallel.html">CP</a>；MoE 加 <a href="moe-expert-parallel.html">EP</a>。</li>
+  <li><strong>剩下给 DP</strong>：\(N = \text{卡数}/(t\cdot p)\)，配 distributed optimizer / ZeRO（<a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>）。</li>
+  <li><strong>调优</strong>：micro-batch size、<a href="activation-recompute.html">recompute</a>、<a href="overlap.html">overlap</a>，看 <a href="flops-mfu.html">MFU</a>。</li>
+</ol>
+
+<h2 id="example">手算例子：175B GPT，1024 张 A100-80GB</h2>
+<p>\(h = 12288\)、\(L = 96\)、\(s = 2048\)，global batch 1536 条，每台 8 卡。</p>
+<ol>
+  <li>model states \(16 \times 175\text{B} = 2.8\) TB → 一份模型至少 35 卡。</li>
+  <li>\(t = 8\)，占满一台机器。</li>
+  <li>\(p = 4\)：每卡 \(2.8\text{ TB}/32 = 87.5\) GB，放不下。\(p = 8\)：43.75 GB，加 activation（SP + selective recompute、\(b = 1\)，第一个 stage 存满 \(L\) 层：\(34sbhL/t \approx 10.3\) GB）共约 54 GB ✓</li>
+  <li>\(N = 1024/64 = 16\)；每个 pipeline 分到 96 条 → \(m = 96\)，bubble 约 7.3%（\(7/96\)）</li>
+</ol>
+<table>
+  <thead><tr><th>真实配置</th><th>GPU</th><th>t</th><th>p</th><th>CP</th><th>N</th><th>利用率</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">GPT 145.6B（Megatron）</td><td>1536</td><td>8</td><td>8</td><td>–</td><td>24</td><td>47%*</td></tr>
+    <tr><td class="nw">GPT 1T（Megatron）</td><td>3072</td><td>8</td><td>64</td><td>–</td><td>6</td><td>52%*</td></tr>
+    <tr><td class="nw">Llama 3 405B，seq 8K</td><td>16384</td><td>8</td><td>16</td><td>1</td><td>128</td><td>MFU 41%</td></tr>
+    <tr><td class="nw">Llama 3 405B，seq 128K</td><td>16384</td><td>8</td><td>16</td><td>16</td><td>8</td><td>MFU 38%</td></tr>
+  </tbody>
+</table>
+<p>* 占峰值的比例，FLOPs 含 recompute。Llama 3 把维度从内到外排成 [TP, CP, PP, DP]，DP 用 FSDP。</p>
+
+<h2 id="system">Trillion-parameter system design 还要讲</h2>
+<ul>
+  <li><strong>算时长</strong>：\(6\Psi D\) ÷（卡数 × 峰值 × MFU），见 <a href="flops-mfu.html">FLOPs 与 MFU</a>；Megatron 估 1T 模型、450B token、3072 卡约 84 天。</li>
+  <li><strong>容错</strong>：Llama 3 405B 54 天里中断 466 次 → 定期存 distributed checkpoint（异步写、能换并行度重新切分），自动发现坏卡并重启。</li>
+  <li><strong>数据与监控</strong>：data pipeline 不能让 GPU 等；盯 MFU、loss spike、慢卡。</li>
+</ul>
+
+<h2>必答点</h2>
+<ul>
+  <li>先算 memory（\(16\Psi\) + activation），决定 \(t\cdot p\)</li>
+  <li>TP 机内 ≤ 8；PP 跨机，\(m \gg p\)；剩下全给 DP + ZeRO/FSDP</li>
+  <li>CP 管长 sequence，EP 管 MoE</li>
+  <li>例：175B、1024 卡 → \(t = 8\)、\(p = 8\)、\(N = 16\)</li>
+  <li>1T 规模还要 checkpoint、自动重启、监控</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么 TP 不跨机？</summary>
+  <p>TP 每个 micro-batch 的每一层都要 all-reduce，而且挡在计算前面；PP 只有便宜的 point-to-point。Megatron 实测 TP 和 PP 组合没选好，吞吐可以差 2 倍，所以 TP 用到单机 GPU 数为止，再大的模型靠 PP 跨机。</p>
+</details>
+<details>
+  <summary>用了 distributed optimizer（ZeRO-1）之后呢？</summary>
+  <p>12 bytes 的 optimizer state 再按 \(N\) 切。上例 \(p = 8\) 时每卡 model states 从 43.75 GB 降到约 13 GB，\(p\) 可以降到 2–4，stage 少、bubble 小。ZeRO-1/2 的 communication 量和普通 DP 一样。</p>
+</details>
+<details>
+  <summary>micro-batch size 怎么选？</summary>
+  <p>\(b\) 大，GEMM 效率高；但 \(m = B/(N\cdot b)\) 变小，bubble 变大，activation 也变多。没有通用答案，要实测，Megatron 的 1B 模型例子里最优是 \(b = 4\)。</p>
+</details>
+<details>
+  <summary>DP 能一直加吗？</summary>
+  <p>受 global batch 限制。Llama 3 从 8K 卡扩到 16K 卡时 global batch 固定为 16M token，每个 DP group 的 batch 减半，MFU 从 43% 降到 41%。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a> §1（p.2）、§2.2（pp.3–4）、§3.2–3.4 Takeaway #1–#3（pp.5–6）、§5.1 Table 1（p.8）、§5.4.1（p.10）· <a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022</a> §4–5 eq. 5–6（pp.8–9）· <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2020, ZeRO</a> §3.1（p.8）、§7（p.13）· <a href="https://arxiv.org/abs/2407.21783">Llama Team 2024, The Llama 3 Herd of Models</a> §3.3.2 Table 4（pp.10–12）、§3.3.4（p.13）</p>
+
+</main>
+</body>
+</html>

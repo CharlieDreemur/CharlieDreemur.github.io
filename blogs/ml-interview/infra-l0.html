@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0 课 · 算和搬</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 0 课</p>
+<h1>GPU 只关心两件事：算得多快、搬得多快</h1>
+<p class="lead">所有训练加速的技术，最后都落在一个判断上：这一步慢，是因为算不过来，还是因为数据搬不过来？这一课把这个判断讲清楚，后面每一课都要用它。</p>
+<p class="meta"><b>面试会这样问</b><q>How do you tell whether a kernel is compute-bound or memory-bound?</q> · <q>Explain the roofline model.</q> · <q>Why is LLM inference memory-bound?</q></p>
+<p class="meta"><b>考过</b>NVIDIA DevTech NG 2026（GPU memory 架构、matmul tiling，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· NVIDIA Senior System Software Engineer 2024（"proving that LLMs are memory-intensive rather than purely compute-intensive"）</p>
+
+<h2>先把 GPU 想成一个厨房</h2>
+<table>
+  <thead><tr><th>厨房</th><th>GPU</th><th>H100 的数</th></tr></thead>
+  <tbody>
+    <tr><td>厨师炒菜的速度</td><td>Tensor Core 的算力</td><td>989 TFLOPS（BF16），每秒 989 万亿次运算</td></tr>
+    <tr><td>城外的大仓库</td><td>HBM（global memory）</td><td>80 GB，每秒能运 3.35 TB</td></tr>
+    <tr><td>手边的案板</td><td>SRAM（shared memory / L1）</td><td>每个 SM 约 256 KB，很快但很小</td></tr>
+  </tbody>
+</table>
+<p>厨师快得离谱，菜却要从城外一车一车运过来。算一下：989 ÷ 3.35 ≈ 295。也就是说，每运来 1 byte 的菜，厨师要炒大约 295 下才不会闲着。</p>
+
+<h2>一个概念、一条分界线</h2>
+<ul>
+  <li><b>Arithmetic intensity</b> = FLOPs ÷ 从 HBM 读写的 bytes，也就是“每运 1 byte 菜炒几下”</li>
+  <li><b>Ridge point</b>：H100 BF16 约为 295。低于它是 <b>memory-bound</b>，厨师在等菜，给再多算力也没用；高于它是 <b>compute-bound</b>，运输在等厨师，GPU 才算跑满了</li>
+  <li><b>Roofline</b>：能达到的速度 = min(峰值算力, intensity × bandwidth)。画出来先是一条斜线（受搬运限制），然后是一条平线（受算力限制），拐点就是 ridge point</li>
+</ul>
+
+<h2>三个能手算的例子（BF16，每个数 2 bytes）</h2>
+<table>
+  <thead><tr><th>操作</th><th>FLOPs</th><th>读写 bytes</th><th>intensity</th><th>结论</th></tr></thead>
+  <tbody>
+    <tr><td>4096 × 4096 的 matmul</td><td>2 · 4096³ ≈ 1.37e11</td><td>三个矩阵 × 4096² × 2 ≈ 1.0e8</td><td>≈ 1365</td><td>compute-bound，约 0.14 ms</td></tr>
+    <tr><td>elementwise add（<code>y = a + b</code>）</td><td>每个元素 1 次</td><td>读 2 个、写 1 个，共 6 bytes</td><td>≈ 0.17</td><td>memory-bound，几乎全部时间在搬</td></tr>
+    <tr><td>decode，batch = 1（matrix × vector）</td><td>每个 parameter 乘一次、加一次：2Ψ</td><td>每个 parameter 2 bytes，全部读一遍：2Ψ</td><td>≈ 1</td><td>memory-bound</td></tr>
+  </tbody>
+</table>
+<p>Ψ 读作 psi，表示模型的 parameter 个数，8B 模型 Ψ = 8e9。一般地，[M, K] × [K, N] 的 matmul：</p>
+<ul>
+  <li><b>FLOPs = 2MKN</b>：结果有 M × N 个数，每个数是长度 K 的 dot product，要 K 次乘法和 K 次加法</li>
+  <li><b>bytes = 2(MK + KN + MN)</b>：读 A、读 B、写 C，每个数 2 bytes</li>
+  <li><b>捷径</b>：intensity 大致等于“每个数被重复用了几次”。方阵每个数用 4096 次，intensity 上千；elementwise 每个数只用 1 次，intensity 不到 1</li>
+</ul>
+<p class="you"><b>你的经验</b>第三行就是你用过的 vLLM。生成一个 token，就是整个模型 forward 一遍，每一层的 matmul 都要用到这层的 weight。16 GB 的 weight 放不进芯片上的 SRAM（每个 SM 只有约 256 KB），只能每次从 HBM 重新读。8B 模型每生成一个 token，16 GB 的 weight 都要从 HBM 读一遍：16 GB ÷ 3.35 TB/s ≈ 4.8 ms，所以单个请求最多每秒约 200 个 token。batch 开到 B，读一次 weight 就能给 B 个请求共用，intensity 也变成约 B。这就是 vLLM 要拼 batch（continuous batching）的根本原因。</p>
+
+<h2>所以提速只有两条路</h2>
+<ol>
+  <li><b>compute-bound 的（大 matmul）</b>：让它跑满 Tensor Core。用 BF16 或 FP8，矩阵维度取 8 或 64 的倍数</li>
+  <li><b>memory-bound 的（GeLU、LayerNorm、softmax、dropout、decode）</b>：少搬
+    <ul>
+      <li><b>Kernel fusion</b>：bias → GeLU → dropout 分成 3 个 kernel，要读 3 次、写 3 次 HBM；融成 1 个 kernel 只读 1 次、写 1 次，快约 3 倍</li>
+      <li><b>Tiling</b>：先把一块数据搬到案板（SRAM）上，在那里反复用完再放回去，不要切一刀就跑一趟仓库。matmul 的 tiling 和 FlashAttention 都是这个思路</li>
+      <li><b>加大 batch</b>：让同一份 weight 多用几次</li>
+    </ul>
+  </li>
+</ol>
+
+<h2>后面还有第三种“搬”：卡与卡之间</h2>
+<p>从第 3 课开始会用到多张卡，于是多出一种搬运：卡与卡之间的 communication。把多张卡想成多个厨房：同一栋楼里的厨房之间有传菜电梯（NVLink，每卡每个方向 450 GB/s），不同楼之间只能开货车（InfiniBand，约 50 GB/s），慢了约 9 倍。判断方法和这一课完全一样。算的时间和搬的时间比，谁长谁就是瓶颈。要么少搬，要么边算边搬（overlap）。</p>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>Whether a kernel is compute-bound or memory-bound depends on its arithmetic intensity: FLOPs per byte moved from HBM. The roofline says attainable throughput is min(peak FLOPs, intensity × bandwidth). On an H100, that's 989 TFLOPS over 3.35 TB/s, a ridge point of about 300 FLOPs per byte. Large matmuls sit far above it, so they're compute-bound and we feed them to Tensor Cores in BF16 or FP8. Elementwise ops, normalization and batch-1 decode sit near 1, so they're memory-bound; we speed them up by moving fewer bytes: kernel fusion, tiling in shared memory like FlashAttention, and larger batches.</p></div>
+
+<h2>自测</h2>
+<details><summary>为什么说 LLM inference 是 memory-intensive？（NVIDIA 原题）</summary><p>decode 每生成一个 token，要读 2Ψ bytes 的 weight（Ψ 个 parameter，bf16 每个 2 bytes，8B 模型就是 16 GB），只算约 2Ψ FLOPs，intensity ≈ 1，远低于约 300。所以速度由 HBM bandwidth 决定，和算力关系不大。</p></details>
+<details><summary>[4096, 4096] × [4096, 16] 的 matmul 是哪种 bound？</summary><p>FLOPs = 2 · 4096 · 4096 · 16 ≈ 5.4e8；bytes ≈ 2 · (4096² + 2 · 4096 · 16) ≈ 3.4e7；intensity ≈ 16，所以是 memory-bound。直观看，bytes 几乎全是 A（4096² 个数），A 的每个数只被 B 的 16 列各用一次，16 次乘加是 32 FLOPs，配 2 bytes，32 ÷ 2 = 16。这正是 decode 时 batch = 16 的情形。每个 weight 被几个 token 共用，intensity 就约等于几，batch 要到约 300 才会变成 compute-bound。</p></details>
+<details><summary>LayerNorm 是哪种 bound？怎么加速？</summary><p>memory-bound。每个元素读进来 2 bytes、写出去 2 bytes，中间只做约 8 次运算（求 mean 时加 1 次；减 mean、平方、求和各 1 次；再减 mean、除以标准差；乘 γ、加 β），intensity ≈ 8 ÷ 4 = 2，远低于 295。而且它不是 matmul，用不上 Tensor Core。办法是和前后的 elementwise 操作融成一个 kernel，少读写几次 HBM。</p></details>
+<details><summary>tiling 为什么能加速 matmul？</summary><p>一个 T × T 的 tile 搬进 shared memory 之后，每个数被用 T 次，intensity 随 T 变大。naive 版每做一次乘加都去 HBM 现读两个数。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="matmul-roofline.html">6.24 matmul 与 roofline</a>（tiling 的推导和 CUDA 代码）· <a href="gpu-memory-hierarchy.html">6.23 GPU memory hierarchy</a>（register、SRAM、L2、HBM 的大小和 latency）· <a href="gpu-numpy.html">2.8 GPU 为什么比 CPU 快</a></p>
+
+<div class="next"><b>下一课</b>知道了怎么判断“算”和“搬”，下一课算一笔具体的账：在单卡上训练一个 8B 模型，一个 step 要多少 compute、多少 memory。答案是 memory 先不够：光 model state 就要 128 GB，比 H100 的 80 GB 还多。</div>
+
+</main>
+</body>
+</html>

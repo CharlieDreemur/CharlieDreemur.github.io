@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>广告公司为什么做 kernel 优化 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>广告公司为什么要做 kernel 优化？<br>它和 offline infra 有什么关系？</h1>
+<p class="meta"><b>英文问法</b><q>Why would an ads company invest in kernel optimization?</q> · <q>How does kernel-level work relate to offline ML infrastructure?</q> · <q>Why are you interested in this team?</q></p>
+<p class="meta"><b>考过</b>推断，没有 Unity 来源的面经，别家面经里也没有直接问这题的 · 依据是公开材料：<a href="https://engineering.fb.com/2026/04/02/developer-tools/kernelevolve-how-metas-ranking-engineer-agent-optimizes-ai-infrastructure/">Meta KernelEvolve</a>、AlphaEvolve、Unity Vector 自己的 <a href="https://arxiv.org/html/2609.17391">FlashVector</a> 论文，以及 Unity Q3 2026 earnings call 的第三方文字稿 · 很少单独问，主要是回答 "why Unity" 的素材</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>GPU-hour</dt>
+  <dd>用了几张 GPU 乘以多少小时，GPU 的成本按它算。<span class="eg">100 张卡跑 10 小时是 1000 GPU-hour。</span></dd>
+  <dt>Batch inference</dt>
+  <dd>离线对一大批数据跑模型。没有用户在等结果，所以只看总共多久跑完。</dd>
+  <dt>Throughput</dt>
+  <dd>每秒处理多少样本。offline 只看它，serving 还要同时守住 latency SLO。</dd>
+  <dt>时间占比</dt>
+  <dd>这个 kernel 占整个 job 的 GPU time 的比例。kernel 快了能省多少，要先乘上它（见 <a href="amdahl.html">Amdahl's law</a>）。</dd>
+  <dt>Production trace</dt>
+  <dd>从生产里录下来的真实输入。kernel 该对哪些 shape 优化，从它里面统计。</dd>
+</dl>
+
+<h2 id="figs">看图：kernel 快一点，怎么变成成本</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 162" role="img" aria-label="从 kernel 提速到成本的链条：kernel 快 2 倍，乘以时间占比 30%，job 时间少 15%，每天的 GPU-hour 少 15%，成本下降。链条断在两处：GPU 在等 CPU 时 job 不会变快，提升没超过 noise floor 时不算数">
+  <rect class="hot" x="10" y="34" width="118" height="34" rx="4"/>
+  <text class="acc" x="69" y="56" text-anchor="middle">kernel 快 2 倍</text>
+  <path class="ln" d="M128,51 H150"/>
+  <polygon class="ah" points="150,47 150,55 158,51"/>
+  <text class="m" x="143" y="24" text-anchor="middle">× 占比 30%</text>
+  <rect class="box" x="158" y="34" width="124" height="34" rx="4"/>
+  <text x="220" y="56" text-anchor="middle">job 时间少 15%</text>
+  <path class="ln" d="M282,51 H304"/>
+  <polygon class="ah" points="304,47 304,55 312,51"/>
+  <text class="m" x="297" y="24" text-anchor="middle">每天都跑</text>
+  <rect class="box" x="312" y="34" width="128" height="34" rx="4"/>
+  <text x="376" y="56" text-anchor="middle">GPU-hour 少 15%</text>
+  <path class="ln" d="M440,51 H462"/>
+  <polygon class="ah" points="462,47 462,55 470,51"/>
+  <text class="m" x="455" y="24" text-anchor="middle">× 单价</text>
+  <rect class="f1" x="470" y="34" width="80" height="34" rx="4"/>
+  <text x="510" y="56" text-anchor="middle">成本下降</text>
+  <text class="acc" x="143" y="86" text-anchor="middle">①</text>
+  <text class="acc" x="220" y="86" text-anchor="middle">②</text>
+  <text x="10" y="110">① GPU 在等 CPU 时，kernel 快了 job 也不快</text>
+  <text x="10" y="130">② job 时间的变化要超过 noise floor 才算数</text>
+  <text class="m" x="10" y="152">例：job 每天 1000 GPU-hour，快 2 倍后每天省 150 GPU-hour</text>
+</svg>
+<figcaption>图 1：数字是示意。kernel 的提速先乘上它的时间占比，才是 job 省下的时间。job 每天都跑，省下的 GPU-hour 每天都有。链条会断在 ① 和 ② 两处。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Ads models are retrained and run batch inference every day, so a faster kernel turns directly into fewer GPU-hours. There are production numbers. Meta's KernelEvolve raised inference throughput of its Andromeda ads model by over 60%, and AlphaEvolve cut Gemini's training time by 1%. Unity's own FlashVector reports 1.1 to 2 times higher throughput on six production models. Offline, I'd optimize throughput rather than request latency, take shapes from production traces, gate every kernel swap with regression tests, and re-tune when the GPU generation changes. The gain is the kernel's share of the job times its speedup, so I'd profile first.</p></div>
+
+<h2 id="evidence">四条证据，各自能说明什么</h2>
+<table>
+  <thead><tr><th>来源</th><th>数字或原话</th><th>能说明什么</th></tr></thead>
+  <tbody>
+    <tr><td>Meta KernelEvolve（2026-04 的 blog）</td><td>Andromeda 广告模型的 inference throughput 提升 60% 以上；MTIA 上一个广告模型的训练 throughput 提升 25% 以上。都是自报</td><td>baseline 已经用了 torch.compile 和厂商库，广告模型的 kernel 仍有空间，训练侧也有</td></tr>
+    <tr><td>AlphaEvolve（DeepMind，2025-05）</td><td>matmul 的 tiling heuristic 让 kernel 平均快 23%，Gemini 的训练时间少 1%</td><td>kernel 的 23% 到整个训练只剩 1%，时间占比决定收益</td></tr>
+    <tr><td>FlashVector（Unity Vector，2026-09）</td><td>6 个生产模型的 latency speedup 是 1.30–1.98×，throughput 是 1.10–2.00×</td><td>Unity 自己在做，范围是整个 serving stack。摘要原话 "Model serving is one of the largest cost drivers in production recommender systems"</td></tr>
+    <tr><td>Unity Q3 2026 earnings call（2026-11-05，第三方文字稿）</td><td>CFO 说 Vector 超预期靠三件事，其中一件是 "Major advancements in infrastructure efficiency"</td><td>管理层点名了 infrastructure efficiency。call 里没有提 agent，把它归因于 FlashVector 是推断</td></tr>
+  </tbody>
+</table>
+<p>前三条讲的都是 serving 或别家的训练。Unity 的 offline 训练和 batch inference 用多少 GPU-hour，没有公开数字。</p>
+
+<h2 id="offline">搬到 offline，有四个特点</h2>
+<ul>
+  <li><strong>目标是 throughput</strong>：没有单次请求的 latency SLO，看 samples/s 和 GPU-hour</li>
+  <li><strong>shape 取自 production trace</strong>：AlphaEvolve 从 kernel 的用户那里收集真实 shape，一半用来搜索，一半留作评测</li>
+  <li><strong>换 kernel 前过回归测试</strong>：先对 reference 查正确性，再看 job 的提升（见 <a href="kernel-correctness.html">kernel 正确性</a>）</li>
+  <li><strong>换代 GPU 要重新优化</strong>：KernelEvolve 同时覆盖 NVIDIA、AMD、MTIA 和 CPU</li>
+</ul>
+<p>手算一遍，数字是示意。一个每天跑的 batch inference job 用 1000 GPU-hour，某个 kernel 占 GPU time 的 30%。把它做快 2 倍，这一段从 300 降到 150，整个 job 少 15%，每天省 150 GPU-hour。同一个 kernel 如果只占 3%，快 2 倍只省 1.5%，很可能分不出它和噪声。</p>
+<p>怎么把 profile、diagnose、optimize、verify 的循环搬到 data 和 training pipeline，见 <a href="offline-pipeline-optimization.html">offline pipeline 优化</a>。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>广告模型每天训练、跑 batch inference，kernel 快了直接省 GPU-hour</li>
+  <li>别家的生产数字：Meta KernelEvolve 60% 以上，AlphaEvolve 训练时间少 1%</li>
+  <li>Unity 自己的数字：FlashVector 6 个生产模型 throughput 1.10–2.00×</li>
+  <li>收益等于时间占比乘以提速，所以先 profile 看占比</li>
+  <li>offline 看 throughput 和 GPU-hour；shape 取自 production trace；换 kernel 前过回归测试；换代 GPU 重新优化</li>
+  <li>earnings call 那句不能说成 FlashVector 的功劳</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>怎么用它回答 "why Unity"？</summary>
+  <p>可以说 "FlashVector already runs this loop in production on serving. I'd like to bring the same loop to offline training and data pipelines, where it saves GPU-hours every day, and I've designed verifiers for RL environments, which is the hard part of that loop." 公开材料没写 Offline 组已经在做这件事，所以用 I'd like to，不要说成 you already。</p>
+</details>
+<details>
+  <summary>为什么 kernel 快 23%，训练时间只少 1%？</summary>
+  <p>因为这些 kernel 只占训练时间的一小部分。按 1% ÷ 23% 粗算，占比大约是 4% 到 5%。这个占比是推算，论文没有给。</p>
+</details>
+<details>
+  <summary>kernel 快了，GPU-hour 一定省吗？</summary>
+  <p>不一定。GPU 在等 CPU 准备数据时，kernel 再快，一步的时间也不变（见 <a href="offline-pipeline-optimization.html#example">瓶颈会转移</a>）。省下的时间还要超过 <a href="noise-floor.html">noise floor</a> 才算数。</p>
+</details>
+<details>
+  <summary>Offline 组和 kernel 有直接的证据吗？</summary>
+  <p>只有一条 JD 线索。一个已关闭的旧版 Offline 岗在要求里列了 "Torch Compilation, Quantization, CUDA, GPU kernel optimization"。本岗的 JD 没有写 kernel 或 agent。</p>
+</details>
+<details>
+  <summary>Earnings call 那句话，面试里能怎么用？</summary>
+  <p>可以说管理层把 infrastructure efficiency 列为 Vector 增长的原因之一，CFO 还说 gross margin 的提高主要来自 cloud costs 上的 leverage。不能说这是 agent 或 FlashVector 带来的，call 里没有这样讲。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://engineering.fb.com/2026/04/02/developer-tools/kernelevolve-how-metas-ranking-engineer-agent-optimizes-ai-infrastructure/">Meta Engineering：KernelEvolve</a>（<a href="https://arxiv.org/abs/2512.23236">arXiv 2512.23236</a>）· <a href="https://arxiv.org/html/2506.13131">AlphaEvolve</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a>（Table 1）· earnings call 文字稿：<a href="https://singjupost.com/unity-technologies-q3-2026-earnings-call-transcript/">singjupost</a>、<a href="https://www.roic.ai/quote/U/transcripts/2026-year/3-quarter">roic.ai</a> · <a href="https://hitmarker.net/jobs/unity-staff-senior-machine-learning-engineer-ml-infrastructure-offline-1954884">hitmarker：已关闭的旧版 Offline 岗</a> · ml-八股 08 第 25 题 · 文献笔记 2.3、2.6 节和第 7 节 Q10 · Unity 的证据和同类对照 2.4、3.2 节</p>
+
+</main>
+</body>
+</html>

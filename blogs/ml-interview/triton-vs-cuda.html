@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triton 和 CUDA 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · GPU Kernel</p>
+<h1>Triton 和 CUDA 有什么区别？<br>什么时候用 Triton，什么时候还得手写 CUDA？</h1>
+<p class="meta"><b>英文问法</b><q>What's the difference between Triton and CUDA?</q> · <q>Why did you write this kernel in Triton instead of CUDA?</q> · <q>Is that the same Triton as the Triton Inference Server?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：遂原科技 AI Infra 27 实习一面，2026-05-01「是否考虑过使用 CUDA 替代 Triton 进行算子开发，选择 Triton 的原因」（<a href="https://www.nowcoder.com/feed/main/detail/25140a56c4f04cb983f90aeed9f93d15">牛客</a>）· 快手 AI Infra 一面，面试 2026-09-28「是否用过Triton写kernel？解决了什么问题」（<a href="https://www.nowcoder.com/discuss/943148275572527104">牛客</a>，模板化的面经帖，可信度中等）· Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> 两个 Triton 都用到了，Case 1 改的是 Triton Inference Server，Case 2 的原话是 "fuses them into a single Triton kernel" · 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Triton（写 kernel 的语言）</dt>
+  <dd>OpenAI 在 2021 年开源的 Python DSL 和 compiler，用来写 GPU kernel。这页讲的是它。<span class="eg">torch.compile 在 GPU 上生成的就是 Triton kernel。</span></dd>
+  <dt>Triton Inference Server</dt>
+  <dd>NVIDIA 的 model server，负责接请求、组 batch、调模型。它和上面那个只是重名。<span class="eg">Unity 的 JD 里出现的 Triton 全是它。</span></dd>
+  <dt>CUDA kernel</dt>
+  <dd>用 C++ 写一个 thread 做什么，GPU 让成千上万个 thread 各跑一遍。thread 怎么分工、数据放在哪一级 memory，都由你安排。</dd>
+  <dt>Program</dt>
+  <dd>Triton 的基本单位。一个 program 处理一个 block 的数据，像给一个班组派一批活，班组里谁干哪件不用你管。<span class="eg">官方 tutorial 的例子：长度 256 的向量，BLOCK_SIZE 是 64，就有 4 个 program，各管 64 个元素。</span></dd>
+  <dt>Autotune</dt>
+  <dd>给几组候选参数，每组实际跑一遍，留下最快的。<span class="eg"><code>@triton.autotune</code> 的候选里有 block 大小和 <code>num_warps</code>。</span></dd>
+</dl>
+
+<h2 id="figs">看图：两种抽象层次</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 240" role="img" aria-label="CUDA 和 Triton 的两种抽象层次：CUDA 里代码是一个 thread 的逻辑，thread block 里每个 thread 各跑一遍。Triton 里代码处理一整个 block 的数据，program 内部的 thread 由 compiler 安排">
+  <path class="stale" d="M280,10 V232"/>
+  <text class="hd" x="140" y="20" text-anchor="middle">CUDA：你写一个 thread 的逻辑</text>
+  <rect class="box" x="20" y="30" width="240" height="78" rx="4"/>
+  <text class="m" x="28" y="46">一个 thread block</text>
+  <rect class="f2" x="31" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="59" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="87" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="115" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="143" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="171" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="199" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="227" y="54" width="22" height="18" rx="2"/>
+  <rect class="f2" x="31" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="59" y="80" width="22" height="18" rx="2"/>
+  <rect class="f1" x="87" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="115" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="143" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="171" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="199" y="80" width="22" height="18" rx="2"/>
+  <rect class="f2" x="227" y="80" width="22" height="18" rx="2"/>
+  <path class="ln1" d="M98,98 V118"/>
+  <text class="acc" x="20" y="134">你的代码是这一个 thread 的逻辑</text>
+  <text class="hd" x="20" y="158">你管</text>
+  <text x="20" y="176">thread index 怎么对应数据</text>
+  <text x="20" y="194">shared memory 和同步</text>
+  <text x="20" y="212">访存是不是 coalesced</text>
+  <text x="20" y="230">thread block 怎么切</text>
+  <text class="hd" x="420" y="20" text-anchor="middle">Triton：你写一个 block 的逻辑</text>
+  <rect class="hot" x="300" y="30" width="240" height="78" rx="4"/>
+  <text class="acc" x="308" y="46">一个 program</text>
+  <rect class="f2" x="309" y="54" width="74" height="26" rx="3"/>
+  <text x="346" y="72" text-anchor="middle">load 一块</text>
+  <path class="ln" d="M383,67 H395"/>
+  <polygon class="ah" points="395,63 395,71 401,67"/>
+  <rect class="f2" x="401" y="54" width="34" height="26" rx="3"/>
+  <text x="418" y="72" text-anchor="middle">算</text>
+  <path class="ln" d="M435,67 H447"/>
+  <polygon class="ah" points="447,63 447,71 453,67"/>
+  <rect class="f2" x="453" y="54" width="78" height="26" rx="3"/>
+  <text x="492" y="72" text-anchor="middle">store 一块</text>
+  <text class="m" x="420" y="99" text-anchor="middle">内部的 thread 由 compiler 安排</text>
+  <path class="ln1" d="M420,108 V118"/>
+  <text class="acc" x="300" y="134">你的代码处理一整个 block 的数据</text>
+  <text class="hd" x="300" y="158">compiler 管</text>
+  <text x="300" y="176">program 内部的 thread 安排</text>
+  <text x="300" y="194">coalescing 和 shared memory</text>
+  <text class="hd" x="300" y="212">你还要管</text>
+  <text x="300" y="230">block 大小，program 之间怎么分工</text>
+</svg>
+<figcaption>图 1：左边是 CUDA，你的代码是一个 thread 的逻辑，thread block 里每个 thread 各跑一遍。右边是 Triton，你的代码处理一整个 block 的数据，program 内部交给 compiler。program 之间怎么分工，Triton 里仍然要自己写。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>First, two things are called Triton. One is NVIDIA's Triton Inference Server, a model server. The other is the Triton language from OpenAI, a Python DSL for GPU kernels, and that's the one I mean. In CUDA you write the logic for a single thread and manage shared memory, synchronization and coalescing yourself. In Triton you write Python for a whole block of data, and the compiler handles thread mapping, coalescing and shared memory. So Triton is much faster to write, and it's what torch.compile generates on GPU. I'd still drop to CUDA or CUTLASS for the newest hardware features or the last bit of performance.</p></div>
+
+<h2 id="compare">对比：你管什么，compiler 管什么</h2>
+<table>
+  <thead><tr><th></th><th>CUDA</th><th>Triton</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">你写什么</td><td>C++，一个 thread 的逻辑</td><td>Python，一个 program 处理一个 block 的逻辑</td></tr>
+    <tr><td class="nw">你管什么</td><td>thread index 怎么对应数据；shared memory；同步；coalescing；thread block 怎么切</td><td>block 大小；program 之间怎么分工。参数可以交给 autotune</td></tr>
+    <tr><td class="nw">compiler 管什么</td><td>照你写的 thread 逻辑编译，访存和 shared memory 不替你安排</td><td>program 内部的 thread 安排、coalescing、shared memory</td></tr>
+    <tr><td class="nw">可移植性</td><td>NVIDIA GPU</td><td>NVIDIA GPU 和 AMD GPU（ROCm）；CPU 还在开发</td></tr>
+    <tr><td class="nw">适合</td><td>要用最新的硬件特性（TMA、warp specialization），或者要榨最后一点性能。常借 CUTLASS 来写</td><td>fusion、reduction、attention 变体，开发快。torch.compile 生成的也是它</td></tr>
+  </tbody>
+</table>
+<p>OpenAI 发布 Triton 时给过一张对照表。memory coalescing、shared memory management 和 SM 内部的 scheduling 在 CUDA 里是 manual，在 Triton 里是 automatic。跨 SM 的 scheduling 两边都是 manual。</p>
+
+<h2 id="code">同一个 vector add，两种写法</h2>
+<pre><code>// CUDA: 一个 thread 算一个元素
+__global__ void add(const float* x, const float* y, float* out, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i &lt; n) out[i] = x[i] + y[i];
+}
+
+# Triton: 一个 program 算一个 block
+@triton.jit
+def add(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs &lt; n                      # 最后一个 block 可能不满
+    x = tl.load(x_ptr + offs, mask=mask)
+    y = tl.load(y_ptr + offs, mask=mask)
+    tl.store(out_ptr + offs, x + y, mask=mask)</code></pre>
+<p>CUDA 里的 <code>i</code> 是一个下标。Triton 里的 <code>offs</code> 是一个 block 的下标，<code>tl.load</code> 一次读进一整块。这个 block 由几个 thread 读、怎么读才 coalesced，代码里没有写。</p>
+<p>agent 写 kernel 时，这个区别会变成正确率和速度。μCUTLASS 论文在 59 道 KernelBench 题上用 GPT-5-mini 做过对比，直接写底层代码的 geomean 是 0.40x，比 PyTorch 还慢，改写 DSL 后是 1.27x。它用的 DSL 是 μCUTLASS，不是 Triton，说明的是抽象层次高了更容易写对。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>先分清重名：Triton language 是写 kernel 的 DSL，Triton Inference Server 是 model server</li>
+  <li>CUDA 写一个 thread 的逻辑，shared memory、同步、coalescing 自己管</li>
+  <li>Triton 写一个 block 的逻辑，program 内部交给 compiler</li>
+  <li>block 多大、program 之间怎么分工仍然由你定，参数可以 autotune</li>
+  <li>选 Triton：fusion、reduction、attention 变体，开发快；torch.compile 生成的也是 Triton</li>
+  <li>选 CUDA 或 CUTLASS：最新的硬件特性，或者最后一点性能</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>FlashVector 里两个 Triton 各出现在哪？</summary>
+  <p>Case 1 改的是 Triton Inference Server 的 Python backend，把 string 反序列化改写成 C++。Case 2 把 embedding bag 拆成基本的 PyTorch op，compiler 把它们融成一个 Triton kernel（见 <a href="flashvector.html#cases">FlashVector</a>）。</p>
+</details>
+<details>
+  <summary>torch.compile 和 Triton 是什么关系？</summary>
+  <p>TorchInductor 在 GPU 上用 Triton 当 building block 来生成 kernel。所以读得懂 Triton，就读得懂 torch.compile 生成的代码（见 <a href="torch-compile.html">torch.compile</a>）。</p>
+</details>
+<details>
+  <summary>Triton 写的 kernel 能和厂商库一样快吗？</summary>
+  <p>官方 tutorial 说它的 FP16 matmul "achieves performance on par with cuBLAS or rocBLAS"。同一页的 benchmark 表里各个尺寸互有胜负，所以要自己在目标 shape 上测（见 <a href="kernel-benchmark.html">kernel benchmark</a>）。</p>
+</details>
+<details>
+  <summary>面试让手写 Triton 或 CUDA，会写什么？</summary>
+  <p>一场 AI infra 推理方向日常实习的面试（2026-03-03，<a href="https://www.nowcoder.com/feed/main/detail/ebeea95fa44a4eceb1c2890022a6bb2e">牛客</a>）手撕过「triton/cuda：layer norm、大矩阵规约求和、online-softmax」。求和见 <a href="gpu-reduction.html">reduction</a>，online softmax 见 <a href="flashattention.html#online">FlashAttention</a>。</p>
+</details>
+<details>
+  <summary>Triton 里还有哪些事要自己想？</summary>
+  <p>block 取多大，一个 program 负责输出的哪一块，这两件事还是你定。Triton 文档自己说这种写法的主要难点是 work scheduling。tiling 的思路见 <a href="matmul-roofline.html#tile">matmul tiling</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://openai.com/index/triton/">OpenAI：Introducing Triton</a>（2021-07，CUDA 和 Triton 的 manual / automatic 对照表）· <a href="https://triton-lang.org/main/programming-guide/chapter-1/introduction.html">Triton 文档 Introduction</a> · <a href="https://triton-lang.org/main/getting-started/tutorials/01-vector-add.html">Triton tutorial：vector add</a> · <a href="https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html">Triton tutorial：matmul</a>（<code>@triton.autotune</code>）· <a href="https://github.com/triton-lang/triton">Triton README</a>（支持的硬件）· <a href="https://arxiv.org/abs/2603.29010">μCUTLASS</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> §5.1、§5.2 · ml-八股 08 第 11 题 · 面经出处见 面试题与 JD 1.2、3.2 节</p>
+
+</main>
+</body>
+</html>

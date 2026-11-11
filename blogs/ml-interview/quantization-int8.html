@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INT8 Quantization 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>FP32 tensor 怎么量化成 INT8？<br>scale 和 zero point 怎么算？</h1>
+<p class="meta"><b>英文问法</b><q>Implement quantize_fp32_to_int8(x, scale).</q> · <q>Add a zero_point for asymmetric quantization.</q> · <q>When is symmetric quantization not enough?</q> · <q>What happens to values outside [−128, 127], or with outliers?</q></p>
+<p class="meta"><b>考过</b>面经：<strong>NVIDIA 一亩三分地题库的 hot 题</strong>（"FP32 Tensor to Int8 Quantization"，phone screen，60 分钟，有 5 个 follow-up，<a href="https://www.1point3acres.com/bbs/thread-1190285-1-1.html">汇总帖 1190285</a>）· NVIDIA 2025 MLE 店面（FP32→INT8，仅摘要）· NVIDIA Senior AI Engineer 2023（numerical precision 和 quantization 的 corner case，仅摘要）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Quantization</dt>
+  <dd>用 256 个整数格子去近似一段实数区间，存 1 byte 而不是 4 byte。像把身高按 1 cm 一格记，记录省地方，代价是最多差半格。<span class="eg">例：scale = 0.1 时 0.33 → 3，还原成 0.3，误差 0.03。</span></dd>
+  <dt>Scale \(s\)</dt>
+  <dd>一个格子代表多少实数 = 区间宽度 ÷ 格子数。<span class="eg">例：区间 [−1, 3] 分成 255 段，\(s = 4/255 \approx 0.0157\)。</span></dd>
+  <dt>Zero point \(z\)</dt>
+  <dd>实数 0 对应哪个整数。\(z\) 是整数，所以 0 能被精确表示。zero padding、ReLU 后的大量 0 都没有误差。symmetric 时 \(z = 0\)。<span class="eg">例：区间 [−1, 3] 时 \(z = -64\)。</span></dd>
+  <dt>Clamp（saturation）</dt>
+  <dd>超出 [−128, 127] 的值钉在边界上。不能直接 cast，因为 int8 会 wraparound，符号都反了。<span class="eg">例：200 直接转 int8 是 −56；clamp 后是 127。</span></dd>
+  <dt>Per-tensor vs per-channel</dt>
+  <dd>整个 tensor 共用一个 scale，还是每个 output channel 各一个。<span class="eg">例：一行 weight 约 ±0.03、另一行约 ±2：共用 scale 时第一行只剩 1、−1、2；per-channel 后是 42、−85、127，这一行的误差小约 70 倍。</span></dd>
+</dl>
+
+<h2 id="figs">看图：scale 和 zero point 怎么把实数放进 256 个格子</h2>
+<figure class="fig">
+<svg viewBox="0 0 490 286" role="img" aria-label="把 x = −1、0、0.5、3 量化成 int8：symmetric 的 scale 是 3/127，q = −42、0、21、127，−128 到 −43 的格子没用上；asymmetric 的 scale 是 4/255、zero point 是 −64，q = −128、−64、−32、127，256 个格子全用上"><defs><marker id="q1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="q1-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="q1-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="70" y="18" text-anchor="start" class="hd">symmetric：s = 3/127 = 0.0236，z = 0</text><text x="0" y="54" text-anchor="start" class="m">x（float）</text><text x="0" y="116" text-anchor="start" class="m">q（int8）</text><path d="M70,50 H470" class="axis"/><path d="M70,112 H470" class="axis"/><text x="71.6" y="40" text-anchor="middle" class="m">−3</text><circle cx="204.9" cy="50" r="4" class="ah1c"/><text x="204.9" y="40" text-anchor="middle" class="acc">−1</text><path d="M204.90196078431373,56 V108" class="ln1" marker-end="url(#q1-a1)"/><text x="204.9" y="132" text-anchor="middle" class="acc">−42</text><circle cx="270.8" cy="50" r="4" class="ah1c"/><text x="270.8" y="40" text-anchor="middle" class="acc">0</text><path d="M270.78431372549016,56 V108" class="ln1" marker-end="url(#q1-a1)"/><text x="270.8" y="132" text-anchor="middle" class="acc">0</text><circle cx="303.7" cy="50" r="4" class="ah1c"/><text x="303.7" y="40" text-anchor="middle" class="acc">0.5</text><path d="M303.72549019607845,56 V108" class="ln1" marker-end="url(#q1-a1)"/><text x="303.7" y="132" text-anchor="middle" class="acc">21</text><circle cx="470" cy="50" r="4" class="ah1c"/><text x="470" y="40" text-anchor="middle" class="acc">3</text><path d="M470.0,56 V108" class="ln1" marker-end="url(#q1-a1)"/><text x="470" y="132" text-anchor="middle" class="acc">127</text><text x="70" y="132" text-anchor="middle" class="m">−128</text><rect x="72" y="60" width="127.3" height="42" rx="4" class="stale"/><text x="136.7" y="78" text-anchor="middle" class="m">这些格子没用上</text><text x="136.7" y="95" text-anchor="middle" class="m">q = −128 … −43</text><text x="70" y="164" text-anchor="start" class="hd">asymmetric：s = 4/255 = 0.0157，z = −64</text><text x="0" y="200" text-anchor="start" class="m">x（float）</text><text x="0" y="262" text-anchor="start" class="m">q（int8）</text><path d="M70,196 H470" class="axis"/><path d="M70,258 H470" class="axis"/><circle cx="70" cy="196" r="4" class="ah1c"/><text x="70" y="186" text-anchor="middle" class="acc">−1</text><path d="M70.0,202 V254" class="ln1" marker-end="url(#q1-a1)"/><text x="70" y="278" text-anchor="middle" class="acc">−128</text><circle cx="170.4" cy="196" r="4" class="ah1c"/><text x="170.4" y="186" text-anchor="middle" class="acc">0</text><path d="M170.39215686274508,202 V254" class="ln1" marker-end="url(#q1-a1)"/><text x="170.4" y="278" text-anchor="middle" class="acc">−64 = z</text><circle cx="220.6" cy="196" r="4" class="ah1c"/><text x="220.6" y="186" text-anchor="middle" class="acc">0.5</text><path d="M220.58823529411765,202 V254" class="ln1" marker-end="url(#q1-a1)"/><text x="220.6" y="278" text-anchor="middle" class="acc">−32</text><circle cx="470" cy="196" r="4" class="ah1c"/><text x="470" y="186" text-anchor="middle" class="acc">3</text><path d="M470.0,202 V254" class="ln1" marker-end="url(#q1-a1)"/><text x="470" y="278" text-anchor="middle" class="acc">127</text></svg>
+<figcaption>图 1：同一组 x = [−1, 0, 0.5, 3]，上面的线是实数，下面的线是 int8 的 256 个格子，竖箭头是 round(x/s) + z。symmetric 让 0 对准 0、max|x| = 3 对准 127，可是数据最小只到 −1，左边一大段格子没用上。asymmetric 让 [−1, 3] 正好铺满 [−128, 127]，实数 0 落在 z = −64，每格更窄（0.0157 对 0.0236），误差更小。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 500 200" role="img" aria-label="scale 为 0.1 时 x = 20 除以 scale 得 200，超出 int8 范围：先 clamp 会钉在 127，还原成 12.7；直接转成 int8 会 wraparound 变成 −56"><defs><marker id="q2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="q2-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="q2-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="70" y="16" text-anchor="start" class="hd">scale = 0.1、z = 0：x = 20 → x/s = 200，超出 [−128, 127]</text><text x="0" y="68" text-anchor="start" class="m">x（float）</text><text x="0" y="138" text-anchor="start" class="m">q（int8）</text><path d="M70,64 H380.9756097560975" class="axis"/><path d="M380.9756097560975,64 H479.7560975609756" class="stale"/><text x="430.4" y="38" text-anchor="middle" class="m">int8 装不下</text><path d="M70,134 H380.9756097560975" class="axis"/><path d="M226.09756097560975,60 V68" class="axis"/><text x="226.1" y="54" text-anchor="middle" class="m">0</text><path d="M380.9756097560975,60 V68" class="axis"/><text x="381" y="54" text-anchor="middle" class="m">12.7</text><circle cx="470" cy="64" r="4" class="ah1c"/><text x="470" y="54" text-anchor="middle" class="acc">20</text><path d="M70.0,130 V138" class="axis"/><text x="70" y="154" text-anchor="middle" class="m">−128</text><path d="M226.09756097560975,130 V138" class="axis"/><text x="226.1" y="154" text-anchor="middle" class="m">0</text><path d="M380.9756097560975,130 V138" class="axis"/><text x="381" y="154" text-anchor="middle" class="acc">127</text><path d="M467.0,70 L383.9756097560975,128" class="ln1" marker-end="url(#q2-a1)"/><text x="365" y="103" text-anchor="end" class="acc">clamp 到 127，还原成 12.7</text><path d="M470.0,70 V168 H157.8048780487805 V141" class="ln2" marker-end="url(#q2-a2)"/><text x="149.8" y="154" text-anchor="end" class="c2">−56</text><text x="313.9" y="188" text-anchor="middle" class="c2">直接 astype(np.int8)：200 绕回成 −56，符号都反了</text></svg>
+<figcaption>图 2：scale = 0.1 时 int8 最大只能表示 12.7，x = 20 算出来是 200，超出范围。正确做法（橙色）是先 clamp 到 127，还原成 12.7，误差就是超出的那部分。如果不 clamp 直接转 int8（蓝色），超过 127 会从 −128 绕回来，200 变成 −56，连符号都反了。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Quantize with q = clamp(round(x / scale) + zero_point, −128, 127) and dequantize with x_hat = scale · (q − zero_point). Symmetric sets zero_point = 0 and scale = max|x| / 127; it keeps integer matmuls cheap, so weights use it. If the data isn't centered, like after ReLU, symmetric wastes half the levels, so we use asymmetric: scale = (max − min) / 255 and zero_point = round(−min / scale) − 128, which makes 0 exact. Clamp before casting to avoid wraparound. In range the error is at most scale / 2; outliers inflate the scale, so we use per-channel scales, percentile calibration, or keep outliers in higher precision.</p></div>
+
+<h2>关键公式</h2>
+<div class="deriv">
+  \[ q = \mathrm{clamp}\big(\mathrm{round}(x/s) + z,\ -128,\ 127\big) \]
+  \[ \hat x = s\,(q - z) \]
+  <p>symmetric（只缩放，常用 [−127, 127]）：</p>
+  \[ s = \frac{\max|x|}{127},\qquad z = 0 \]
+  <p>asymmetric（affine，区间先扩到包含 0）：</p>
+  \[ s = \frac{\max - \min}{255},\qquad z = \mathrm{round}\!\Big(\!-\frac{\min}{s}\Big) - 128 \]
+  <p>误差：区间内 \(|x - \hat x| \le s/2\)（rounding error）；区间外是 clipping error。</p>
+</div>
+
+<h2 id="example">手算例子</h2>
+<p>题库自检：<code>quantize(np.array([-1., 0., 1.]), scale=0.1)</code> → [−10, 0, 10]。再看偏向正数的 \(x = [-1,\ 0,\ 0.5,\ 3]\)：</p>
+<table>
+  <thead><tr><th></th><th>\(s\)</th><th>\(z\)</th><th>\(q\)</th><th>\(\hat x\)</th><th>最大误差</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">symmetric</td><td class="nw">3/127 = 0.0236</td><td>0</td><td class="nw">−42, 0, 21, 127</td><td class="nw">−0.992, 0, 0.496, 3</td><td>0.0079</td></tr>
+    <tr><td class="nw">asymmetric</td><td class="nw">4/255 = 0.0157</td><td>−64</td><td class="nw">−128, −64, −32, 127</td><td class="nw">−1.004, 0, 0.502, 2.996</td><td>0.0039</td></tr>
+  </tbody>
+</table>
+<p>symmetric 的 −128 到 −43 一个都没用上，格子宽了 1.5 倍（0.0236 vs 0.0157），误差上限 \(s/2\) 也大 1.5 倍。这 4 个点上的最大误差正好差一倍（0.0079 vs 0.0039）。</p>
+
+<h2 id="code">手撕代码（NumPy）</h2>
+<pre><code>import numpy as np
+
+def quantize(x, scale, zero_point=0, qmin=-128, qmax=127):
+    q = np.round(x / scale) + zero_point
+    return np.clip(q, qmin, qmax).astype(np.int8)  # 先 clamp 再 cast
+
+def dequantize(q, scale, zero_point=0):
+    return scale * (q.astype(np.float32) - zero_point)
+
+def qparams(x, symmetric=True):
+    if symmetric:                    # z = 0，配 qmin=-127
+        return max(np.abs(x).max(), 1e-8) / 127, 0
+    lo, hi = min(x.min(), 0.0), max(x.max(), 0.0)  # 包含 0
+    scale = max(hi - lo, 1e-8) / 255
+    return scale, int(np.round(-lo / scale)) - 128</code></pre>
+<p>per-channel 只改 scale 的形状：<code>np.abs(W).max(axis=1, keepdims=True) / 127</code>，靠 broadcasting 复用同一个 <code>quantize</code>。<code>1e-8</code> 防全 0 tensor 时除以 0。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>\(q = \mathrm{clamp}(\mathrm{round}(x/s) + z)\)，\(\hat x = s(q - z)\)</li>
+  <li>symmetric：\(z = 0\)、\(s = \max|x|/127\)；asymmetric：\(s = (\max-\min)/255\)，\(z\) 让 0 精确</li>
+  <li>先 clamp 再 cast，不能 wraparound</li>
+  <li>误差 ≤ \(s/2\)；outlier 撑大 \(s\) → per-channel、percentile calibration、outlier 单独处理</li>
+  <li>weight：per-channel symmetric；activation：per-tensor，要 calibration</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>symmetric 什么时候不够用？</summary>
+  <p>分布偏向一边时（ReLU 后、softmax 输出），一半格子浪费，误差翻倍。但 asymmetric 的 weight 会让 matmul 多出一项和输入相关、不能离线算的 zero-point 项，所以 weight 一般用 symmetric，asymmetric 留给 activation。</p>
+</details>
+<details>
+  <summary>scale 和 zero point 怎么配合？</summary>
+  <p>\(x = s(q - z)\)：\(s\) 定格子宽度，\(z\) 定实数 0 落在哪个整数。\(z\) 要 round 成整数，所以 0 精确，代价是 [min, max] 两端会被稍微挪动。</p>
+</details>
+<details>
+  <summary>超出 [−128, 127] 怎么办？</summary>
+  <p>clamp 到边界（saturation），误差就是超出的那部分。scale = 0.1 时 20 → 127 → 还原成 12.7。直接 <code>astype(np.int8)</code> 会 wraparound，200 变 −56。</p>
+</details>
+<details>
+  <summary>输入 skewed 或有 outlier，error 会怎样？</summary>
+  <p>用 max 定 range 时，一个 outlier 就把 \(s\) 撑大：[0.1, 0.2, 0.3, 100] 量化成 [0, 0, 0, 127]，小值全变 0。办法：percentile / entropy calibration 剪掉极少数 outlier 换更细的格子。LLM.int8() 把幅度 ≥ 6 的少数 feature 维度（约 0.1%）留在 FP16 算。SmoothQuant 把 activation 的 outlier 等价地挪到 weight 上。</p>
+</details>
+<details>
+  <summary>为什么 activation 比 weight 难量化？</summary>
+  <p>weight 固定，可以离线 per-channel，scale 提到 matmul 外面几乎不加开销；activation 每个输入都不同、有 outlier，实际只能 per-tensor，要用 calibration 数据选 range（或训练时 QAT）。服务端的 weight-only 量化（W4A16、GPTQ、AWQ）见 <a href="inference-cost.html">inference cost</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1712.05877">Jacob et al. 2018</a> §2.1 eq. 1（pp.2–3）· <a href="https://arxiv.org/abs/2004.09602">Wu et al. 2020, Integer Quantization for DL Inference</a> §3.1 eq. 1–8（pp.3–4）、§3.2–3.3（pp.4–5）、§3.4（p.6）、§6（p.12）· <a href="https://arxiv.org/abs/2208.07339">Dettmers et al. 2022, LLM.int8()</a> §1（p.2）、§3.2（p.5）· <a href="https://arxiv.org/abs/2211.10438">Xiao et al. 2023, SmoothQuant</a> abstract</p>
+
+</main>
+</body>
+</html>

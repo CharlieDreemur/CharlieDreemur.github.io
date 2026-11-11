@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent sandbox 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>怎么安全地跑 agent 生成的代码？<br>verifier 为什么要放在 sandbox 外面？</h1>
+<p class="meta"><b>英文问法</b><q>How do you safely run code that an agent wrote?</q> · <q>What is gVisor? How is a microVM different from a container?</q> · <q>Why must the verifier live outside the sandbox?</q></p>
+<p class="meta"><b>考过</b>Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> Figure 2 的图中文字 "fixed verifier the agent cannot edit · all candidates run sandboxed"，这句只出现在论文的图里，正文没有展开 · JD：NVIDIA Agentic AI Kernel Generation "integrate agents with compilers, profilers, execution sandboxes, and runtimes"（<a href="https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Product-Manager--AI-Platform-SW---Agentic-AI-Kernel-Generation_JR2016992">JR2016992</a>）、Etched "execution environments where agents can verify their own work"（<a href="https://jobs.ashbyhq.com/etched/885d8a6d-b1ce-4feb-89f5-f6ac9bef8ca7">Ashby</a>） · 别家面经原题：科大讯飞 AI 应用一面（校招，面试 2026-09-15）「Runtime 的沙箱与隔离机制如何做，gVisor 是什么？」「microVM 是什么，与普通 VM、Docker 的区别以及隔离强度如何理解？」（<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">牛客</a>）、字节后端（Agent 方向）实习一面（发帖 2026-04-08）「如果要实现一个代码执行沙箱，你从后端角度如何限制 CPU、内存和网络访问？」（<a href="https://www.nowcoder.com/feed/main/detail/88ddbad36a8845f6916ed4f4605d4394">牛客</a>） · 中文面经样本里有 11 帖问到 sandbox · 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Sandbox</dt>
+  <dd>一个受限的执行环境，候选代码只能在里面跑。像实验室的通风橱，反应在里面做，出了事也不波及外面。</dd>
+  <dt>Container</dt>
+  <dd>和宿主共享同一个 kernel 的一组进程。namespace 管它看得见什么，cgroups 管它能用多少 CPU 和 memory。</dd>
+  <dt>gVisor</dt>
+  <dd>在 user space 实现了一部分 Linux system call（syscall）接口。候选代码的 syscall 先被它拦下来处理，不直接交给宿主 kernel。</dd>
+  <dt>MicroVM</dt>
+  <dd>用硬件虚拟化起的轻量 VM，有自己的 guest kernel。<span class="eg">例：Firecracker 用 KVM 创建 microVM，官网写启动时间低于 125 ms。</span></dd>
+  <dt>Verifier</dt>
+  <dd>判定候选代码对不对、快不快的固定代码。agent 改不了它。</dd>
+</dl>
+
+<h2 id="figs">看图：谁在 sandbox 里，谁在外面</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 244" role="img" aria-label="agent 在 sandbox 外提案，候选代码在 sandbox 里跑，verifier 和 benchmark 脚本在 sandbox 外且只读">
+  <defs><marker id="sbA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+  <rect class="box" x="10" y="84" width="90" height="44" rx="4"/>
+  <text class="hd" x="55" y="102" text-anchor="middle">agent</text>
+  <text class="m" x="55" y="120" text-anchor="middle">只提案</text>
+  <path class="ln" d="M100,106 H148" marker-end="url(#sbA)"/>
+  <text class="m" x="124" y="98" text-anchor="middle">patch</text>
+  <rect class="bwd" x="150" y="26" width="200" height="176" rx="8"/>
+  <text class="acc" x="250" y="46" text-anchor="middle">sandbox：每份候选代码一个</text>
+  <rect class="hot" x="166" y="58" width="168" height="34" rx="4"/>
+  <text x="250" y="80" text-anchor="middle">候选代码</text>
+  <text class="m" x="250" y="116" text-anchor="middle">CPU、memory、时间有上限</text>
+  <text class="m" x="250" y="136" text-anchor="middle">默认断网</text>
+  <text class="m" x="250" y="156" text-anchor="middle">只有 workspace 可写</text>
+  <text class="m" x="250" y="176" text-anchor="middle">每次从同一个 image 启动</text>
+  <rect class="f2" x="424" y="58" width="126" height="34" rx="4"/>
+  <text x="487" y="80" text-anchor="middle">verifier</text>
+  <rect class="f2" x="424" y="102" width="126" height="34" rx="4"/>
+  <text x="487" y="124" text-anchor="middle">benchmark 脚本</text>
+  <text class="m" x="487" y="156" text-anchor="middle">在 sandbox 外，只读</text>
+  <text class="m" x="487" y="172" text-anchor="middle">agent 改不了</text>
+  <path class="ln" d="M334,75 H422" marker-end="url(#sbA)"/>
+  <text class="m" x="387" y="68" text-anchor="middle">输出</text>
+  <path class="ln" d="M424,119 H352" marker-end="url(#sbA)"/>
+  <text class="m" x="387" y="112" text-anchor="middle">调用、计时</text>
+  <path class="ln" d="M487,180 V214 H55 V130" marker-end="url(#sbA)"/>
+  <text class="m" x="270" y="232" text-anchor="middle">keep / reject：verifier 决定，agent 只收到结果</text>
+</svg>
+<figcaption>图 1：agent 在 sandbox 外面提案。候选代码在 sandbox 里跑。verifier 和 benchmark 脚本在外面，对 agent 只读，keep 还是 reject 由它们定。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Agent-written code is untrusted, so I run it like a stranger's code. Each candidate gets its own container or microVM, started from the same clean image, with CPU, memory and time limits, no network, and write access only to its workspace. The verifier and the benchmark scripts sit outside that boundary and are read-only, so the agent can't edit what judges it. It only proposes; fixed code decides keep or reject. On GPUs, compilation can go to CPU nodes, but a timed run gets a whole device, for safety and for clean timing. A container shares the host kernel; gVisor or a microVM isolates more strongly.</p></div>
+
+<h2 id="isolation">三种隔离技术</h2>
+<table>
+  <thead><tr><th></th><th>隔离方式</th><th>和宿主 kernel 的关系</th><th>隔离强度</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Container</td><td>namespace 加 cgroups</td><td>共享宿主 kernel，syscall 直接到宿主</td><td>最弱</td></tr>
+    <tr><td class="nw">gVisor</td><td>user space 里的一层 kernel 拦截 syscall</td><td>候选代码的 syscall 不直接传给宿主 kernel</td><td>居中</td></tr>
+    <tr><td class="nw">MicroVM</td><td>硬件虚拟化，比如 KVM</td><td>有自己的 guest kernel</td><td>最强</td></tr>
+  </tbody>
+</table>
+<p>FlashVector 没写 sandbox 用哪一种。选型时我会看代码的来源。自己团队的 agent 写的 kernel，先用 container 加资源上限。要跑别的租户的代码时，再换 gVisor 或 microVM。</p>
+
+<h2 id="limits">Sandbox 要管住什么</h2>
+<table>
+  <thead><tr><th>管什么</th><th>做法</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">CPU 和 memory</td><td>cgroups 设上限</td></tr>
+    <tr><td class="nw">时间</td><td>timeout，到点由外面的进程 kill</td></tr>
+    <tr><td class="nw">网络</td><td>默认断网</td></tr>
+    <tr><td class="nw">文件</td><td>只有 workspace 可写；verifier 和 benchmark 脚本只读</td></tr>
+    <tr><td class="nw">状态</td><td>每份候选代码从同一个 image 启动，不留上一份的状态</td></tr>
+    <tr><td class="nw">GPU</td><td>测量时独占一张卡；编译放 CPU 节点</td></tr>
+  </tbody>
+</table>
+<p>GPU 这一行是 CUDA Agent 的做法。它有 128 张 H20 的 sandbox pool，CPU 编译和 GPU 测量分开，测量时资源独占，verify 和 profile 脚本用文件权限保护。独占一张卡既是为了安全，也是为了计时干净（见 <a href="kernel-benchmark.html">kernel benchmark</a>）。agent 钻评测漏洞的真实例子见 <a href="reward-hacking.html">reward hacking</a>。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>agent 写的代码按 untrusted 处理，每份候选代码一个 sandbox</li>
+  <li>限 CPU、memory 和时间，默认断网，只有 workspace 可写</li>
+  <li>container 共享宿主 kernel；gVisor 在 user space 拦截 syscall；microVM 有自己的 guest kernel</li>
+  <li>verifier 和 benchmark 脚本在 sandbox 外且只读，agent 只提案</li>
+  <li>GPU 测量时独占一张卡，编译放 CPU 节点</li>
+  <li>FlashVector 只在图里提到 sandbox，没写用什么技术</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>让 agent 自己写 test 行不行？</summary>
+  <p>不行，它会写出自己能过的 test。KernelFalcon 让 LLM 生成 test harness，原文承认没有对它做防作弊分析（见 <a href="reward-hacking.html">reward hacking</a>）。</p>
+</details>
+<details>
+  <summary>从后端角度怎么限制 CPU、memory 和网络？（字节原题）</summary>
+  <p>CPU 和 memory 用 cgroups 设上限，时间用 timeout，到点把整个 sandbox kill 掉。网络给 sandbox 一个不通外网的 network namespace。</p>
+</details>
+<details>
+  <summary>gVisor 和 Docker container、VM 有什么不同？（科大讯飞原题）</summary>
+  <p>Docker container 的 syscall 直接到宿主 kernel，gVisor 在中间加了一层跑在 user space 的 kernel 来接 syscall。VM 用硬件虚拟化，guest 有完整的 kernel，gVisor 的文档把自己称为第三种做法。</p>
+</details>
+<details>
+  <summary>microVM 和普通 VM 有什么区别？</summary>
+  <p>microVM 只模拟很少的设备，所以启动快、开销小。Firecracker 官网写它只有 5 个模拟设备，启动时间低于 125 ms，每个 microVM 的 memory 开销低于 5 MiB。</p>
+</details>
+<details>
+  <summary>FlashVector 的 sandbox 是怎么实现的？</summary>
+  <p>论文没写，适合留作反问。能看到的只有 Figure 2 的那句图中文字，以及 GPU kernel 在 local simulated environment 里跑、config sweep 在生产机型的隔离节点上跑。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a> Figure 2、§4.2 Profile、§5.4.2 · <a href="https://arxiv.org/abs/2602.24286">CUDA Agent</a>（GPU sandbox pool、CPU 编译和 GPU 测量分离） · <a href="https://pytorch.org/blog/kernelfalcon-autonomous-gpu-kernel-generation-via-deep-agents/">KernelFalcon</a> · <a href="https://gvisor.dev/docs/">gVisor 文档</a> · <a href="https://firecracker-microvm.github.io/">Firecracker 官网</a> · 面经原帖：<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">科大讯飞</a>、<a href="https://www.nowcoder.com/feed/main/detail/88ddbad36a8845f6916ed4f4605d4394">字节</a> · ml-八股 08 第 27 题 · 同类系统对照表</p>
+
+</main>
+</body>
+</html>

@@ -19,6 +19,9 @@ main:
 
   - title: "Game"
     url: /game/
-    
+
+  - title: "Blogs"
+    url: /blogs/
+
   - title: "CV"
     url: /files/Weijia_Zhang_Resume.pdf

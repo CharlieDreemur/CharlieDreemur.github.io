@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence Parallel 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>Sequence Parallel（Megatron SP）怎么做？<br>为什么通信量不变？省多少 activation memory？</h1>
+<p class="meta"><b>英文问法</b><q>How does Megatron sequence parallelism work?</q> · <q>Why doesn't it add communication?</q> · <q>How much activation memory does it save?</q></p>
+<p class="meta"><b>考过</b>牛客（"Megatron SP的实现方式"）· 快手（"DP、TP-SP的计算通信重叠原理"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>TP 没切到的区域</dt>
+  <dd>TP 只切 attention 和 MLP 里的 GEMM；夹在中间的 LayerNorm、dropout、residual add 每卡都算一遍、存一整份 [\(s, b, h\)]，像每个人都复印了同一本书。</dd>
+  <dt>Sequence parallel (SP)</dt>
+  <dd>这些运算对每个 token 各算各的，所以沿 \(s\) 切开，每卡只管 \(s/t\) 个 token。<span class="eg">例：\(s = 2048\)、\(t = 8\) → 每卡只存 256 个 token 的 LayerNorm 输入。</span></dd>
+  <dt>Reduce-scatter</dt>
+  <dd>先求和，再把结果切成 \(t\) 块，每卡只拿自己那块。<span class="eg">例：rank 0 有 (1, 2, 3, 4)、rank 1 有 (10, 20, 30, 40) → rank 0 拿 (11, 22)，rank 1 拿 (33, 44)。</span></dd>
+  <dt>All-gather</dt>
+  <dd>每卡一块，拼起来每卡都拿到完整的。<span class="eg">例：接上面 → 两卡都得到 (11, 22, 33, 44)，正好是 all-reduce 的结果。</span></dd>
+  <dt>Activation memory</dt>
+  <dd>forward 时存下来给 backward 用的 tensor。下面按 bytes 算（16-bit，dropout mask 1 byte），不做并行时每层 \(sbh(34 + 5as/h)\)。</dd>
+</dl>
+
+<h2 id="figs">看图：TP 区和 SP 区怎么交替，通信为什么不变</h2>
+<figure class="fig">
+<svg viewBox="0 0 520 618" role="img" aria-label="TP 加 SP 时一层 transformer 的 forward：LayerNorm、dropout 这些 SP 区每卡只有 s/t 个 token，进 column parallel 前 all-gather 拼回完整序列，出 row parallel 后 reduce-scatter 切回 s/t"><defs><marker id="sp1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="sp1-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="sp1-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><rect x="84" y="4" width="14" height="14" rx="3" class="f2"/><text x="104" y="15" text-anchor="start" class="m">SP 区：按 s 切</text><rect x="210" y="4" width="14" height="14" rx="3" class="box"/><text x="230" y="15" text-anchor="start" class="m">TP 区：按 head / 列切</text><rect x="370" y="4" width="14" height="14" rx="3" class="hot"/><text x="390" y="15" text-anchor="start" class="m">通信</text><text x="187" y="40" text-anchor="middle" class="hd">GPU0</text><text x="409" y="40" text-anchor="middle" class="hd">GPU1</text><rect x="84" y="52" width="206" height="32" rx="6" class="f2"/><text x="187" y="72.5" text-anchor="middle">LayerNorm：前 s/t 个 token</text><rect x="306" y="52" width="206" height="32" rx="6" class="f2"/><text x="409" y="72.5" text-anchor="middle">LayerNorm：后 s/t 个 token</text><path d="M187.0,84 V94" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,84 V94" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="96" width="428" height="32" rx="6" class="hot"/><text x="298" y="116.5" text-anchor="middle" class="acc">g：all-gather，每卡拼回完整的 [s, b, h]</text><path d="M187.0,128 V138" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,128 V138" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="140" width="206" height="32" rx="6" class="box"/><text x="187" y="160.5" text-anchor="middle">QKV (column)：a/t 个 head</text><rect x="306" y="140" width="206" height="32" rx="6" class="box"/><text x="409" y="160.5" text-anchor="middle">QKV (column)：另 a/t 个 head</text><path d="M187.0,172 V182" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,172 V182" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="184" width="206" height="32" rx="6" class="box"/><text x="187" y="204.5" text-anchor="middle">attention：本卡算</text><rect x="306" y="184" width="206" height="32" rx="6" class="box"/><text x="409" y="204.5" text-anchor="middle">attention：本卡算</text><path d="M187.0,216 V226" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,216 V226" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="228" width="206" height="32" rx="6" class="box"/><text x="187" y="248.5" text-anchor="middle">out proj (row)：部分和</text><rect x="306" y="228" width="206" height="32" rx="6" class="box"/><text x="409" y="248.5" text-anchor="middle">out proj (row)：部分和</text><path d="M187.0,260 V270" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,260 V270" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="272" width="428" height="32" rx="6" class="hot"/><text x="298" y="292.5" text-anchor="middle" class="acc">ḡ：reduce-scatter，相加后每卡只留 [s/t, b, h]</text><path d="M187.0,304 V314" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,304 V314" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="316" width="206" height="32" rx="6" class="f2"/><text x="187" y="336.5" text-anchor="middle">dropout + residual</text><rect x="306" y="316" width="206" height="32" rx="6" class="f2"/><text x="409" y="336.5" text-anchor="middle">dropout + residual</text><path d="M187.0,348 V358" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,348 V358" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="360" width="206" height="32" rx="6" class="f2"/><text x="187" y="380.5" text-anchor="middle">LayerNorm：本卡的 token</text><rect x="306" y="360" width="206" height="32" rx="6" class="f2"/><text x="409" y="380.5" text-anchor="middle">LayerNorm：本卡的 token</text><path d="M187.0,392 V402" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,392 V402" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="404" width="428" height="32" rx="6" class="hot"/><text x="298" y="424.5" text-anchor="middle" class="acc">g：all-gather，每卡拼回完整的 [s, b, h]</text><path d="M187.0,436 V446" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,436 V446" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="448" width="206" height="32" rx="6" class="box"/><text x="187" y="468.5" text-anchor="middle">fc1 (column) + GeLU：本卡的列</text><rect x="306" y="448" width="206" height="32" rx="6" class="box"/><text x="409" y="468.5" text-anchor="middle">fc1 (column) + GeLU：本卡的列</text><path d="M187.0,480 V490" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,480 V490" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="492" width="206" height="32" rx="6" class="box"/><text x="187" y="512.5" text-anchor="middle">fc2 (row)：部分和</text><rect x="306" y="492" width="206" height="32" rx="6" class="box"/><text x="409" y="512.5" text-anchor="middle">fc2 (row)：部分和</text><path d="M187.0,524 V534" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,524 V534" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="536" width="428" height="32" rx="6" class="hot"/><text x="298" y="556.5" text-anchor="middle" class="acc">ḡ：reduce-scatter，相加后每卡只留 [s/t, b, h]</text><path d="M187.0,568 V578" class="ln" marker-end="url(#sp1-a)"/><path d="M409.0,568 V578" class="ln" marker-end="url(#sp1-a)"/><rect x="84" y="580" width="206" height="32" rx="6" class="f2"/><text x="187" y="600.5" text-anchor="middle">dropout + residual：[s/t, b, h]</text><rect x="306" y="580" width="206" height="32" rx="6" class="f2"/><text x="409" y="600.5" text-anchor="middle">dropout + residual：[s/t, b, h]</text><path d="M78,52 H72 V84 H78" class="ln"/><text x="66" y="72" text-anchor="end" class="m">SP</text><path d="M78,140 H72 V260 H78" class="ln"/><text x="66" y="197" text-anchor="end" class="m">TP</text><text x="66" y="213" text-anchor="end" class="m">attention</text><path d="M78,316 H72 V392 H78" class="ln"/><text x="66" y="358" text-anchor="end" class="m">SP</text><path d="M78,448 H72 V524 H78" class="ln"/><text x="66" y="483" text-anchor="end" class="m">TP</text><text x="66" y="499" text-anchor="end" class="m">MLP</text><path d="M78,580 H72 V612 H78" class="ln"/><text x="66" y="600" text-anchor="end" class="m">SP</text></svg>
+<figcaption>图 1：\(t = 2\) 时一层的 forward，从上往下走。蓝色是 SP 区：LayerNorm、dropout、residual 逐 token 计算，每卡只管自己那 \(s/t\) 个 token；灰色是 TP 区：和普通 TP 一样按 head、按列切，每卡要看完整序列。橙色框是两区交界处的通信：进 column parallel 前 g 做 all-gather，出 row parallel 后 \(\bar g\) 做 reduce-scatter。原来 TP 在这里的一次 all-reduce，正好拆成了这一次 reduce-scatter 和后面那次 all-gather。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 548 252" role="img" aria-label="两张卡先 reduce-scatter 再 all-gather：rank 0 有 1 2 3 4，rank 1 有 10 20 30 40，最后两卡都是 11 22 33 44，和一次 all-reduce 的结果一样"><defs><marker id="sp2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="sp2-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="sp2-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="232" y="16" text-anchor="middle" class="hd">rank 0</text><text x="444" y="16" text-anchor="middle" class="hd">rank 1</text><rect x="130" y="30" width="48" height="34" rx="6" class="box"/><text x="154" y="51.5" text-anchor="middle">1</text><rect x="182" y="30" width="48" height="34" rx="6" class="box"/><text x="206" y="51.5" text-anchor="middle">2</text><rect x="234" y="30" width="48" height="34" rx="6" class="box"/><text x="258" y="51.5" text-anchor="middle">3</text><rect x="286" y="30" width="48" height="34" rx="6" class="box"/><text x="310" y="51.5" text-anchor="middle">4</text><rect x="342" y="30" width="48" height="34" rx="6" class="box"/><text x="366" y="51.5" text-anchor="middle">10</text><rect x="394" y="30" width="48" height="34" rx="6" class="box"/><text x="418" y="51.5" text-anchor="middle">20</text><rect x="446" y="30" width="48" height="34" rx="6" class="box"/><text x="470" y="51.5" text-anchor="middle">30</text><rect x="498" y="30" width="48" height="34" rx="6" class="box"/><text x="522" y="51.5" text-anchor="middle">40</text><rect x="130" y="120" width="48" height="34" rx="6" class="hot"/><text x="154" y="141.5" text-anchor="middle" class="acc">11</text><rect x="182" y="120" width="48" height="34" rx="6" class="hot"/><text x="206" y="141.5" text-anchor="middle" class="acc">22</text><rect x="234" y="120" width="48" height="34" rx="6" class="stale"/><rect x="286" y="120" width="48" height="34" rx="6" class="stale"/><rect x="342" y="120" width="48" height="34" rx="6" class="stale"/><rect x="394" y="120" width="48" height="34" rx="6" class="stale"/><rect x="446" y="120" width="48" height="34" rx="6" class="hot"/><text x="470" y="141.5" text-anchor="middle" class="acc">33</text><rect x="498" y="120" width="48" height="34" rx="6" class="hot"/><text x="522" y="141.5" text-anchor="middle" class="acc">44</text><rect x="130" y="210" width="48" height="34" rx="6" class="hot"/><text x="154" y="231.5" text-anchor="middle" class="acc">11</text><rect x="182" y="210" width="48" height="34" rx="6" class="hot"/><text x="206" y="231.5" text-anchor="middle" class="acc">22</text><rect x="234" y="210" width="48" height="34" rx="6" class="hot"/><text x="258" y="231.5" text-anchor="middle" class="acc">33</text><rect x="286" y="210" width="48" height="34" rx="6" class="hot"/><text x="310" y="231.5" text-anchor="middle" class="acc">44</text><rect x="342" y="210" width="48" height="34" rx="6" class="hot"/><text x="366" y="231.5" text-anchor="middle" class="acc">11</text><rect x="394" y="210" width="48" height="34" rx="6" class="hot"/><text x="418" y="231.5" text-anchor="middle" class="acc">22</text><rect x="446" y="210" width="48" height="34" rx="6" class="hot"/><text x="470" y="231.5" text-anchor="middle" class="acc">33</text><rect x="498" y="210" width="48" height="34" rx="6" class="hot"/><text x="522" y="231.5" text-anchor="middle" class="acc">44</text><text x="0" y="52" text-anchor="start" class="m">开始</text><text x="0" y="142" text-anchor="start" class="m">各留一半的和</text><text x="0" y="232" text-anchor="start" class="m">都有完整的和</text><path d="M232,68 V116" class="ln" marker-end="url(#sp2-a)"/><path d="M444,68 V116" class="ln" marker-end="url(#sp2-a)"/><text x="242" y="90" text-anchor="start" class="acc">reduce-scatter：</text><text x="242" y="107" text-anchor="start" class="m">求和，每卡只留 1/t</text><path d="M232,158 V206" class="ln" marker-end="url(#sp2-a)"/><path d="M444,158 V206" class="ln" marker-end="url(#sp2-a)"/><text x="242" y="180" text-anchor="start" class="acc">all-gather：</text><text x="242" y="197" text-anchor="start" class="m">把各自那块拼起来</text></svg>
+<figcaption>图 2：用上面概念里的数字，橙色格是已经加好的和。reduce-scatter 求和后每卡只留一半：rank 0 拿 (11, 22)，rank 1 拿 (33, 44)，虚线格是没留下的部分；all-gather 再把两半拼起来，两卡都是 (11, 22, 33, 44)，和直接 all-reduce 一样。两步各发 \((t-1)/t \cdot S\)，加起来正好是 all-reduce 的 \(2(t-1)/t \cdot S\)，所以 SP 不增加通信量。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Plain TP only splits the GEMMs, so LayerNorm, dropout and the residual add are replicated on every rank with full s×b×h activations. Those ops are independent per token, so sequence parallelism splits them along the sequence dimension. The all-reduce after the row-parallel linear becomes a reduce-scatter that leaves each rank s/t tokens, and an all-gather rebuilds the full sequence before the next column-parallel linear; backward swaps them. A ring all-reduce is exactly reduce-scatter plus all-gather, so communication volume is unchanged. Every activation is now divided by t: per layer, sbh(10 + 24/t + 5as/(ht)) becomes sbh(34 + 5as/h)/t.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <h3 id="mlp">MLP 这一段怎么接（上标 \(s\) = 按 sequence 切）</h3>
+  \[ [Y_1^s, Y_2^s] = \mathrm{LayerNorm}([X_1^s, X_2^s]) \]
+  \[ Y = g(Y_1^s, Y_2^s) \quad \text{all-gather} \]
+  \[ W_i = \mathrm{GeLU}(Y A_i)\, B_i \quad \text{column → row} \]
+  \[ [W_1^s, W_2^s] = \bar g(W_1, W_2) \quad \text{reduce-scatter} \]
+  <p>之后 dropout、residual 都只在本卡的 \(s/t\) 个 token 上做。\(g\)：forward all-gather、backward reduce-scatter；\(\bar g\) 相反。每层 forward + backward 共 4 次 all-gather + 4 次 reduce-scatter，替代原来的 4 次 all-reduce。</p>
+  <h3 id="volume">通信量为什么不变</h3>
+  \[ \underbrace{\frac{2(t-1)}{t}S}_{\text{all-reduce}} = \underbrace{\frac{t-1}{t}S}_{\text{reduce-scatter}} + \underbrace{\frac{t-1}{t}S}_{\text{all-gather}} \]
+  <h3 id="memory">Activation memory（bytes / 层）</h3>
+  \[ \text{TP：}\ sbh\Big(10 + \frac{24}{t} + \frac{5as}{ht}\Big) \]
+  \[ \text{TP + SP：}\ \frac{sbh}{t}\Big(34 + \frac{5as}{h}\Big) \]
+  <p>那个不随 \(t\) 降的 10 = 两个 LayerNorm 的输入（4）+ 两个 dropout mask（2）+ 两个 column linear 的输入（4）。SP 之后连 column linear 的输入也只存本卡那段 \(Y_i^s\)，backward 时再 all-gather 一次。</p>
+</div>
+
+<h2 id="example">手算例子：GPT-3 175B</h2>
+<p>\(a = 96\)、\(s = 2048\)、\(h = 12288\)、\(L = 96\)、\(t = 8\)、\(b = 1\)：\(sbh\) = 24 MiB，\(5as/h = 80\)。1F1B 下第一个 pipeline stage 要存 \(L\) 层的量：</p>
+<table>
+  <thead><tr><th>配置</th><th>每层系数 × \(sbh\)</th><th>每层</th><th>× 96 层</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">TP</td><td>10 + 3 + 10 = 23</td><td>552 MiB</td><td>51.8 GiB</td></tr>
+    <tr><td class="nw">TP + SP</td><td>(34 + 80) / 8 = 14.25</td><td>342 MiB</td><td>32.1 GiB</td></tr>
+    <tr><td class="nw">TP + SP + selective recompute</td><td>34 / 8 = 4.25</td><td>102 MiB</td><td><strong>9.6 GiB</strong></td></tr>
+  </tbody>
+</table>
+<p>SP 单独省 38%；再加 selective recompute（只重算 attention 里那个 \(5as/h\) 项），总共降到 TP 的约 1/5。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>为什么：TP 只切 GEMM，LayerNorm、dropout、residual 的 activation 每卡一整份（\(10sbh\)）</li>
+  <li>怎么做：这些区域沿 \(s\) 切；row 之后的 all-reduce 换成 reduce-scatter，column 之前加 all-gather</li>
+  <li>通信量不变：all-reduce = reduce-scatter + all-gather</li>
+  <li>效果：activation 全部 /\(t\)；加 selective recompute 后约 5× 节省</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>SP 和 context parallel / Ulysses 有什么区别？</summary>
+  <p>Megatron SP 只切 LayerNorm、dropout 这些逐 token 的区域，attention 里每卡仍看完整序列（按 head 切）；context parallel 连 attention 也按 \(s\) 切，要交换 K、V。见 <a href="context-parallel.html">Context Parallel</a>。</p>
+</details>
+<details>
+  <summary>通信次数翻倍了，会不会更慢？</summary>
+  <p>字节数一样。拆成 reduce-scatter 和 all-gather 后反而更好和 GEMM 切块 overlap。Megatron Core 的 <code>tp_comm_overlap</code> 要求先开 SP。</p>
+</details>
+<details>
+  <summary>backward 里多出来的那次 all-gather 是什么？</summary>
+  <p>column linear 的输入 \(Y\) 只存了本卡那段，算 weight gradient 需要完整的 \(Y\)，所以 backward 再 all-gather 一次。它和计算 \(\partial L/\partial Y\) 的 GEMM overlap，几乎不增加时间。</p>
+</details>
+<details>
+  <summary>selective activation recomputation 是什么？</summary>
+  <p>只重算 attention 里 \(QK^\top\)、softmax、softmax dropout、attention over V，因为它们 activation 大但 FLOPs 少。GPT-3 上省 70% activation，只多 2.7% FLOPs。见 <a href="activation-recompute.html">activation recomputation</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022</a> Abstract（p.1，5×、recompute overhead 降 90%+）、§4.1（p.4，eq. 1）、§4.2.1（p.5，eq. 2）、§4.2.2（pp.6–7，Fig. 5–6，eq. 3–4）、§4.2.3（p.8，eq. 5）、§5（pp.8–9，Table 2，GPT-3 省 70%、多 2.7% FLOPs）、Table 3（p.10）· <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html">NCCL Collective Operations</a>（ReduceScatter + AllGather = AllReduce）· <a href="https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md">nccl-tests PERFORMANCE.md</a> · <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/training/arguments.py">Megatron-LM <code>arguments.py</code></a>（<code>tp_comm_overlap</code> 需要 SP）</p>
+
+</main>
+</body>
+</html>

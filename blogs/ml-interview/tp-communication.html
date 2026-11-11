@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TP Communication 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>TP 的 communication：一层几次？每次多少数据？<br>TP 越大越快吗？</h1>
+<p class="meta"><b>英文问法</b><q>How many all-reduces does tensor parallelism need per layer?</q> · <q>How much data does each one move?</q> · <q>Is a larger TP degree always faster?</q> · <q>How would you optimize the TP all-reduce?</q></p>
+<p class="meta"><b>考过</b>阿里（"tp的allreduce的次数"）· 华为机考（"张量并行度为 2 时要做一次 All-Reduce，待同步张量大小为 80MB，网络带宽为 40GB/s…"）· 腾讯混元（"TP 并行规模越大训练速度一定越快吗？"）· 快手（"有什么思路优化中间的allreduce吗？"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>f / g operator</dt>
+  <dd>每个 TP block（attention、MLP）入口一个 f、出口一个 g。f：forward 不动，backward 把 dX 的部分和 all-reduce；g：forward 把输出的部分和 all-reduce，backward 不动。切法见 <a href="tp-linear.html">TP Linear</a>。</dd>
+  <dt>Ring all-reduce</dt>
+  <dd>\(t\) 张卡围成一圈，数据切成 \(t\) 块，先转 \(t-1\) 步做 reduce-scatter，再转 \(t-1\) 步做 all-gather。每卡收发 \(2(t-1)/t \cdot S\)，几乎不随 \(t\) 变小。<span class="eg">例：\(S\) = 64 MiB，\(t\) = 2、4、8 → 每卡 64、96、112 MiB。细节见 <a href="allreduce.html">all-reduce</a>。</span></dd>
+  <dt>NVLink vs InfiniBand</dt>
+  <dd>机内 GPU 之间走 NVLink，像同一间办公室递文件；跨机走 InfiniBand 网卡，像寄快递。<span class="eg">例：DGX H100 一台 8 卡，每卡 NVLink 900 GB/s（官方口径，按双向合计理解，单向约 450）；跨机每卡一张 400 Gb/s（= 50 GB/s）的网卡，差约 9 倍。</span></dd>
+  <dt>Critical path</dt>
+  <dd>TP 的 all-reduce 夹在两个算子中间，下一个 GEMM 要等它的结果才能开始，像流水线上必须等上一道工序交货；不像 DP 的 gradient all-reduce 可以藏在 backward 后面。</dd>
+</dl>
+
+<h2 id="figs">看图：4 次 all-reduce 在哪，ring all-reduce 怎么走</h2>
+<figure class="fig">
+<svg viewBox="-20 0 480 622" role="img" aria-label="TP = 2 时一层 transformer 的数据流：两个 f 在 backward 各 all-reduce 一次，两个 g 在 forward 各 all-reduce 一次，共 4 次"><defs><marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><text x="162.5" y="18" text-anchor="middle" class="hd">GPU0</text><text x="362.5" y="18" text-anchor="middle" class="hd">GPU1</text><rect x="70" y="30" width="385" height="32" rx="6" class="box"/><text x="262.5" y="51" text-anchor="middle">输入 X：每张卡都有完整的一份</text><path d="M162.5,62 V74" class="ln" marker-end="url(#ah1)"/><path d="M362.5,62 V74" class="ln" marker-end="url(#ah1)"/><rect x="70" y="76" width="385" height="32" rx="6" class="bwd"/><text x="262.5" y="97" text-anchor="middle" class="acc">f：forward 原样复制，backward 在这里 all-reduce ③</text><path d="M162.5,108 V120" class="ln" marker-end="url(#ah1)"/><path d="M362.5,108 V120" class="ln" marker-end="url(#ah1)"/><rect x="70" y="122" width="185" height="32" rx="6" class="box"/><text x="162.5" y="143" text-anchor="middle">QKV (column)：head 1–16</text><rect x="270" y="122" width="185" height="32" rx="6" class="box"/><text x="362.5" y="143" text-anchor="middle">QKV (column)：head 17–32</text><path d="M162.5,154 V166" class="ln" marker-end="url(#ah1)"/><path d="M362.5,154 V166" class="ln" marker-end="url(#ah1)"/><rect x="70" y="168" width="185" height="32" rx="6" class="box"/><text x="162.5" y="189" text-anchor="middle">attention：本卡算</text><rect x="270" y="168" width="185" height="32" rx="6" class="box"/><text x="362.5" y="189" text-anchor="middle">attention：本卡算</text><path d="M162.5,200 V212" class="ln" marker-end="url(#ah1)"/><path d="M362.5,200 V212" class="ln" marker-end="url(#ah1)"/><rect x="70" y="214" width="185" height="32" rx="6" class="box"/><text x="162.5" y="235" text-anchor="middle">out proj (row)：partial sum</text><rect x="270" y="214" width="185" height="32" rx="6" class="box"/><text x="362.5" y="235" text-anchor="middle">out proj (row)：partial sum</text><path d="M162.5,246 V258" class="ln" marker-end="url(#ah1)"/><path d="M362.5,246 V258" class="ln" marker-end="url(#ah1)"/><rect x="70" y="260" width="385" height="32" rx="6" class="hot"/><text x="262.5" y="281" text-anchor="middle" class="acc">g：forward 在这里 all-reduce ①，partial sum 相加</text><path d="M162.5,292 V304" class="ln" marker-end="url(#ah1)"/><path d="M362.5,292 V304" class="ln" marker-end="url(#ah1)"/><rect x="70" y="306" width="385" height="32" rx="6" class="box"/><text x="262.5" y="327" text-anchor="middle">residual + LayerNorm：每卡一整份</text><path d="M162.5,338 V350" class="ln" marker-end="url(#ah1)"/><path d="M362.5,338 V350" class="ln" marker-end="url(#ah1)"/><rect x="70" y="352" width="385" height="32" rx="6" class="bwd"/><text x="262.5" y="373" text-anchor="middle" class="acc">f：forward 原样复制，backward 在这里 all-reduce ④</text><path d="M162.5,384 V396" class="ln" marker-end="url(#ah1)"/><path d="M362.5,384 V396" class="ln" marker-end="url(#ah1)"/><rect x="70" y="398" width="185" height="32" rx="6" class="box"/><text x="162.5" y="419" text-anchor="middle">fc1 (column)：前一半列</text><rect x="270" y="398" width="185" height="32" rx="6" class="box"/><text x="362.5" y="419" text-anchor="middle">fc1 (column)：后一半列</text><path d="M162.5,430 V442" class="ln" marker-end="url(#ah1)"/><path d="M362.5,430 V442" class="ln" marker-end="url(#ah1)"/><rect x="70" y="444" width="185" height="32" rx="6" class="box"/><text x="162.5" y="465" text-anchor="middle">GeLU：本卡算</text><rect x="270" y="444" width="185" height="32" rx="6" class="box"/><text x="362.5" y="465" text-anchor="middle">GeLU：本卡算</text><path d="M162.5,476 V488" class="ln" marker-end="url(#ah1)"/><path d="M362.5,476 V488" class="ln" marker-end="url(#ah1)"/><rect x="70" y="490" width="185" height="32" rx="6" class="box"/><text x="162.5" y="511" text-anchor="middle">fc2 (row)：partial sum</text><rect x="270" y="490" width="185" height="32" rx="6" class="box"/><text x="362.5" y="511" text-anchor="middle">fc2 (row)：partial sum</text><path d="M162.5,522 V534" class="ln" marker-end="url(#ah1)"/><path d="M362.5,522 V534" class="ln" marker-end="url(#ah1)"/><rect x="70" y="536" width="385" height="32" rx="6" class="hot"/><text x="262.5" y="557" text-anchor="middle" class="acc">g：forward 在这里 all-reduce ②</text><path d="M162.5,568 V580" class="ln" marker-end="url(#ah1)"/><path d="M362.5,568 V580" class="ln" marker-end="url(#ah1)"/><rect x="70" y="582" width="385" height="32" rx="6" class="box"/><text x="262.5" y="603" text-anchor="middle">进入下一层</text><path d="M64,76 H58 V292 H64" class="ln"/><text x="52" y="188.0" text-anchor="end" class="m">attention</text><path d="M64,352 H58 V568 H64" class="ln"/><text x="52" y="464.0" text-anchor="end" class="m">MLP</text></svg>
+<figcaption>图 1：t = 2 时一层 transformer 的数据流（Qwen3-8B 的 32 个 head 两卡各 16 个）。分开的两列是两张卡各算各的，横跨两列的框是两张卡要对齐的地方。实线框是 forward 的 all-reduce（① ②），虚线框是 backward 的 all-reduce（③ ④），每层共 4 次。每次 all-reduce 的数据就是这一层的输出 [b, s, h]。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 520 330" role="img" aria-label="两张卡的 ring all-reduce：第 1 步互相发半份并相加，第 2 步交换加好的半份，最后两张卡都是 (4, 6)"><defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><text x="190" y="16" text-anchor="middle" class="hd">GPU0</text><text x="410" y="16" text-anchor="middle" class="hd">GPU1</text><text x="150.0" y="33" text-anchor="middle" class="m">A 半</text><text x="230.0" y="33" text-anchor="middle" class="m">B 半</text><text x="370.0" y="33" text-anchor="middle" class="m">A 半</text><text x="450.0" y="33" text-anchor="middle" class="m">B 半</text><rect x="110" y="40" width="80" height="40" rx="6" class="box"/><text x="150.0" y="65" text-anchor="middle">1</text><rect x="190" y="40" width="80" height="40" rx="6" class="box"/><text x="230.0" y="65" text-anchor="middle">2</text><rect x="330" y="40" width="80" height="40" rx="6" class="box"/><text x="370.0" y="65" text-anchor="middle">3</text><rect x="410" y="40" width="80" height="40" rx="6" class="box"/><text x="450.0" y="65" text-anchor="middle">4</text><rect x="110" y="160" width="80" height="40" rx="6" class="hot"/><text x="150.0" y="185" text-anchor="middle" class="acc">1 + 3 = 4</text><rect x="190" y="160" width="80" height="40" rx="6" class="stale"/><text x="230.0" y="185" text-anchor="middle" class="m">2</text><rect x="330" y="160" width="80" height="40" rx="6" class="stale"/><text x="370.0" y="185" text-anchor="middle" class="m">3</text><rect x="410" y="160" width="80" height="40" rx="6" class="hot"/><text x="450.0" y="185" text-anchor="middle" class="acc">4 + 2 = 6</text><rect x="110" y="280" width="80" height="40" rx="6" class="hot"/><text x="150.0" y="305" text-anchor="middle" class="acc">4</text><rect x="190" y="280" width="80" height="40" rx="6" class="hot"/><text x="230.0" y="305" text-anchor="middle" class="acc">6</text><rect x="330" y="280" width="80" height="40" rx="6" class="hot"/><text x="370.0" y="305" text-anchor="middle" class="acc">4</text><rect x="410" y="280" width="80" height="40" rx="6" class="hot"/><text x="450.0" y="305" text-anchor="middle" class="acc">6</text><text x="6" y="65" text-anchor="start" class="m">开始</text><text x="6" y="185" text-anchor="start" class="m">各有一半的和</text><text x="6" y="305" text-anchor="start" class="m">都有完整的和</text><text x="6" y="116" text-anchor="start" class="hd">第 1 步</text><text x="6" y="132" text-anchor="start" class="m">reduce-scatter</text><text x="6" y="236" text-anchor="start" class="hd">第 2 步</text><text x="6" y="252" text-anchor="start" class="m">all-gather</text><path d="M230,82 V105 H450 V158" class="ln" marker-end="url(#ah2)"/><text x="300" y="100" text-anchor="middle" class="m">送出 B 半：2</text><path d="M370,82 V128 H150 V158" class="ln" marker-end="url(#ah2)"/><text x="260" y="146" text-anchor="middle" class="m">送出 A 半：3</text><path d="M150,202 V225 H370 V278" class="ln" marker-end="url(#ah2)"/><text x="260" y="220" text-anchor="middle" class="m">送出 A 半：4</text><path d="M450,202 V248 H230 V278" class="ln" marker-end="url(#ah2)"/><text x="300" y="266" text-anchor="middle" class="m">送出 B 半：6</text></svg>
+<figcaption>图 2：两张卡做一次 all-reduce，GPU0 有 (1, 2)，GPU1 有 (3, 4)，目标是两张卡都得到 (4, 6)。第 1 步互相发半份并相加，每张卡各有一半的总和；第 2 步交换加好的半份。每张卡一共发了 2 次半份，也就是 1 份 S。t 张卡时数据切成 t 块，两个阶段各走 t − 1 步，每步每卡只发 1/t 份、所有卡同时发，所以每卡总共发 \(2(t-1)/t \cdot S\)，卡再多也不超过 2S。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Each layer has two TP blocks, attention and MLP. Each needs one all-reduce in forward, after the row-parallel linear, and one in backward, before the column-parallel linear: four per layer per micro-batch. Each all-reduce carries b·s·h elements, 64 MiB in bf16 for b = 1, s = 4096, h = 8192. A ring all-reduce moves 2(t−1)/t of that per GPU, so traffic barely drops as t grows, while compute per GPU falls as 1/t. So bigger TP isn't always faster: communication starts to dominate, and past one node it goes over InfiniBand, an order of magnitude slower. Keep TP within the NVLink node; use PP across nodes.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  \[ \text{次数} = 2_{\,\text{fwd}} + 2_{\,\text{bwd}} = 4\ \text{次 / 层 / micro-batch} \]
+  \[ S = b\,s\,h \times 2\ \text{bytes（bf16）} \]
+  \[ T_{\text{AR}} \approx \frac{2(t-1)}{t}\cdot\frac{S}{B} \]
+  <p>\(B\) 是每卡带宽（NCCL 的 bus bandwidth）。每层每卡 forward + backward 合计 \(8bsh\,(t-1)/t\) 个元素。</p>
+  <h3 id="ratio">为什么 t 大了会亏（以 forward 为例）</h3>
+  \[ \frac{\text{每卡 FLOPs}}{\text{每卡通信 bytes}} \approx \frac{24bsh^2/t}{2 \times 2bsh \times 2(t-1)/t} = \frac{3h}{t-1} \]
+  <p>分子是每层 GEMM 的 FLOPs（见 <a href="transformer-complexity.html">复杂度</a>）除以 \(t\)；分母是 2 次 all-reduce，每次每卡 \(2(t-1)/t \times 2bsh\) bytes。和 \(b\)、\(s\) 无关。\(t\) 每翻一倍，每字节通信能配的计算就少一半多。</p>
+</div>
+
+<h2 id="example">手算例子</h2>
+<p>华为题：\(t = 2\)、80 MB、40 GB/s → \(2 \cdot \tfrac12 \cdot 80 / 40 = 2\) ms。</p>
+<p>\(b = 1\)、\(s = 4096\)、\(h = 8192\)、bf16，\(S\) = 64 MiB：</p>
+<table>
+  <thead><tr><th>\(t\)</th><th>每卡每次流量</th><th>\(3h/(t-1)\)</th><th>链路</th></tr></thead>
+  <tbody>
+    <tr><td>2</td><td>64 MiB</td><td>24576</td><td>NVLink</td></tr>
+    <tr><td>4</td><td>96 MiB</td><td>8192</td><td>NVLink</td></tr>
+    <tr><td>8</td><td>112 MiB</td><td>3511</td><td>NVLink</td></tr>
+    <tr><td>16</td><td>120 MiB</td><td>1638</td><td>跨机 InfiniBand</td></tr>
+  </tbody>
+</table>
+<p>H100 dense BF16 ≈ 989 TFLOPS（官网的 1979 是 sparsity 数字）。计算要盖过通信，每字节需配 989 TFLOPS ÷ 450 GB/s ≈ 2200 FLOPs（NVLink，按单方向算）或 ÷ 50 GB/s ≈ 19800（InfiniBand）。\(t = 8\)：3511 &gt; 2200，够；\(t = 16\) 跨机：1638 远小于 19800，通信时间约是计算的 12 倍。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>每层 4 次 all-reduce：forward 2 次（g），backward 2 次（f）</li>
+  <li>每次 \(bsh\) 个元素；ring 下每卡流量 \(2(t-1)/t \cdot S\)</li>
+  <li>每卡计算按 \(1/t\) 降、通信几乎不降 → 计算 / 通信 \(\approx 3h/(t-1)\)，GEMM 也变小</li>
+  <li>TP ≤ 单机 GPU 数（NVLink domain）；跨机用 PP，再外层 DP</li>
+  <li>all-reduce 在 critical path 上，不像 DP 那样容易 overlap</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>怎么优化 TP 的 all-reduce？</summary>
+  <p>拆成 reduce-scatter + all-gather 并开 <a href="sequence-parallel.html">SP</a>（通信量不变，LayerNorm、dropout 这部分 activation 再除以 \(t\)）。把 GEMM 切块，和 all-gather / reduce-scatter 流水 overlap（Megatron Core <code>tp_comm_overlap</code>，要求开 SP）。Hopper + NVSwitch 上用 NVLS，把 all-reduce 交给 NVSwitch 做。</p>
+</details>
+<details>
+  <summary>为什么 DP 的 all-reduce 能 overlap，TP 的不行？</summary>
+  <p>DP 的 gradient 在 backward 里算完一层就能先发，前面的层接着算；TP 的 all-reduce 结果就是下一个算子的输入，只能等，详见 <a href="overlap.html">overlap</a>。</p>
+</details>
+<details>
+  <summary>为什么 PP 可以跨机，TP 不行？</summary>
+  <p>PP 每个 micro-batch 只在 stage 边界 point-to-point 发一次 \(bsh\)；TP 每层都要 4 次 all-reduce，每层每卡 \(8bsh\,(t-1)/t\)。见 <a href="pipeline-parallel.html">Pipeline Parallel</a>。</p>
+</details>
+<details>
+  <summary>实际最优的 t 是多少？</summary>
+  <p>Narayanan et al. 在 DGX A100 上实测，\(t\) 等于单机 GPU 数（8）时吞吐最高，再往上跨机就掉。完整的配置怎么选见 <a href="parallelism-config.html">parallelism 配置</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1909.08053">Shoeybi et al. 2019</a> §3（pp.4–5，Fig. 4：每层 forward、backward 各 2 次 all-reduce）· <a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a> §1（p.1）、§3.2（p.5，\(8bsh(t-1)/t\)，Takeaway #1）、§5.4.1（p.10）· <a href="https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md">nccl-tests PERFORMANCE.md</a>（all-reduce bus bandwidth \(= 2(n-1)/n\) × algbw）· <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html">NCCL env</a>（NVLS）· <a href="https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html">DGX H100 User Guide</a>（NVLink 900 GB/s，8 × ConnectX-7 400 Gb/s）· <a href="https://www.nvidia.com/en-us/data-center/h100/">H100 spec</a> · <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/model_parallel_config.py">Megatron Core <code>model_parallel_config.py</code></a>（<code>tp_comm_overlap</code>）</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU reduction 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · GPU Kernel</p>
+<h1>Reduction 怎么优化？<br>比如在 GPU 上对一个大数组求和</h1>
+<p class="meta"><b>英文问法</b><q>How would you sum a very large array on a GPU?</q> · <q>How do you implement and optimize a reduction in CUDA?</q> · <q>For a tensor of shape [M, N], how do you reduce along a row when M is huge, and when N is huge?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：蔚来 AI Infra 一面 2026-03-02（模板帖）「大规模Reduction（归约）操作怎么做？（Warp级归约 -&gt; Block级归约 -&gt; Global原子加 vs 多Kernel级联）」（<a href="https://www.nowcoder.com/feed/main/detail/eeddf656bb364390ba936a7d26b01856">牛客</a>）· 百融云创 ai infra 2025-02-26「对于reduce类算子，考虑shape为[M, N]，对于M非常大怎么优化？对于N非常大怎么优化？」（<a href="https://www.nowcoder.com/discuss/724396208503947264">牛客</a>）· 百度 高性能计算二面 2024-08-05 写题「cuda block reduce」（<a href="https://www.nowcoder.com/discuss/650066190634692608">牛客</a>）· AI infra 推理方向日常实习 2026-03-03 手撕「triton/cuda：layer norm、大矩阵规约求和、online-softmax」（<a href="https://www.nowcoder.com/feed/main/detail/ebeea95fa44a4eceb1c2890022a6bb2e">牛客</a>）· 两份面经样本里，reduce 这个关键词在 AIInfraGuide 的 181 篇中占 10%，在牛客的 14 篇实习帖中有 5 篇，这个关键词也会匹配 All-Reduce，所以两个数都偏高 · Unity 一侧没有直接依据，也没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Reduction</dt>
+  <dd>把一大堆数合成一个数，比如 sum、max、dot product。</dd>
+  <dt>Tree reduction</dt>
+  <dd>两两合并，每一步把还没合并的数减半，n 个数 \(\log_2 n\) 步做完。像淘汰赛，每一轮剩一半。</dd>
+  <dt>Warp shuffle</dt>
+  <dd>同一个 warp 的 32 个 thread 直接交换 register 里的值，指令是 <code>__shfl_down_sync</code>。它不经过 shared memory，也不用 <code>__syncthreads</code>。warp 和 shared memory 是什么见 <a href="gpu-memory-hierarchy.html">GPU memory hierarchy</a>。</dd>
+  <dt>atomicAdd</dt>
+  <dd>很多 thread 往同一个地址累加时，保证一个都不丢。谁先加谁后加不固定。</dd>
+</dl>
+
+<h2 id="figs">看图：每一步减半</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 292" role="img" aria-label="8 个数 3、1、4、1、5、9、2、6 的 tree reduction。第 1 步 offset 4，lane 0 到 3 各加上 lane 4 到 7，得到 8、10、6、7。第 2 步 offset 2，得到 14、17。第 3 步 offset 1，得到 31，在 lane 0">
+  <text class="m" x="142" y="14" text-anchor="middle">lane 0</text>
+  <text class="m" x="492" y="14" text-anchor="middle">lane 7</text>
+  <text class="hd" x="14" y="41">8 个数</text>
+  <text class="hd" x="14" y="108">第 1 步</text>
+  <text class="m" x="14" y="124">offset 4</text>
+  <text class="hd" x="14" y="184">第 2 步</text>
+  <text class="m" x="14" y="200">offset 2</text>
+  <text class="hd" x="14" y="260">第 3 步</text>
+  <text class="m" x="14" y="276">offset 1</text>
+  <path class="ln" d="M142,50 V98 M192,50 V98 M242,50 V98 M292,50 V98 M142,126 V174 M192,126 V174 M142,202 V250"/>
+  <path class="ln1" d="M342,50 L142,98 M392,50 L192,98 M442,50 L242,98 M492,50 L292,98 M242,126 L142,174 M292,126 L192,174 M192,202 L142,250"/>
+  <rect class="box" x="120" y="22" width="44" height="28" rx="3"/>
+  <text x="142" y="41" text-anchor="middle">3</text>
+  <rect class="box" x="170" y="22" width="44" height="28" rx="3"/>
+  <text x="192" y="41" text-anchor="middle">1</text>
+  <rect class="box" x="220" y="22" width="44" height="28" rx="3"/>
+  <text x="242" y="41" text-anchor="middle">4</text>
+  <rect class="box" x="270" y="22" width="44" height="28" rx="3"/>
+  <text x="292" y="41" text-anchor="middle">1</text>
+  <rect class="box" x="320" y="22" width="44" height="28" rx="3"/>
+  <text x="342" y="41" text-anchor="middle">5</text>
+  <rect class="box" x="370" y="22" width="44" height="28" rx="3"/>
+  <text x="392" y="41" text-anchor="middle">9</text>
+  <rect class="box" x="420" y="22" width="44" height="28" rx="3"/>
+  <text x="442" y="41" text-anchor="middle">2</text>
+  <rect class="box" x="470" y="22" width="44" height="28" rx="3"/>
+  <text x="492" y="41" text-anchor="middle">6</text>
+  <rect class="f1" x="120" y="98" width="44" height="28" rx="3"/>
+  <text x="142" y="117" text-anchor="middle">8</text>
+  <rect class="f1" x="170" y="98" width="44" height="28" rx="3"/>
+  <text x="192" y="117" text-anchor="middle">10</text>
+  <rect class="f1" x="220" y="98" width="44" height="28" rx="3"/>
+  <text x="242" y="117" text-anchor="middle">6</text>
+  <rect class="f1" x="270" y="98" width="44" height="28" rx="3"/>
+  <text x="292" y="117" text-anchor="middle">7</text>
+  <text class="m" x="330" y="116">还剩 4 个</text>
+  <rect class="f1" x="120" y="174" width="44" height="28" rx="3"/>
+  <text x="142" y="193" text-anchor="middle">14</text>
+  <rect class="f1" x="170" y="174" width="44" height="28" rx="3"/>
+  <text x="192" y="193" text-anchor="middle">17</text>
+  <text class="m" x="230" y="192">还剩 2 个</text>
+  <rect class="hot" x="120" y="250" width="44" height="28" rx="3"/>
+  <text class="acc" x="142" y="269" text-anchor="middle">31</text>
+  <text class="acc" x="180" y="269">总和在 lane 0</text>
+</svg>
+<figcaption>图 1：8 个数求和，数字是示意。每一步 lane i 加上 lane i + offset 的值（橙红线），offset 每次减半。还没合并的数也跟着减半，3 步后总和在 lane 0。一个 warp 有 32 个 lane，要 5 步。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I reduce in layers that follow the hardware. First, each thread adds up several elements as it loads them, so there is less left to combine. Then each warp does a tree reduction in registers with shuffle instructions: five steps for 32 lanes, with no shared memory and no syncthreads. Next, the warps in a block write their partial sums to shared memory and one warp reduces those. Finally the blocks combine with an atomic add or a second kernel. A sum is memory bound, so what matters most is reading at full bandwidth. One caveat: floating-point atomics add in a nondeterministic order, so the last bits can vary.</p></div>
+
+<h2 id="layers">四层怎么分，手算一遍</h2>
+<p>对 \(2^{20}\) 个 float 求和。配置是示意的，128 个 block，每个 block 256 个 thread，一共 32,768 个 thread。</p>
+<table>
+  <thead><tr><th>层</th><th>做什么</th><th>还剩几个数</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">thread</td><td>每个 thread 边读边累加 32 个元素</td><td class="nw">32,768</td></tr>
+    <tr><td class="nw">warp</td><td>warp shuffle 做 5 步，值只在 register 之间走</td><td class="nw">1,024</td></tr>
+    <tr><td class="nw">block</td><td>8 个 warp 的结果写进 shared memory，由一个 warp 再做 3 步</td><td class="nw">128</td></tr>
+    <tr><td class="nw">grid</td><td>128 个 block 用 atomicAdd 加到同一个地址，或者再 launch 一个 kernel</td><td class="nw">1</td></tr>
+  </tbody>
+</table>
+<p>warp 这一层的写法，执行完总和在 lane 0。</p>
+<pre><code>__device__ float warp_sum(float v) {
+  for (int off = 16; off &gt; 0; off /= 2)
+    v += __shfl_down_sync(0xffffffff, v, off);
+  return v;
+}</code></pre>
+<p>求和每读 4 byte 只做 1 次加法，所以是 memory bound。优化的目标是把 memory bandwidth 用满，相邻 thread 要读相邻地址（见 <a href="coalescing-bank-conflict.html">coalescing</a>）。Harris 的经典讲义在 G80 上对 4M 个 int 求和，分 7 步把 8.054 ms 优化到 0.268 ms，快 30 倍。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>tree reduction：每步减半，\(\log_2 n\) 步</li>
+  <li>分四层：thread → warp → block → grid</li>
+  <li>thread 先边读边累加多个元素</li>
+  <li>warp 内用 <code>__shfl_down_sync</code>，不用 shared memory 和 <code>__syncthreads</code></li>
+  <li>warp 之间经过 shared memory，block 之间用 atomicAdd 或再 launch 一个 kernel</li>
+  <li>浮点 atomicAdd 的累加顺序不固定，结果不完全确定</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>shape 是 [M, N]，按行求和。M 很大怎么做，N 很大怎么做？</summary>
+  <p>M 很大时每行分给一个 warp，一个 block 同时处理很多行。N 很大时一行拆给多个 block，每个 block 出一个 partial sum，最后合并。</p>
+</details>
+<details>
+  <summary>结果和 CPU 上顺序相加的一样吗？</summary>
+  <p>不一定。浮点加法换了顺序，末位会不同，atomicAdd 的顺序每次运行还可能不一样。验证时按 dtype 设容差，FlashVector 对改变浮点顺序的 rewrite 也是这样做的（见 <a href="kernel-correctness.html#tiers">kernel 正确性</a>）。</p>
+</details>
+<details>
+  <summary>grid 这一层，atomicAdd 和再 launch 一个 kernel 怎么选？</summary>
+  <p>atomicAdd 写起来简单，代价是浮点结果不完全确定。再 launch 一个 kernel 时合并顺序是固定的，代价是多一次 launch。</p>
+</details>
+<details>
+  <summary>warp 内为什么不用 shared memory？</summary>
+  <p>shuffle 直接在 register 之间交换，省掉 shared memory 的读写和 <code>__syncthreads</code>。Harris 的老写法在 shared memory 里做，中间有一版还撞上 <a href="coalescing-bank-conflict.html#bank">bank conflict</a>。</p>
+</details>
+<details>
+  <summary>reduction 前面还有 element-wise 运算怎么办？</summary>
+  <p>融进同一个 kernel，边读边算边累加（见 <a href="kernel-fusion.html">kernel fusion</a>）。FlashVector 的 Case 2 里，masked-mean pooling 拆成基本 op 后被 compiler 融成一个 Triton kernel。把它看成 reduction 的例子是推断。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf">Harris, Optimizing Parallel Reduction in CUDA</a> · <a href="https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/">NVIDIA blog：Using CUDA Warp-Level Primitives</a>（warp 内求和的写法）· ml-八股 08 第 6 题 · 面经和频率出处见 NVIDIA 题库笔记 1.8 节和 Q2、面试题与 JD 3.2 节</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 权限和 guardrail 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Agent 的读和写怎么分权限？<br>什么时候要人确认，规则写在哪？</h1>
+<p class="meta"><b>英文问法</b><q>How do you control what an agent is allowed to do?</q> · <q>Which actions need human approval, and how do you enforce that?</q> · <q>Are the rules written into the prompt, or enforced by code?</q></p>
+<p class="meta"><b>考过</b>没有 Unity 自己的面经原题，下面都是别家的面经 · 蚂蚁二面（校招，2026-09-21）「Agent 的读操作和写操作分别如何鉴权与控制风险？为什么写操作最终仍要跳转工单由用户确认？」（<a href="https://www.nowcoder.com/feed/main/detail/52b419448b854e24bbdf41ca9e6ffe06">牛客</a>）· 作业帮 Golang 实习一二面（发帖 2026-10-22）「规则引擎是把规则写进提示词，还是由程序读取并执行规则？」「权限模式是怎么设计的？默认模式是否需要询问用户？」（<a href="https://www.nowcoder.com/discuss/942819943425245184">牛客</a>）· Walmart（Onesec）Intern 二面（发帖 2026-09-10）「聊聊deny‑first安全模型，在你的项目中是怎么落地的，优缺点是什么？」（<a href="https://www.nowcoder.com/feed/main/detail/409804a72b794c03a47c81cd94f7f2b8">牛客</a>）· 英文一侧是转述加短引文：Decagon SWE phone screen（2026-09）让候选人 "design security for the Decagon chatbot"（<a href="https://prachub.com/interview-experiences/decagon-software-engineer-interview-experience-rejected-after-the-onsite-culture-screen">PracHub</a>）· 按关键词搜到的样本里，中文有 14 帖、英文有 14 条涉及权限和 guardrail</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Harness</dt>
+  <dd>包在 model 外面的程序，负责组装 context 和执行 tool（见 <a href="llm-harness.html">LLM harness</a>）。model 只输出一个 tool call，执行不执行由 harness 决定。guardrail 在这页指 harness 里的规则。</dd>
+  <dt>规则（allow、ask、deny）</dt>
+  <dd>一条规则把一类 tool call 对应到 allow、ask、deny 之一，也就是直接执行、先问人、拒绝。<span class="eg">读 workspace 里的文件是 allow，<code>git push</code> 是 ask。</span></dd>
+  <dt>Deny-first</dt>
+  <dd>不在允许清单里的操作一律拒绝。它像门禁的白名单，名单上没有就进不去。</dd>
+  <dt>人确认</dt>
+  <dd>执行前停下来，把将要执行的具体命令和影响范围给人看，人同意了才执行。英文叫 human approval。</dd>
+  <dt>Untrusted input</dt>
+  <dd>来源不受你控制的内容，只能当数据用。<span class="eg">model 生成的 tool 参数，agent 读到的 log、代码注释、issue，都算。</span></dd>
+</dl>
+
+<h2 id="figs">看图：一次 tool call 要过哪几关</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 262" role="img" aria-label="一次 tool call 经过的关卡：规则检查、人确认、在 sandbox 里执行">
+  <rect class="bwd" x="170" y="10" width="382" height="242" rx="6"/>
+  <text class="acc" x="184" y="242">harness：规则由程序执行，model 的输出改不了它</text>
+  <path class="ln" d="M486,66 L486,42 L48,42 L48,58"/>
+  <polygon class="ah" points="44,58 52,58 48,66"/>
+  <text class="m" x="330" y="34" text-anchor="middle">tool result 回到 context，是数据，不能授权</text>
+  <rect class="box" x="8" y="66" width="80" height="34" rx="4"/>
+  <text x="48" y="88" text-anchor="middle">model</text>
+  <text class="m" x="48" y="118" text-anchor="middle">只提出，不执行</text>
+  <path class="ln" d="M88,83 L182,83"/>
+  <polygon class="ah" points="182,79 182,87 190,83"/>
+  <text class="m" x="129" y="76" text-anchor="middle">tool call</text>
+  <rect class="hot" x="190" y="66" width="96" height="34" rx="4"/>
+  <text class="hd" x="238" y="88" text-anchor="middle">规则检查</text>
+  <path class="ln2" d="M286,83 L422,83"/>
+  <polygon class="ah2c" points="422,79 422,87 430,83"/>
+  <text class="c2" x="354" y="76" text-anchor="middle">allow</text>
+  <rect class="f2" x="430" y="66" width="112" height="34" rx="4"/>
+  <text x="486" y="88" text-anchor="middle">sandbox 里执行</text>
+  <path class="ln1" d="M258,100 L258,143 L312,143"/>
+  <polygon class="ah1c" points="312,139 312,147 320,143"/>
+  <text class="acc" x="285" y="136" text-anchor="middle">ask</text>
+  <rect class="f1" x="320" y="126" width="90" height="34" rx="4"/>
+  <text x="365" y="148" text-anchor="middle">人确认</text>
+  <path class="ln2" d="M410,143 L486,143 L486,108"/>
+  <polygon class="ah2c" points="482,108 490,108 486,100"/>
+  <text class="c2" x="448" y="136" text-anchor="middle">同意</text>
+  <path class="ln" d="M365,160 L365,178"/>
+  <polygon class="ah" points="361,178 369,178 365,186"/>
+  <text class="m" x="373" y="178">拒绝</text>
+  <path class="ln" d="M218,100 L218,203 L312,203"/>
+  <polygon class="ah" points="312,199 312,207 320,203"/>
+  <text class="m" x="265" y="196" text-anchor="middle">deny</text>
+  <rect class="box" x="320" y="186" width="180" height="34" rx="4"/>
+  <text x="410" y="208" text-anchor="middle">不执行，原因回给 model</text>
+</svg>
+<figcaption>图 1：model 在虚线框外，只能提出 tool call。tool result 回到 context 后只是数据，下一个 tool call 还要过同一道规则检查。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I tier actions by risk. Reads are allowed by default. Writes inside the workspace are allowed and logged. Anything with outside effects, like pushing code or touching production, needs human approval, and the person sees the exact command and what it affects. The rules are enforced by code in the harness, not by the prompt, because a model can be talked out of a prompt. Anything not on the allow list is denied. Text the agent reads, such as logs, code comments or issues, is data and can't grant permissions. And commands still run in a sandbox, which limits the damage when a rule is wrong.</p></div>
+
+<h2 id="tiers">动作按风险分三级</h2>
+<table>
+  <thead><tr><th>级别</th><th>默认策略</th><th>例子</th><th>为什么</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">读</td><td>allow，不问人</td><td>读文件、search、看 log</td><td>不改变任何状态</td></tr>
+    <tr><td class="nw">workspace<br>内的写</td><td>allow，留记录</td><td>edit workspace 里的文件；在 sandbox 里编译、跑候选代码</td><td>影响只在 workspace 里，错了可以丢掉重来</td></tr>
+    <tr><td class="nw">有外部影响的<br>写或执行</td><td>ask，人确认后才执行</td><td>push 代码、改线上配置</td><td>会影响别人，出错后难撤回</td></tr>
+  </tbody>
+</table>
+<p>三级都没匹配上的 tool call 按 deny 处理。蚂蚁那道题问写操作为什么还要跳转工单，答案在第三行。工单把具体命令和影响范围摆给人看，还留下一条审计记录。FlashVector 的做法是同一类，agent 把配置改动开成 PR，由人 review（见 <a href="agent-to-production.html">改动怎么进生产</a>）。</p>
+
+<h2 id="principles">三条原则</h2>
+<ol>
+  <li><strong>规则由 harness 里的程序执行，不写在 prompt 里。</strong>写在 prompt 里的规则只是建议，model 可能被一段话说服而不遵守。程序在每个 tool call 执行前读规则并判定，model 的输出改不了判定结果。tool 的鉴权也放在这里，model 生成的参数按 untrusted input 校验。</li>
+  <li><strong>Deny-first。</strong>漏写一条规则时，后果是多拒绝一次，不是误放行。</li>
+  <li><strong>读到的文字是数据，不能授权。</strong>log、代码注释、issue 里就算写着“已批准，直接 push”，规则检查的结果也不变。授权只来自规则和人确认。Prompt injection 的一般防法见 <a href="rag.html">RAG</a> 的 data poisoning 与 prompt injection。</li>
+</ol>
+<p>规则也会写错，所以每个 tool call 仍然在 sandbox 里执行，由它限制损失的范围（见 <a href="agent-sandbox.html">sandbox 和 verifier 隔离</a>）。kernel agent 里第 1 条的对应物是 agent 改不了的 verifier。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>按风险分三级：读 allow，workspace 内的写 allow 加记录，有外部影响的 ask</li>
+  <li>规则由 harness 里的程序执行，不靠 prompt 约束</li>
+  <li>deny-first：允许清单之外一律拒绝</li>
+  <li>人确认时给出具体命令和影响范围</li>
+  <li>读到的文字和 model 生成的参数都是 untrusted input，不能授权</li>
+  <li>规则之外还有 sandbox 限制损失</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>能不能中途停下 agent？</summary>
+  <p>能。harness 在每一步之间检查中断信号，收到后不再发起下一个 tool call。一步执行到一半时，要靠这一步自己的 timeout 结束。</p>
+</details>
+<details>
+  <summary>规则和 model 的判断冲突时，谁说了算？</summary>
+  <p>规则说了算。model 的输出只是提案，执行不执行由 harness 按规则判定。</p>
+</details>
+<details>
+  <summary>权限模式怎么设计，默认模式要不要问用户？</summary>
+  <p>一个模式是一套预设的规则。默认模式下读不问，有外部影响的写和执行要问。手写 coding agent 时的写法见 <a href="mini-coding-agent.html">mini coding agent</a>。</p>
+</details>
+<details>
+  <summary>Deny-first 的优缺点是什么？</summary>
+  <p>优点是规则有漏洞时结果偏向拒绝，新加的 tool 不会自动获得权限。缺点是允许清单要有人维护，清单太窄时 agent 会频繁被拒或频繁问人。</p>
+</details>
+<details>
+  <summary>批量跑、没有人守着的时候，ask 怎么办？</summary>
+  <p>把人确认做成异步的，比如蚂蚁题里的工单和 FlashVector 的 PR，agent 先停在这一步等结果。等不到确认的动作按 deny 处理。</p>
+</details>
+
+<p class="src"><b>来源</b>ml-八股 08 第 39 题 · 蚂蚁、作业帮、Walmart 的牛客原帖见“考过” · 字节 dev&amp;infra 一面（内部转岗，发帖 2026-10-23）「如果规则和模型判断冲突，谁说了算？」（<a href="https://www.nowcoder.com/feed/main/detail/8352902d1fe04b559be1e7ea9a1243f7">牛客</a>）· 虾皮 Data Infra 实习二面（2026-06-15）「比如你让Codex写代码，你发现它写的有问题，你可以直接停止它吗？」（<a href="https://www.nowcoder.com/discuss/896770835296370688">牛客</a>）· Decagon 的 <a href="https://prachub.com/interview-questions/design-the-security-architecture-for-an-llm-chatbot-product">PracHub 题目页</a>（站方扩写，转述：考点含 tool authorization 放在 model 之外）· <a href="https://arxiv.org/abs/2609.17391">FlashVector</a> §5.4（配置改动以 PR 提交并 review）</p>
+
+</main>
+</body>
+</html>

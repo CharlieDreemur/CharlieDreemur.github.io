@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimizer 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Deep Learning</p>
+<h1>SGD、Momentum、Adam、AdamW 怎么更新？<br>各要多少额外显存？</h1>
+<p class="meta"><b>英文问法</b><q>Write down the update rules for SGD, momentum and Adam.</q> · <q>Why does Adam need bias correction?</q> · <q>Adam with L2 vs AdamW?</q> · <q>How much memory does each optimizer need for a 7B model?</q></p>
+<p class="meta"><b>考过</b>NVIDIA Senior MLE 电面 2025-10：给定模型，SGD、Adam 等 optimizer 各需要多少参数（<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）。GPU memory 的完整账见 06。</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>SGD 与 learning rate</dt>
+  <dd>下山时看脚下哪边最陡，往反方向迈一步。SGD 只用一个 mini-batch 估计坡度，所以有噪声。learning rate \(\eta\) 是步长。<span class="eg">例：w = 1，g = 0.5，η = 0.1 → w = 0.95。</span></dd>
+  <dt>Momentum</dt>
+  <dd>像滚下山的球有惯性：把过去的 gradient 累加成"速度"，方向一致的分量越滚越快，来回震荡的分量互相抵消。<span class="eg">例：μ = 0.9、gradient 一直是 g，速度最后稳定在 10g，步子放大 10 倍。</span></dd>
+  <dt>Adam</dt>
+  <dd>momentum 加上"每个参数自己的步长"：m 记 gradient 的平均（往哪走），v 记 g² 的平均（这个参数的 gradient 一般多大），步子按 \(1/\sqrt{v}\) 缩放，gradient 一直很大的参数步子被压小。</dd>
+  <dt>Weight decay vs L2</dt>
+  <dd>L2 是在 loss 上加 \(\tfrac{\lambda}{2}\|w\|^2\)，gradient 多一项 λw；weight decay 是每步直接把 weight 缩一点。SGD 下两者一样，Adam 下不一样，这就是 AdamW 的出发点。</dd>
+  <dt>Optimizer state</dt>
+  <dd>optimizer 为每个参数额外存的数：SGD 没有，momentum 存 1 份速度，Adam 存 m、v 两份。<span class="eg">例：7B 参数的模型，Adam 多存 14B 个数。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>SGD steps against the minibatch gradient, w ← w − ηg. Momentum accumulates past gradients into a velocity, damping oscillation. Adam keeps moving averages of the gradient, m, and the squared gradient, v, bias-corrects both because they start at zero, and updates w by η·m/(√v + ε) with the corrected values, so each parameter gets its own step size. AdamW decouples weight decay: instead of adding λw to the gradient, where Adam would rescale it, it shrinks the weights directly by ηλw. Memory-wise, SGD adds no state, momentum one copy of the parameters and Adam two; mixed-precision Adam totals 16 bytes per parameter, about 112 GB for a 7B model.</p></div>
+
+<h2>关键公式</h2>
+<div class="deriv">
+  <h3 id="sgd">SGD 与 Momentum</h3>
+  \[ b_t = \mu\, b_{t-1} + g_t,\qquad w_t = w_{t-1} - \eta\, b_t \]
+  <p>\(\mu = 0\) 就是 SGD；gradient 不变时 \(b \to g/(1-\mu)\)，\(\mu = 0.9\) 步长放大 10 倍。</p>
+  <h3 id="adam">Adam（默认 η = 1e-3、β₁ = 0.9、β₂ = 0.999、ε = 1e-8）</h3>
+  \[ m_t = \beta_1 m_{t-1} + (1-\beta_1)\, g_t,\qquad v_t = \beta_2 v_{t-1} + (1-\beta_2)\, g_t^2 \]
+  \[ \hat m_t = \frac{m_t}{1-\beta_1^{t}},\qquad \hat v_t = \frac{v_t}{1-\beta_2^{t}} \]
+  \[ w_t = w_{t-1} - \eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} \]
+  <h3 id="bias">为什么要 bias correction</h3>
+  <p>m、v 从 0 起步，前几步偏小。假设 gradient 分布不变，\(\mathbb E[v_t] = \mathbb E[g^2]\,(1-\beta_2^{t})\)，所以除以 \(1-\beta_2^{t}\)；\(t\) 大了修正自动消失。例：第 1 步 g = 2，\(m_1 = 0.2\)、\(v_1 = 0.004\)，修正后 \(\hat m_1 = 2\)、\(\hat v_1 = 4\)，正好走 \(\eta\)；不修正会走 \(0.2/\sqrt{0.004} \approx 3.16\,\eta\)。</p>
+  <h3 id="adamw">AdamW vs Adam + L2</h3>
+  <p>Adam + L2 把 λw 加进 g，它跟着被 \(\sqrt{\hat v}\) 除掉，所以 gradient 大的参数几乎不被 decay。AdamW 的 m、v 只用 loss 的 gradient，decay 单独做：</p>
+  \[ w_t = w_{t-1} - \eta\lambda\, w_{t-1} - \eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} \]
+  <p>所有参数按同一比例 ηλ 缩小。SGD 下两者完全一样，因为 λw 乘 η 正好是 ηλw。</p>
+</div>
+
+<h2 id="memory">显存：每种 optimizer 多存多少</h2>
+<p><strong>每个参数存 weight、gradient、optimizer state，按 bytes 加起来再乘参数量</strong>（fp32 4 bytes，bf16 2 bytes；不含 activation）。7B 模型：</p>
+<table>
+  <thead><tr><th>optimizer</th><th>optimizer state</th><th>bytes / param</th><th>7B 合计</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">SGD</td><td>无</td><td>4 + 4 = 8</td><td class="nw">56 GB</td></tr>
+    <tr><td class="nw">Momentum</td><td>b</td><td>8 + 4 = 12</td><td class="nw">84 GB</td></tr>
+    <tr><td class="nw">Adam / AdamW</td><td>m、v</td><td>8 + 8 = 16</td><td class="nw">112 GB</td></tr>
+    <tr><td class="nw">Adam，mixed precision</td><td>fp32 master、m、v</td><td>2 + 2 + 12 = 16</td><td class="nw">112 GB</td></tr>
+  </tbody>
+</table>
+<p>只问 optimizer state：7B 的 Adam 多存 14B 个数，fp32 就是 56 GB。纯 fp32 的 Adam 是"4 倍参数量"（w、g、m、v）；mixed precision 时 bf16 省下的被 fp32 master copy 吃回去，还是 16 bytes。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>SGD：\(w \leftarrow w - \eta g\)；momentum 累加历史 gradient，步长放大 \(1/(1-\mu)\)</li>
+  <li>Adam = momentum（m）+ 按 \(\sqrt{v}\) 缩放，每个参数自己的步长</li>
+  <li>bias correction：m、v 从 0 起步偏小，除以 \(1-\beta^t\)</li>
+  <li>AdamW：decay 不进 gradient，直接 \(w \leftarrow w - \eta\lambda w\)</li>
+  <li>额外 state：SGD 0、momentum 1、Adam 2 份；mixed precision Adam 16 bytes/param，7B 约 112 GB</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>Adam 和 SGD 怎么选？</summary>
+  <p>LLM 基本都用 AdamW（LLaMA：β₂ = 0.95、weight decay 0.1）。图像分类上 SGD + momentum 过去常比 Adam 泛化好，AdamW 原文认为主因是 L2 在 Adam 里不起作用，换成 decoupled weight decay 后差距大幅缩小。</p>
+</details>
+<details>
+  <summary>Adam 每步大概走多远？</summary>
+  <p>约 η：\(\hat m/\sqrt{\hat v}\) 的量级一般不超过 1，而且 gradient 整体放大 c 倍时分子分母一起变、比值不变，所以 η 几乎直接决定步长（Adam 原文 §2.1）。</p>
+</details>
+<details>
+  <summary>为什么要 warmup + cosine decay？</summary>
+  <p>刚开始参数随机、gradient 不稳，直接用峰值 learning rate 容易发散，所以先线性升上去，之后按 cosine 慢慢降。LLaMA：2000 步 warmup，最后降到峰值的 10%。</p>
+</details>
+<details>
+  <summary>Mixed precision 为什么还要 fp32 master weight？</summary>
+  <p>fp16 只有 10 位 mantissa：weight 比更新量 ηg 大 2048 倍以上时，相加后更新被直接舍掉（fp16 里 1 + 0.0001 = 1）；小于 2⁻²⁴ 的更新本身也变成 0。所以在 fp32 副本上更新（见 <a href="mixed-precision.html">mixed precision</a>）。</p>
+</details>
+<details>
+  <summary>7B 一张卡放不下怎么办？</summary>
+  <p>ZeRO 把 model states 切到 N 张卡。ZeRO-1 只切 optimizer state，7B、N = 8 时每卡从 112 GB 降到 38.5 GB，ZeRO-3 / FSDP 全切后更少。每级的公式见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1412.6980">Kingma &amp; Ba 2014</a>（Adam）Alg. 1（p.2）、§2.1、§3（pp.2–3）· <a href="https://arxiv.org/abs/1711.05101">Loshchilov &amp; Hutter 2017</a>（AdamW）§2、Alg. 2（pp.2–3）· <a href="https://www.deeplearningbook.org/contents/optimization.html">Goodfellow et al.</a> §8.3.2（pp.292–296）· <a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §8.2.4.1（pp.287–288）、§8.4.6.3（p.300）· <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2019</a>（ZeRO）§3.1、§5（pp.7–11）· <a href="https://arxiv.org/abs/1710.03740">Micikevicius et al. 2017</a> §3.1 · <a href="https://arxiv.org/abs/2302.13971">LLaMA</a> §2.3 · <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.AdamW.html">PyTorch AdamW</a></p>
+
+</main>
+</body>
+</html>

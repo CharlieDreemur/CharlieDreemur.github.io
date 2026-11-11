@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCA 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Classic ML</p>
+<h1>推导 PCA；主成分为什么是 eigenvector？<br>保留几维怎么选？</h1>
+<p class="meta"><b>英文问法</b><q>Derive PCA.</q> · <q>Why are the principal components eigenvectors of the covariance matrix?</q> · <q>How does PCA relate to SVD?</q> · <q>How many components do you keep?</q></p>
+<p class="meta"><b>考过</b>微软 Teams AS IC2（Principal AS 让推导 eigenvalue equation）· Glassdoor AS II</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>PCA</dt>
+  <dd>给数据换一组坐标轴，按"数据在这个方向上散得多开"排序，只留前几个方向。像给 3D 物体拍一张 2D 照片：找一个能看到最多信息的角度。<span class="eg">例：身高和体重高度相关，基本可以合成一个"体型大小"方向，2 维压成 1 维。</span></dd>
+  <dt>Variance 与主成分</dt>
+  <dd>把所有点投影到一个方向上，看它们散得多开，就是这个方向的 variance。第一主成分是散得最开的方向，第二主成分是和它垂直的方向里散得最开的，依此类推。</dd>
+  <dt>Covariance matrix \(\Sigma\)</dt>
+  <dd>记录每两维"一起变"的程度。任何方向 \(w\) 的 variance 都能从它算出来：\(w^\top\Sigma w\)。</dd>
+  <dt>Eigenvector 与 eigenvalue</dt>
+  <dd>被 \(\Sigma\) 作用后只伸缩、不转向的方向是 eigenvector，伸缩倍数是 eigenvalue。PCA 里 eigenvalue 正好等于数据在这个方向上的 variance。</dd>
+  <dt>Explained variance ratio</dt>
+  <dd>某个方向的 variance 占总 variance 的比例，\(\lambda_j / \sum \lambda\)，说明只留这个方向能保留多少信息。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>PCA finds orthogonal directions of maximum variance. After centering, the variance of the data projected onto a unit vector w is wᵀΣw. Maximizing it subject to ‖w‖ = 1 with a Lagrange multiplier gives Σw = λw, so w is an eigenvector of the covariance matrix and the projected variance equals its eigenvalue; we keep the top-k eigenvectors. Equivalently, this minimizes reconstruction error. In practice we compute it with an SVD of the centered data, where the principal directions are the right singular vectors, and we choose k by the explained variance ratio, for example enough components to keep 95% of the variance.</p></div>
+
+<h2>推导</h2>
+<div class="deriv">
+  <h3 id="derive">为什么是 eigenvector（Teams AS 原题）</h3>
+  <p>数据先 centering。投影到单位向量 \(w\) 上的 variance：</p>
+  \[ \frac1n\sum_i (w^\top x_i)^2 = w^\top \Sigma\, w,\qquad \Sigma = \frac1n X^\top X \]
+  <p>在 \(w^\top w = 1\) 的约束下最大化，用 Lagrange multiplier：</p>
+  \[ L = w^\top\Sigma w - \lambda(w^\top w - 1),\qquad \nabla_w L = 2\Sigma w - 2\lambda w = 0 \;\Longrightarrow\; \Sigma w = \lambda w \]
+  <p>代回去：\(w^\top\Sigma w = \lambda\)，投影的 variance 就是 eigenvalue，所以取最大的那个。后面的主成分要和前面的垂直，依次取第 2、3… 大的 eigenvector。</p>
+  <h3 id="recon">等价于最小化 reconstruction error</h3>
+  <p>保留前 \(k\) 个方向时，训练集上的 reconstruction error 等于被丢掉的 eigenvalue 之和 \(\sum_{j&gt;k}\lambda_j\)（Murphy eq. 20.26）。总 variance 固定，留下的越多，丢掉的越少，所以两个目标等价。</p>
+</div>
+
+<h2 id="example">手算例子</h2>
+<p>4 个点：(2, 2)、(−2, −2)、(1, −1)、(−1, 1)，均值已经是 0。</p>
+\[ \Sigma = \frac14\sum_i x_i x_i^\top = \begin{pmatrix} 2.5 &amp; 1.5 \\ 1.5 &amp; 2.5 \end{pmatrix} \]
+\[ \lambda_1 = 4,\ w_1 = \tfrac{1}{\sqrt2}(1, 1);\qquad \lambda_2 = 1,\ w_2 = \tfrac{1}{\sqrt2}(1, -1) \]
+<ul>
+  <li>投影到 \(w_1\)：\(\pm 2\sqrt2\)、0、0，variance \(= (8 + 8)/4 = 4 = \lambda_1\)。</li>
+  <li>第一主成分解释了 \(4/(4+1) = 80\%\) 的 variance。</li>
+  <li>只留 1 维：(1, −1) 和 (−1, 1) 被压成原点，各丢 2，平均 reconstruction error \(= 1 = \lambda_2\)。</li>
+</ul>
+
+<h2 id="code">代码（NumPy，用 SVD）</h2>
+<pre><code>def pca(X, k):
+    Xc = X - X.mean(0)                     # centering
+    U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    W = Vt[:k].T                           # (d, k) 前 k 个主方向
+    var = S**2 / len(X)                    # 各方向 variance = eigenvalue
+    # 返回：投影、主方向、explained variance ratio
+    return Xc @ W, W, var[:k] / var.sum()</code></pre>
+
+<h2 id="complexity">复杂度</h2>
+<table>
+  <thead><tr><th>做法</th><th>计算量</th></tr></thead>
+  <tbody>
+    <tr><td>算协方差 \(X^\top X\)，再对 \(d\times d\) 矩阵做 eigendecomposition</td><td class="nw">\(O(nd^2) + O(d^3)\)</td></tr>
+    <tr><td>直接对 \(X\) 做 exact SVD</td><td class="nw">\(O(nd^2) + O(d^3)\)</td></tr>
+    <tr><td>只要前 \(k\) 个：randomized SVD（sklearn 的 randomized solver）</td><td class="nw">\(O(nk^2) + O(k^3)\)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="choose-k">保留几维怎么选</h2>
+<p><strong>和 K-means 的 k 一样，是选出来的</strong>：reconstruction error 随 \(k\) 一直变小（\(k = d\) 时为 0），不能直接取最小。看每个方向解释了多少 variance：</p>
+<ol>
+  <li>把 eigenvalue 从大到小排，算每个的 explained variance ratio 和累计值。</li>
+  <li>取累计值第一次超过阈值（比如 95%）的 \(k\)；或者画 eigenvalue 的 scree plot 找拐点；或者按下游任务的指标选。</li>
+</ol>
+<p>例：5 维数据的 eigenvalue 是 5、3、1、0.5、0.5，总和 10。</p>
+<table>
+  <thead><tr><th>k</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">单个占比</td><td>50%</td><td>30%</td><td>10%</td><td>5%</td><td>5%</td></tr>
+    <tr><td class="nw">累计</td><td>50%</td><td>80%</td><td>90%</td><td><strong>95%</strong></td><td>100%</td></tr>
+  </tbody>
+</table>
+<p>阈值 95% → \(k = 4\)；阈值 90% → \(k = 3\)。sklearn 里直接写 <code>PCA(n_components=0.95)</code>，它会自动选够 95% 的维数。</p>
+<div class="answer"><p>I'd sort the eigenvalues, compute the cumulative explained variance ratio, and keep the smallest k that reaches a threshold such as 95%, or look for the elbow in the scree plot. If PCA feeds a downstream model, I'd pick k by that model's validation metric.</p></div>
+
+<h2>必答点</h2>
+<ul>
+  <li>先 centering；投影 variance \(= w^\top\Sigma w\)</li>
+  <li>约束 \(\|w\| = 1\) + Lagrange → \(\Sigma w = \lambda w\)，variance \(= \lambda\)，取最大的</li>
+  <li>等价于最小化 reconstruction error（\(= \sum_{j&gt;k}\lambda_j\)）</li>
+  <li>实际用 SVD：主方向是 \(V\) 的列，eigenvalue \(= s^2/n\)</li>
+  <li>选 \(k\)：累计 explained variance 到阈值，或 scree plot 拐点</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么要先 centering？</summary>
+  <p>\(w^\top\Sigma w\) 是 variance 的前提是均值为 0。不减均值，第一主成分会被拉向"均值所在的方向"，而不是数据散得最开的方向。</p>
+</details>
+<details>
+  <summary>要不要 standardize？</summary>
+  <p>各维量纲不同时要。比如身高用 cm、体重用 kg，不 standardize 时数值范围大的那一维会主导第一主成分（Murphy §20.1，p.662 有例子）。</p>
+</details>
+<details>
+  <summary>PCA 和 SVD 什么关系？为什么实际用 SVD？</summary>
+  <p>centered \(X = USV^\top\)，则 \(X^\top X = VS^2V^\top\)，所以 \(V\) 的列就是主方向，eigenvalue \(= s^2/n\)。用 SVD 不需要显式算 \(X^\top X\)，数值上更稳。</p>
+</details>
+<details>
+  <summary>维度 d 比样本数 n 还大怎么办？</summary>
+  <p>改算 \(n\times n\) 的 \(XX^\top\) 的 eigenvector 再换算回来（Bishop §12.1.4），或者用 randomized SVD 只求前 \(k\) 个。</p>
+</details>
+<details>
+  <summary>PCA 有什么局限？</summary>
+  <p>只能找 linear 方向，非线性结构用 kernel PCA；它是 unsupervised 的，variance 最大的方向不一定对分类最有用，要用 label 的话换 LDA。t-SNE、UMAP 主要用来可视化。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §20.1（pp.657–665）· <a href="https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf">Bishop, PRML</a> §12.1（pp.561–569）</p>
+
+</main>
+</body>
+</html>

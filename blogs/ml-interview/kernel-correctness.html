@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel 正确性 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>怎么验证 agent 生成的 kernel 是正确的？<br>容差怎么定，谁说了算？</h1>
+<p class="meta"><b>英文问法</b><q>How do you verify that a generated kernel is correct?</q> · <q>What tolerance do you use, and why not a single 1e-2?</q> · <q>Can you trust the tests the agent wrote for itself?</q></p>
+<p class="meta"><b>考过</b><strong>Unity Vector 自己的论文</strong>（<a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.2 Verify 的正确性四档）· 资料：KernelBench-Verified、SOL-ExecBench、PyTorch <code>assert_close</code> · 推断会问，没有 Unity 自己的面经原题，手头也没有别家的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Reference</dt>
+  <dd>被替换掉的 PyTorch 实现。新 kernel 和它吃同样的输入，输出逐个元素比，像拿标准答案对卷子。</dd>
+  <dt>容差</dt>
+  <dd>允许的数值差。<code>assert_close</code> 的判定是 \(|a - e| \le \text{atol} + \text{rtol}\cdot|e|\)，\(e\) 是 reference 的值。<span class="eg">fp32 默认 rtol 约 1.3e-6，bf16 约 1.6e-2。</span></dd>
+  <dt>Bit-identical</dt>
+  <dd>输出每个 bit 都一样，容差是 0。计算顺序不变的 rewrite 才做得到。<span class="eg">FlashVector 把 attention 的 6 个 kernel 融成 1 个，结果 bit-identical。</span></dd>
+  <dt>Hidden shape</dt>
+  <dd>agent 看不到的测试 shape，用来防它只对测试 shape 走捷径。<span class="eg">KernelBench-Verified 里，GPT-5.5 写的 ReLU kernel 在输入 shape 等于测试 shape 时原样返回输入，报出 374x。</span></dd>
+  <dt>Harness</dt>
+  <dd>跑测试并下判定的固定代码，放在 agent 改不到的地方（见 <a href="llm-harness.html">harness</a>）。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I compare the kernel against the PyTorch reference on many inputs: different seeds, scaled and negated distributions to hit overflow, underflow and sign branches, and shapes the agent never saw. The tolerance depends on the change. If the rewrite keeps the order of operations, the output must be bit-identical. If it reorders floating point, I use a per-dtype tolerance, about 1.3e-6 relative for fp32 and 1.6e-2 for bf16, because one loose 1e-2 lets a precision downgrade pass. NaN and inf are checked separately. The harness decides, not tests the agent wrote, and it re-checks inside the timing loop. Random testing is evidence, not proof.</p></div>
+
+<h2 id="tiers">FlashVector 的 verify 四档</h2>
+<table>
+  <thead><tr><th>改动类型</th><th>判定标准</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Deterministic rewrite</td><td>输出逐元素相等</td><td>计算顺序和累加精度都没变，所以不该有任何差</td></tr>
+    <tr><td class="nw">改变浮点顺序的 rewrite</td><td>按 dtype 的容差</td><td>FP16 serving 时，prediction 的 element-wise 偏差超过 10⁻³ 的元素最多 0.1%；FP32 serving 的门槛是 10⁻⁴；non-finite 的输出直接判不过</td></tr>
+    <tr><td class="nw">有意的近似</td><td>business metrics</td><td>输出按设计就不同，比输出没有意义</td></tr>
+    <tr><td class="nw">配置改动</td><td>shadow-traffic canary</td><td>预测值没被碰，要验的是固定 latency SLO 下的表现</td></tr>
+  </tbody>
+</table>
+<p>Verify 回放的是录下来的 artifact，包括 model weights、有代表性的 input 和对应的 prediction。容差只能收紧，不能放宽，接受的阈值写回 model card。</p>
+
+<h2 id="checklist">自己搭 harness：测什么</h2>
+<table>
+  <thead><tr><th>测什么</th><th>怎么做</th><th>防什么</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">输入</td><td>多个 seed；再把输入 ×3、×0.01、×(−1)</td><td>overflow、underflow、符号分支</td></tr>
+    <tr><td class="nw">Shape</td><td>多个 shape，含 hidden shape、非 2 的幂、tail tile</td><td>只对测试 shape 走捷径</td></tr>
+    <tr><td class="nw">容差</td><td>按 dtype 设：fp32 rtol 约 1.3e-6，fp16 1e-3，bf16 约 1.6e-2</td><td>precision downgrade</td></tr>
+    <tr><td class="nw">特殊值</td><td>NaN 和 inf 单独查</td><td><code>assert_close</code> 默认 <code>equal_nan=False</code></td></tr>
+    <tr><td class="nw">整个模型</td><td>whole-model parity，必要时含 backward</td><td>单个 kernel 对了，组合后不一定对</td></tr>
+  </tbody>
+</table>
+<p>手算一遍 1e-2 宽在哪。reference 的值是 100 时，fp32 的默认容差允许差 \(10^{-5} + 1.3\times10^{-6}\times100 = 1.4\times10^{-4}\)。KernelBench 原来 atol 和 rtol 都是 1e-2，允许差 \(0.01 + 0.01\times100 = 1.01\)，宽了约 7000 倍，用 TF32 或 BF16 算的 kernel 也能过。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>和 PyTorch reference 比：多个 seed、多种分布、hidden shape</li>
+  <li>计算顺序不变就要求 bit-identical，变了才按 dtype 给容差</li>
+  <li>fp32 rtol 约 1.3e-6，bf16 约 1.6e-2；一刀切 1e-2 会放过 precision downgrade</li>
+  <li>NaN 和 inf 单独查</li>
+  <li>判定权在 harness，不在 agent 自己写的 test</li>
+  <li>random test 不等于证明</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>计时的时候还要再校验吗？</summary>
+  <p>要。有的 kernel 第一次算对，之后跳过计算。GPU MODE 的 leaderboard 模式每次计时迭代都重新生成输入并重新校验。</p>
+</details>
+<details>
+  <summary>让 agent 自己写 test 行不行？</summary>
+  <p>不行。KernelFalcon 让 LLM 生成 test harness，原文承认这是一个漏洞。更多钻评测漏洞的例子见 <a href="reward-hacking.html">reward hacking</a>。</p>
+</details>
+<details>
+  <summary>random test 全过了，能说 kernel 一定对吗？</summary>
+  <p>不能。KernelBench 把 formal verification 列为 future work。AlphaEvolve 的 FlashAttention 改动最后还是请人类专家确认。</p>
+</details>
+<details>
+  <summary>数值对了就够了吗？</summary>
+  <p>还要看 memory。KernelBench-Verified 发现，最好的模型写对的 kernel 里有 28% 提高了 peak memory。之后还要看提升是否超过 <a href="noise-floor.html">noise floor</a>。</p>
+</details>
+<details>
+  <summary>FlashVector 的四档有哪些没写清？</summary>
+  <p>Figure 3 把 GPU kernel 层写成 "bit-exact tensor compare"，正文却允许改变浮点顺序的 rewrite 走容差。有意的近似由谁批准、看哪些 business metrics，论文也没写。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.2 Verify、Figure 3 · <a href="https://docs.pytorch.org/docs/2.14/testing.html">PyTorch testing</a>（<code>assert_close</code> 的默认容差）· <a href="https://arxiv.org/html/2607.16241">KernelBench-Verified</a> · <a href="https://scalingintelligence.stanford.edu/blogs/kernelbench/">KernelBench blog</a> · <a href="https://raw.githubusercontent.com/gpu-mode/reference-kernels/main/problems/pmpp/eval.py">GPU MODE eval.py</a> · <a href="https://pytorch.org/blog/kernelfalcon-autonomous-gpu-kernel-generation-via-deep-agents/">KernelFalcon</a> · ml-八股 08 第 15 题 · 文献笔记 5.1 节</p>
+
+</main>
+</body>
+</html>

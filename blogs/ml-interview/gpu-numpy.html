@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU 与 NumPy 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Deep Learning</p>
+<h1>为什么 GPU 比 CPU 快？<br>为什么 NumPy 比 Python list 快？</h1>
+<p class="meta"><b>英文问法</b><q>Why is CPU slower than GPU?</q> · <q>Why is NumPy faster than list multiplication?</q> · <q>How does matrix multiplication differ on a CPU and a GPU?</q></p>
+<p class="meta"><b>考过</b>微软 AS2 第 2 轮（约 20 道 breadth 题里的两道：<q>why cpu is slower than gpu</q>、<q>why numpy is faster than list multiplication</q>）· NVIDIA DevTech NG 2026 问 CPU 和 GPU 算 matmul 的区别（<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>，展开见 06）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Latency vs throughput</dt>
+  <dd>CPU 追求单个任务尽快做完（latency），把晶体管花在 cache、branch prediction 这些控制逻辑上；GPU 追求单位时间做完的总量（throughput），把晶体管花在计算单元上。CPU 像几位全能大厨，复杂菜谱、临时改单都能应付；GPU 像几千个只会切菜的帮工，单个慢，但同一个动作几千人一起做。<span class="eg">例：CUDA 官方文档的说法是 CPU 同时跑几十个 thread，GPU 同时跑几千个。本机 CPU 10 个 core、16 个 thread；RTX 2080 Ti 有 4,352 个 CUDA cores。</span></dd>
+  <dt>SIMD / SIMT 与 warp</dt>
+  <dd>一条指令同时算一排数据。CPU core 里有 SIMD 向量单元（x86 上是 AVX）；GPU 把 32 个 thread 编成一个 warp，同一时刻执行同一条指令（SIMT）。<span class="eg">例：一个 warp 里一半 thread 进 if、一半不进，就得两段分别执行，每段都有一半 thread 闲着（warp divergence）。分支越多，GPU 越吃亏。</span></dd>
+  <dt>Memory bandwidth</dt>
+  <dd>每秒能从内存 / 显存搬多少字节，是"算得再快也得先把数据喂进来"的那根水管。<span class="eg">例（d2l）：CPU 的 DDR4 合计 40–100 GB/s，消费级 GPU 的 GDDR6 超过 500 GB/s。本机 NumPy 做大数组加法实测约 30 GB/s。</span></dd>
+  <dt>Arithmetic intensity</dt>
+  <dd>每搬 1 byte 数据能做几次运算。高的操作（matmul）卡在算力上，叫 compute-bound；低的操作（逐元素加法、activation）卡在 bandwidth 上，叫 memory-bound。<span class="eg">例：float64 向量加法做 1 次运算要搬 24 bytes，intensity = 1/24；n×n matmul 是 \(n/12\)，n = 2000 时约 167。</span></dd>
+  <dt>Python object overhead</dt>
+  <dd>Python list 里存的是 pointer，每个数都是一个单独的 Python object（带 type 和引用计数）。算 <code>a[i] * b[i]</code> 时解释器要先取 object，查 type，找乘法的实现，再新建一个 object 放结果。<span class="eg">例：100 万个 float，list 本身 8.4 MB（pointer）+ 每个 float object 24 bytes，共约 32 MB；ndarray 只要 8 MB。</span></dd>
+  <dt>Vectorization 与 BLAS</dt>
+  <dd>ndarray 是同一 dtype、连续存放的原始数值。<code>A * B</code> 一次调用，整个循环在编译好的 C 里跑，能用上 SIMD；matmul 交给 BLAS 库（本机是 Intel MKL），它还会按 cache 分块、多线程并行。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>A CPU is built for latency: a few powerful cores, with many transistors spent on caches, branch prediction and control logic, so one sequential, branchy thread runs fast. A GPU is built for throughput: thousands of simple cores running threads in 32-wide warps that execute the same instruction on different data, it hides memory latency by switching between warps, and it has much higher memory bandwidth. Deep learning is mostly large matrix multiplies and elementwise ops with little branching, which is exactly that workload. NumPy beats a Python list for a similar reason. A list holds pointers to boxed Python objects, so every element costs interpreter dispatch, a type check and a new object. An ndarray stores raw values of one dtype contiguously, so one vectorized call runs the whole loop in compiled C with SIMD, and matmul goes to a multithreaded BLAS. On my machine, multiplying a million floats is about 20 to 30 times faster, and a 200 by 200 matmul is thousands of times faster.</p></div>
+
+<h2>关键公式：arithmetic intensity</h2>
+<div class="deriv">
+  \[ \text{intensity} = \frac{\text{运算次数 (FLOPs)}}{\text{搬运的字节数}} \]
+  <p>float64 每个数 8 bytes。长度 \(n\) 的向量加法：\(n\) 次运算，读 2 个向量、写 1 个：</p>
+  \[ \frac{n}{3n \times 8} = \frac{1}{24} \]
+  <p>\(n\times n\) matmul：\(2n^3\) 次运算（乘 + 加），理想情况下每个矩阵只搬一次：</p>
+  \[ \frac{2n^3}{3n^2\times 8} = \frac{n}{12} \]
+  <p>实际速度 ≈ \(\min(\text{峰值算力},\ \text{intensity}\times\text{bandwidth})\)。intensity 低的操作加再多 core 也没用，只能靠 bandwidth；matmul 的 intensity 随 \(n\) 变大，才喂得饱成千上万个 core。GPU 两样都强。</p>
+</div>
+
+<h2 id="timing">本机实测</h2>
+<p>Intel Core 7 240H（10 cores / 16 threads），NumPy 2.3.5 + MKL，float64，多次运行取最小值：</p>
+<table>
+  <thead><tr><th>操作</th><th>写法</th><th>时间</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">100 万个数逐个相乘</td><td>Python <code>for</code> + <code>append</code></td><td class="nw">≈ 70 ms</td></tr>
+    <tr><td></td><td>list comprehension</td><td class="nw">≈ 50 ms</td></tr>
+    <tr><td></td><td>NumPy <code>A * B</code></td><td class="nw"><strong>≈ 2 ms</strong></td></tr>
+    <tr><td class="nw">200×200 matmul</td><td>纯 Python 三重循环</td><td class="nw">≈ 480 ms</td></tr>
+    <tr><td></td><td>NumPy <code>X @ Y</code></td><td class="nw"><strong>≈ 0.1 ms</strong></td></tr>
+    <tr><td class="nw">2000×2000 matmul</td><td>MKL 限 1 个 thread</td><td class="nw">≈ 0.6–0.7 s</td></tr>
+    <tr><td></td><td>MKL 默认（10 threads）</td><td class="nw">≈ 50–57 ms，≈ 300 GFLOP/s</td></tr>
+    <tr><td class="nw">2000 万个数相加</td><td>NumPy <code>A + B</code></td><td class="nw">≈ 16 ms，≈ 1.2 GFLOP/s</td></tr>
+  </tbody>
+</table>
+<p>最后两行是同一台机器、同一个 NumPy：matmul 每秒做的运算是加法的约 250 倍。加法 intensity 只有 1/24，被约 30 GB/s 的 bandwidth 卡住；matmul 的 intensity 约 167，能吃满算力。</p>
+<pre><code>import numpy as np, timeit
+n = 1_000_000
+a = [float(i) for i in range(n)]
+b = [float(i % 7) for i in range(n)]
+A, B = np.array(a), np.array(b)
+t_list = timeit.timeit(lambda: [x * y for x, y in zip(a, b)],
+                       number=10)
+t_np = timeit.timeit(lambda: A * B, number=10)
+print(t_list / t_np)        # 本机约 20–30</code></pre>
+
+<h2>必答点</h2>
+<ul>
+  <li>CPU：少数强 core，晶体管给 cache 和控制逻辑 → latency；GPU：几千个 thread，晶体管给计算单元 → throughput</li>
+  <li>GPU memory bandwidth 高，靠切换 warp 把访存 latency 藏起来</li>
+  <li>DL 是大量 matmul 和逐元素运算，同一条指令、分支少 → 适合 GPU</li>
+  <li>matmul intensity \(n/12\) 高 → compute-bound；逐元素运算低 → memory-bound</li>
+  <li>NumPy：同 dtype 连续存放 + 循环在 C 里 + SIMD + BLAS 多线程；list：pointer 指向 Python object，逐个解释执行、查 type、新建 object</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>CPU 和 GPU 算 matmul 有什么区别？（NVIDIA 原题）</summary>
+  <p>思路一样。把矩阵切成小块（tiling），搬到快的片上存储里反复用，提高 intensity。CPU 上 BLAS 按 cache 大小分块，每个 core 用 SIMD 算一块，十来个 core 多线程分工。GPU 上每个 thread block 负责输出的一个 tile，把 A、B 的小块放进 shared memory（每个 SM 上的 scratchpad，比 global memory 的 bandwidth 高、latency 低），几千个 thread 同时算。较新的 GPU 还有专门做小矩阵乘加的 Tensor Cores，完整的对比和 roofline 见 <a href="matmul-roofline.html">matmul 与 roofline</a>。</p>
+</details>
+<details>
+  <summary>GPU 访存 latency 很高，为什么还快？</summary>
+  <p>每个 SM 上同时驻留很多 warp，它们的上下文一直在片上，切换没有开销。一个 warp 等内存时，scheduler 马上发射另一个 ready 的 warp。CPU 靠大 cache 和 branch prediction 减少等待，GPU 靠并行把等待藏起来。</p>
+</details>
+<details>
+  <summary>什么时候 GPU 不比 CPU 快？</summary>
+  <p>数据很小（kernel launch 和 CPU↔GPU 拷贝的开销盖过计算）、分支多（warp divergence）、稀疏或随机访存（打不满 bandwidth）、本身是前后依赖的串行任务。</p>
+</details>
+<details>
+  <summary>用 for 循环遍历 ndarray 会快吗？</summary>
+  <p>更慢。本机 100 万次 <code>C[i] = A[i] * B[i]</code> 约 160 ms，比 list 还慢，因为每次 <code>A[i]</code> 都要新建一个 NumPy scalar object。<code>np.vectorize</code> 也不加速，文档原话是 "essentially a for loop"。</p>
+</details>
+<details>
+  <summary>NumPy 有什么不如 list 的地方？</summary>
+  <p>大小固定。<code>np.append</code> 每次都分配新数组、整份拷贝，在循环里逐个 append 总共是 \(O(n^2)\)。边读边加数据时先用 list，最后一次性转成 ndarray。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/introduction.html#the-benefits-of-using-gpus">CUDA Programming Guide v13.4</a> §1.1.2、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/programming-model.html#warps-and-simt">§1.2.2.2</a>、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html#shared-memory">§2.3.3.2</a>、<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html#hardware-multithreading">§3.2.2.2</a> · <a href="https://numpy.org/doc/stable/user/whatisnumpy.html#why-is-numpy-fast">NumPy: What is NumPy?</a> · <a href="https://d2l.ai/chapter_computational-performance/hardware.html">d2l §13.4 Hardware</a>（§13.4.2、§13.4.4.2、§13.4.5）· <a href="https://www.deeplearningbook.org/contents/applications.html">Goodfellow et al., Deep Learning</a> §12.1.2（pp.439–441）</p>
+
+</main>
+</body>
+</html>

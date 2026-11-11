@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>K-means 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Classic ML</p>
+<h1>K-means 怎么做？为什么取均值？<br>复杂度多少？k 怎么选？</h1>
+<p class="meta"><b>英文问法</b><q>Explain K-means and implement it.</q> · <q>Why is the centroid the mean?</q> · <q>What's the time complexity?</q> · <q>How do you choose k?</q></p>
+<p class="meta"><b>考过</b><strong>★ 作者本人微软 AS 电面</strong> · 微软 AS 实习 VO：手撕 + time complexity · 微软 AS2 推导轮：证明 centroid 取 mean。完整练习见 ml-coding。</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>K-means</dt>
+  <dd>像开 K 家快递站：每户去最近的站取件（assign），每个站再搬到自己住户的正中间（update），反复直到没人换站。unsupervised，不需要标签。</dd>
+  <dt>Centroid（质心）</dt>
+  <dd>一堆点每一维各自取平均。<span class="eg">例：(1, 1)、(3, 1)、(2, 4) 的质心是 (2, 2)。</span></dd>
+  <dt>Inertia（目标函数）</dt>
+  <dd>每个点到自己质心距离的平方，全部加起来，也就是所有住户的"跑腿成本"。越小，每堆越紧。</dd>
+  <dt>Local minimum 与 k-means++</dt>
+  <dd>结果取决于起点，像下山走进小坑就停了。k-means++ 让初始中心尽量散开：离已有中心越远的点越容易被选中。再多跑几次取最好的。</dd>
+  <dt>K-means vs KNN</dt>
+  <dd>K-means 是 clustering，K 是簇数；KNN 是 supervised 预测，K 是邻居数。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>K-means splits n points into k clusters by minimizing inertia, the within-cluster sum of squared distances. It alternates two steps: assign each point to its nearest centroid, then move each centroid to the mean of its points. The mean is optimal because the gradient of Σ‖xᵢ − c‖² is zero there. Neither step increases inertia, so it always converges, but only to a local minimum, so we use k-means++ and several restarts. Each iteration is O(nkd). k is a hyperparameter: try several values and pick one by the elbow of inertia or the best silhouette score.</p></div>
+
+<h2>推导</h2>
+<div class="deriv">
+  <h3 id="mean">为什么质心取均值（AS2 原题）</h3>
+  <p>固定分配，只看一堆 \(S\)：</p>
+  \[ \nabla_c \sum_{i\in S}\|x_i - c\|^2 = -2\sum_{i\in S}(x_i - c) = 0 \;\Longrightarrow\; c = \frac{1}{|S|}\sum_{i\in S} x_i,\qquad \nabla^2 = 2|S|\,I \succ 0 \]
+  <h3 id="converge">为什么一定收敛</h3>
+  <p>两步都不增大 inertia，而分组方式只有有限种 → 一定停。但只到 local minimum（找全局最优是 NP-hard）。</p>
+</div>
+
+<h2 id="code">手撕代码（NumPy）</h2>
+<pre><code>def kmeans(X, k, iters=100, seed=0):
+    rng = np.random.default_rng(seed)
+    C = X[rng.choice(len(X), k, replace=False)]      # 初始质心：随机 k 个点
+    for _ in range(iters):
+        # (n, k) 距离平方：||x||² − 2x·c + ||c||²
+        D = (X**2).sum(1)[:, None] - 2 * X @ C.T + (C**2).sum(1)
+        labels = D.argmin(1)                         # assign
+        # update：取均值；空簇保持不动
+        newC = np.array([X[labels == j].mean(0) if (labels == j).any() else C[j]
+                         for j in range(k)])
+        if np.allclose(newC, C):
+            break
+        C = newC
+    return C, labels</code></pre>
+
+<h2 id="complexity">复杂度</h2>
+<p>\(n\) 个点、\(d\) 维、\(k\) 个簇、\(I\) 轮：</p>
+<table>
+  <thead><tr><th>步骤</th><th>对应代码</th><th>计算量</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">assign：算距离</td><td><code>X @ C.T</code>（\(n\times d\) 乘 \(d\times k\)）</td><td class="nw"><strong>\(O(nkd)\)</strong></td></tr>
+    <tr><td class="nw">assign：找最近</td><td><code>D.argmin(1)</code></td><td class="nw">\(O(nk)\)</td></tr>
+    <tr><td class="nw">update：取均值</td><td><code>X[labels == j].mean(0)</code>，每个 \(j\)</td><td class="nw">\(O(nk + nd)\)</td></tr>
+  </tbody>
+</table>
+<p>每轮 \(O(nkd)\)（算距离占大头），总共 \(O(nkdI)\)。距离矩阵多占 \(O(nk)\) 内存。向量化只是让矩阵乘法跑得快，复杂度不变。</p>
+
+<h2 id="choose-k">k 怎么选</h2>
+<p><strong>k 不是算出来的，是试出来的</strong>：对一串 k（比如 1 到 10）各跑一次 K-means，给每个 k 打分，选分数最好的。不能用 inertia 最小来选，因为 k 越大 inertia 越小（k = n 时为 0）。打分有两种：</p>
+
+<h3>① Elbow：看 inertia 下降到哪里突然变慢</h3>
+<p>算出每个 k 的 inertia，以及比上一个 k 少了多少。在一组真有 3 团的数据上实测：</p>
+<table>
+  <thead><tr><th>k</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">inertia</td><td>766.0</td><td>280.6</td><td><strong>22.6</strong></td><td>18.8</td><td>16.0</td><td>13.7</td></tr>
+    <tr><td class="nw">少了多少</td><td>–</td><td>485.4</td><td><strong>258.0</strong></td><td>3.9</td><td>2.7</td><td>2.3</td></tr>
+    <tr><td class="nw">silhouette</td><td>–</td><td>0.66</td><td><strong>0.86</strong></td><td>0.71</td><td>0.53</td><td>0.35</td></tr>
+  </tbody>
+</table>
+<p>加到第 3 个簇还能少 258，加第 4 个只少 3.9，再加就不划算了 → <strong>k = 3</strong>。缺点：真实数据的拐点常常不明显。</p>
+
+<h3>② Silhouette：每个点打分，取平均最高的 k</h3>
+<p>对每个点：\(a\) = 到同簇其他点的平均距离，\(b\) = 到最近的另一簇的平均距离，</p>
+\[ s = \frac{b - a}{\max(a, b)} \in [-1, 1] \]
+<p>手算例子：一维的 5 个点 1, 2, 3, 10, 11。</p>
+<ul>
+  <li>k = 2，分成 {1, 2, 3} 和 {10, 11}：点 2 的 \(a = 1\)，\(b = 8.5\)，\(s = 7.5/8.5 = 0.88\)。全部点平均 <strong>0.86</strong>。</li>
+  <li>k = 3，多拆出 {1}：点 2 的 \(a = 1\)，最近的另一簇变成 {1}，\(b = 1\)，\(s = 0\)。全部点平均掉到 <strong>0.45</strong>。</li>
+</ul>
+<p>所以拆得太碎，点离"邻居簇"变近，分数反而下降，它不会像 inertia 那样一味偏向大的 k。上面三团数据的 silhouette 也在 k = 3 最高（0.86）。</p>
+
+<pre><code># 看 inertia 的拐点，或取 silhouette 最大的 k
+for k in range(1, 11):
+    km = KMeans(n_clusters=k, n_init=10).fit(X)
+    s = silhouette_score(X, km.labels_) if k > 1 else None   # silhouette 至少要 2 簇
+    print(k, km.inertia_, s)</code></pre>
+<p>如果聚类结果要给下游任务用，也可以直接按下游指标选 k。</p>
+<div class="answer"><p>k is a hyperparameter, so I'd run K-means for a range of k. Inertia always drops as k grows, so I'd look for the elbow where the drop suddenly gets small, and compute the average silhouette score, which compares each point's distance to its own cluster with its distance to the nearest other cluster, and pick the k that maximizes it.</p></div>
+
+<h2>必答点</h2>
+<ul>
+  <li>objective 是 inertia；两步交替：assign 到最近质心 → update 为均值</li>
+  <li>取均值：求导等于 0，Hessian 正定</li>
+  <li>收敛但只到 local minimum → k-means++ + 多次重启</li>
+  <li>复杂度：每轮 \(O(nkd)\)，总共 \(O(nkdI)\)</li>
+  <li>k 是试出来的：elbow 或 silhouette 最大</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>会收敛到全局最优吗？</summary>
+  <p>不保证，找全局最优是 NP-hard。多跑几次（sklearn 的 <code>n_init</code>），取 inertia 最小的。</p>
+</details>
+<details>
+  <summary>k-means++ 怎么做？</summary>
+  <p>第一个中心随机选；之后按 \(D(x)^2\) 的比例抽样，\(D(x)\) 是点到最近已选中心的距离。误差期望不超过最优的 \(O(\log k)\) 倍。</p>
+</details>
+<details>
+  <summary>出现空簇怎么办？</summary>
+  <p>把它挪到离自己质心最远的点，或重新随机选一个点。不能直接求均值（0/0 → nan）。</p>
+</details>
+<details>
+  <summary>什么数据上会失效？换什么？</summary>
+  <p>环形、细长等非凸的簇，大小或密度差很多的簇，有 outlier，feature 尺度不一（要先 standardize）。换 GMM、DBSCAN、spectral clustering。</p>
+</details>
+<details>
+  <summary>n 很大怎么办？</summary>
+  <p>分块算距离。或者用 mini-batch K-means，每步只用一小批点更新。</p>
+</details>
+<details>
+  <summary>和 GMM 什么关系？</summary>
+  <p>K-means 是 hard assignment，GMM 是 soft assignment。GMM 的 covariance 都取 \(\epsilon I\) 且 \(\epsilon \to 0\) 时就退化成 K-means。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://probml.github.io/pml-book/book1.html">Murphy, PML1</a> §21.3（pp.722–728）· <a href="https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf">Bishop, PRML</a> §9.1、§9.3.2 · <a href="https://mlanthology.org/mlj/2009/aloise2009mlj-nphardness">Aloise et al. 2009</a>（NP-hard）</p>
+
+</main>
+</body>
+</html>

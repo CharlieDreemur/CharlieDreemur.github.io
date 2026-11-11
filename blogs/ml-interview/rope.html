@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoPE 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Transformer &amp; LLM</p>
+<h1>RoPE 怎么做？为什么表示相对位置？<br>怎么扩展到更长的 context？</h1>
+<p class="meta"><b>英文问法</b><q>How does RoPE work?</q> · <q>Why does RoPE encode relative position?</q> · <q>How do you extend the context window of a RoPE model?</q></p>
+<p class="meta"><b>考过</b>面经里还没见到单独的原题，是 positional encoding 的常见追问</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>RoPE（rotary position embedding）</dt>
+  <dd>不把位置向量"加"到 embedding 上，而是在每层 attention 里把 q、k 按位置"转"一个角度，像钟表指针：位置 m 的 token 转 \(m\theta\)。</dd>
+  <dt>两两一组、多种转速</dt>
+  <dd>d 维拆成 \(d/2\) 个 2-D 平面，第 i 组转速 \(\theta_i\)。像秒针、分针、时针：转得快的分辨相邻 token，转得慢的管远距离。<span class="eg">例：d_head = 128、base = 10000，最快一组约 6.3 个 token 转一圈，最慢一组约 54k 个 token 才转一圈。</span></dd>
+  <dt>相对位置</dt>
+  <dd>score 只看两个 token 隔多远，不看各自在哪。两根指针同时多转几格，夹角不变。</dd>
+  <dt>Extrapolation</dt>
+  <dd>推理长度超过训练长度 \(L\)。慢的那些组在训练里一圈都没转完，新位置的角度从没见过，score 乱掉。<span class="eg">例：\(L = 4096\) 时，64 组里有 18 组转一圈要超过 4096 个 token。</span></dd>
+  <dt>Interpolation</dt>
+  <dd>把位置或转速压缩，让更长的序列映射回训练见过的角度范围，再用少量长文本 fine-tune。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>RoPE encodes position by rotating queries and keys instead of adding a vector to the input. The head dimension is split into d/2 pairs, and pair i at position m is rotated by mθᵢ, with θᵢ = base^(−2i/d). Rotations compose, so (R_m q)ᵀ(R_n k) = qᵀR_(n−m)k: the score depends only on the offset. It has no parameters and is applied to q and k in every layer, not to v. Beyond the training length, the slow pairs see unseen angles, so we interpolate: position interpolation scales positions by L/L′, NTK-aware scaling raises the base, and YaRN interpolates per frequency with an attention temperature, followed by a short long-context fine-tune.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  \[ q_m = R(m\theta)\,q,\qquad k_n = R(n\theta)\,k \]
+  \[ q_m^\top k_n = q^\top R(m\theta)^\top R(n\theta)\,k = q^\top R\big((n-m)\theta\big)\,k \]
+  <p>转置就是反着转，两次旋转角度相减，所以只剩 \(n-m\)。d 维时 \(R\) 是 block-diagonal，第 i 组用自己的转速：</p>
+  \[ \theta_i = \text{base}^{-2i/d},\qquad i = 0,\dots,d/2-1 \]
+  <p>实现不用真乘矩阵：预计算 cos、sin 表，\(q\cdot\cos + \text{rotate\_half}(q)\cdot\sin\)。</p>
+</div>
+
+<svg viewBox="0 0 470 178" role="img" aria-label="两个位置组合下旋转后的 q 和 k 夹角相同" style="width:100%;max-width:470px;height:auto;display:block;margin:.6rem auto .2rem;font-family:var(--serif);font-size:13px">
+  <line x1="70" y1="150" x2="200" y2="150" style="stroke:var(--rule);stroke-width:1.5"/>
+  <line x1="330" y1="150" x2="460" y2="150" style="stroke:var(--rule);stroke-width:1.5"/>
+  <path d="M106.7 140.2 A38 38 0 0 0 91.8 118.9" style="fill:none;stroke:var(--muted);stroke-width:1.2"/>
+  <path d="M349 117.1 A38 38 0 0 0 323.4 112.6" style="fill:none;stroke:var(--muted);stroke-width:1.2"/>
+  <line x1="70" y1="150" x2="171.4" y2="122.8" style="stroke:var(--accent);stroke-width:2.5;stroke-linecap:round"/>
+  <line x1="70" y1="150" x2="130.2" y2="64" style="stroke:var(--fg);stroke-width:2.5;stroke-linecap:round"/>
+  <line x1="330" y1="150" x2="382.5" y2="59.1" style="stroke:var(--accent);stroke-width:2.5;stroke-linecap:round"/>
+  <line x1="330" y1="150" x2="311.8" y2="46.6" style="stroke:var(--fg);stroke-width:2.5;stroke-linecap:round"/>
+  <text x="178" y="122" style="fill:var(--accent)">q 转 15°</text>
+  <text x="136" y="58" style="fill:var(--fg)">k 转 45°</text>
+  <text x="389" y="56" style="fill:var(--accent)">q 转 60°</text>
+  <text x="306" y="40" style="fill:var(--fg);text-anchor:end">k 转 90°</text>
+  <text x="108" y="124" style="fill:var(--muted)">40°</text>
+  <text x="332" y="106" style="fill:var(--muted)">40°</text>
+  <text x="70" y="172" style="fill:var(--muted)">m = 1, n = 3</text>
+  <text x="330" y="172" style="fill:var(--muted)">m = 4, n = 6</text>
+</svg>
+<p class="meta">每个位置转 15°，k 本来比 q 多 10°。m、n 都加 3，两根向量一起多转 45°，夹角还是 40°，点积不变。</p>
+
+<h2 id="example">手算例子</h2>
+<p>为了好算取 \(\theta = 90^\circ\)：转 90° 就是 \((x, y)\to(-y, x)\)。\(q = (1, 2)\)，\(k = (2, 1)\)：</p>
+<ul>
+  <li>\(m = 1, n = 2\)：\(R(90^\circ)q = (-2, 1)\)，\(R(180^\circ)k = (-2, -1)\)，点积 \(= 4 - 1 = 3\)</li>
+  <li>\(m = 3, n = 4\)：\(R(270^\circ)q = (2, -1)\)，\(R(360^\circ)k = (2, 1)\)，点积 \(= 3\)</li>
+  <li>直接用公式：\(q^\top R(90^\circ)k = (1, 2)\cdot(-1, 2) = 3\)；同一位置 \(m = n\) 时是 \(q\cdot k = 4\)</li>
+</ul>
+
+<h2 id="long-context">怎么扩展 context（训练长度 \(L\) → \(L'\)，\(s = L'/L\)）</h2>
+<table>
+  <thead><tr><th>方法</th><th>改什么</th><th>要点</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Position interpolation</td><td class="nw">\(m \to m\cdot L/L'\)</td><td>所有组一起压 \(s\) 倍；LLaMA 2048 → 32768 只 fine-tune 约 1000 步</td></tr>
+    <tr><td class="nw">NTK-aware</td><td class="nw">\(\text{base}\to\text{base}\cdot s^{d/(d-2)}\)</td><td>快的组几乎不动，最慢的组正好压 \(s\) 倍；不 fine-tune 也比 PI 好。例：\(s = 4\)，10000 → 40890</td></tr>
+    <tr><td class="nw">YaRN</td><td>按波长分段 + temperature</td><td>转得快的组不动，一圈超过 \(L\) 的组按 PI 压，中间过渡；比之前的方法少用 10 倍 token、2.5 倍步数</td></tr>
+  </tbody>
+</table>
+<p>LLaMA 3 预训练时就把 base 设成 500,000。405B 最后分 6 个阶段把 context 从 8K 训到 128K。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>q、k 两两一组，位置 m 转 \(m\theta_i\)，\(\theta_i = \text{base}^{-2i/d}\)</li>
+  <li>\(R(m\theta)^\top R(n\theta) = R((n-m)\theta)\) → score 只依赖 \(n-m\)</li>
+  <li>没有参数；每层只作用在 q、k 上，不动 v</li>
+  <li>超长失效：慢的组角度没见过 → PI 压位置、NTK-aware 调 base、YaRN 分组 + temperature，再少量 fine-tune</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>和 sinusoidal positional encoding 有什么区别？</summary>
+  <p>sinusoidal 是加在输入 embedding 上的 absolute 编码，相对位置要模型自己学；RoPE 是乘性的，每层作用在 q、k 上，score 里直接只剩相对位置。两者用同一组频率 \(10000^{-2i/d}\)。</p>
+</details>
+<details>
+  <summary>为什么不转 v？</summary>
+  <p>位置只需要影响"谁和谁配对"，也就是 q·k 的 score；v 是被加权求和的内容。RoFormer 只对 q、k 乘 \(R\)（eq. 14–16）。</p>
+</details>
+<details>
+  <summary>long-term decay 是什么？</summary>
+  <p>RoFormer 证明 score 的上界随相对距离增大而变小：离得越远，默认联系越弱。但 PI 论文指出这个界很松，挡不住 extrapolation 时 score 爆掉。</p>
+</details>
+<details>
+  <summary>为什么插值比直接 extrapolate 稳？</summary>
+  <p>插值后位置落在两个训练过的整数位置之间，score 的误差有界，这个界比 extrapolation 的小约 600 倍；直接 extrapolate 时 score 可能从 \([-1, 1]\) 冲到几千，perplexity 超过 1000。</p>
+</details>
+<details>
+  <summary>PI 有什么问题？YaRN 的 temperature 是什么？</summary>
+  <p>PI 把转得快的组也一起压了，相邻 token 更难区分，大约到 \(s = 8\) 就开始变差，所以 NTK-aware、YaRN 只压慢的组。temperature：softmax 前 logits 除以 \(t\)，\(\sqrt{1/t} = 0.1\ln s + 1\)。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2104.09864">Su et al., RoFormer</a> §3.2（pp.4–5，eq. 12–16）、§3.3、§3.4.2–3.4.3（pp.5–8，eq. 34–36）· <a href="https://arxiv.org/abs/2306.15595">Chen et al. 2023, Position Interpolation</a> Abstract、§2.2–2.3（pp.3–5，eq. 4，Fig. 2，Theorem 2.1）· <a href="https://arxiv.org/abs/2309.00071">Peng et al., YaRN</a> Abstract、§3.1–3.3（pp.4–6，eq. 10–15）、Appendix A.2（p.13，eq. 19）· <a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.5（p.6）· <a href="https://arxiv.org/abs/2407.21783">Llama 3 Herd</a> §3.2 Table 3（p.7）、§3.4.2（p.14）</p>
+
+</main>
+</body>
+</html>

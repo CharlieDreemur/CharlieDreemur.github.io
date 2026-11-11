@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多步 search loop 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>为什么单次 RAG 不够？<br>多步 search 怎么拆 query，什么时候停？</h1>
+<p class="meta"><b>英文问法</b><q>Why isn't single-shot RAG enough?</q> · <q>How does the agent decide when to stop searching?</q> · <q>Design an agentic search experience.</q></p>
+<p class="meta"><b>考过</b>recruiter 邮件写的实习内容 "Agentic workflow" · Agentic Search 评测组 JD 写 "deep search systems for Personal Question Answering"（<a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">200670397</a>）· Walmart Labs MLE onsite 原题 Design an Agentic Search Experience（<a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub</a>，编辑版）· 这个组是否这样问是推断</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Single-shot RAG</dt>
+  <dd>检索一次就回答，像只查一次字典。</dd>
+  <dt>Multi-hop question</dt>
+  <dd>答案要串起多条数据，而且后一次 search 的 query 依赖前一次的结果。<span class="eg">Apple 官方的例子：先从 message 里找到亲戚想一起做家传菜，再去 email 里找那份菜谱。不知道是哪道菜，就搜不到菜谱。</span></dd>
+  <dt>Query decomposition</dt>
+  <dd>把一个问题拆成几个子问题，逐个检索。</dd>
+  <dt>Stop condition</dt>
+  <dd>什么时候不再搜。没有它，agent 要么搜不停，要么没搜够就答。</dd>
+  <dt>Budget</dt>
+  <dd>步数、token、latency 的上限。步数的上限是超参数，按任务的跳数定。<span class="eg">Search-R1 的 action 上限是 4，每次取 top-3 passage。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Single-shot retrieval fails when the second query depends on the first result, which is a multi-hop question. So the model runs a loop: decompose the question, search, read the results, and decide whether it has enough evidence or needs another query. It stops when the answer is supported by evidence, when new searches return nothing new, or when it hits a step or latency budget. If it stops without evidence, it says what it searched and that it couldn't find the answer, instead of guessing. Not every query needs the loop: simple lookups should take the cheap single-shot path.</p></div>
+
+<h2 id="stop">什么时候停</h2>
+<table>
+  <thead><tr><th>Stop condition</th><th>信号</th><th>停下之后</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">证据够了</td><td>每个子问题都有 evidence 支持</td><td>生成 grounded 回答</td></tr>
+    <tr><td class="nw">没有新信息</td><td>连续几次 search 返回重复或空结果</td><td>说明查过什么，然后 abstain</td></tr>
+    <tr><td class="nw">Budget 用完</td><td>步数、token 或 latency 到上限</td><td>用已有 evidence 回答并说明不完整，或退回普通 search 结果</td></tr>
+    <tr><td class="nw">需要澄清</td><td>有歧义，比如两个 Tim</td><td>只问会改变结果的问题</td></tr>
+  </tbody>
+</table>
+<p><strong>Workflow 还是 agent</strong>：路径固定的用代码串起来（workflow），便宜又稳定；路径要由模型决定的才用 agent。前面放一个 router，简单 lookup 走 single-shot。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>multi-hop：后一个 query 依赖前一个结果，所以一次检索不够</li>
+  <li>loop：decompose → search → read → 判断够不够</li>
+  <li>三种停法：证据够、没新信息、budget 用完</li>
+  <li>没证据就 abstain，并说明查过什么</li>
+  <li>不是所有 query 都要 agent：router 分流</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>子问题一次拆完，还是边搜边拆？</summary>
+  <p>一次拆完（plan-then-execute）省模型调用，适合子问题互相独立的情况。后一跳依赖前一跳的结果时，只能边搜边拆（ReAct 风格），因为拆的时候还不知道要搜什么。</p>
+</details>
+<details>
+  <summary>多一步的代价是什么？</summary>
+  <p>latency 和 token 随步数线性涨，错误还会累积。每一步有 90% 做对，4 步全对的概率是 \(0.9^4 \approx 66\%\)。</p>
+</details>
+<details>
+  <summary>怎么判断“证据够了”？</summary>
+  <p>让模型逐个子问题对上 evidence。再用 verifier 检查答案里的 claim 是否都有 evidence。判断不准时，宁可追问或 abstain。</p>
+</details>
+<details>
+  <summary>用户中途放宽了一个条件，怎么办？</summary>
+  <p>维护一份结构化的 constraint state，条件一变就更新并重新检索（见 <a href="hard-constraints.html">hard constraint 与 preference</a>）。</p>
+</details>
+<details>
+  <summary>检索到的内容里有一句写给 assistant 的指令，怎么办？</summary>
+  <p>检索内容是数据，不是指令。用 delimiter 标出来，不让它触发 tool。有副作用的操作要用户确认（见 <a href="rag.html">RAG</a> 的 prompt injection）。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://www.apple.com/newsroom/2026/09/siri-ai-a-profoundly-more-capable-and-personal-assistant-is-here/">Apple Newsroom 2026-09</a>（family recipe 例子）· <a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub：Design an Agentic Search Experience</a>（追问含“用户中途放宽条件”和“记录里含有给 assistant 的指令”）· <a href="https://arxiv.org/abs/2503.09516">Search-R1</a> Appendix B.2</p>
+
+</main>
+</body>
+</html>

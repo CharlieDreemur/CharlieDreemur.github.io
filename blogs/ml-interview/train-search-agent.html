@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>训练 search agent 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>Search agent 怎么训？<br>reward 怎么设计，怎么防 reward hacking？</h1>
+<p class="meta"><b>英文问法</b><q>How would you train a model to use a search tool?</q> · <q>How do you design the reward?</q> · <q>What is reward hacking, and how do you prevent it?</q></p>
+<p class="meta"><b>考过</b>recruiter 邮件写的实习内容 "Train/Eval/Prompt Tuning on foundation models" · Apple 大模型算法面经第 10、11 题「详细讲一下 reward model 怎么设计的，遇到过hacking，如何解决」「如果把这个 reward 设计迁移到对话任务，你会怎么做？」（<a href="https://www.nowcoder.com/feed/main/detail/6790299dba2544d8a25611b268863dd6">牛客</a>，团队未写）· 具体到 search agent 是推断，公开做法以 Search-R1 为例</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Rollout</dt>
+  <dd>模型做一遍题的全过程：先想一想，发出 search query，系统插入检索结果，模型再想，最后回答。Search-R1 用四种 tag 标记：<code>&lt;think&gt;</code>、<code>&lt;search&gt;</code>、<code>&lt;information&gt;</code>、<code>&lt;answer&gt;</code>。</dd>
+  <dt>Outcome reward</dt>
+  <dd>只看最终答案对不对。Search-R1 用 exact match，没有 format reward，也没有 neural reward model。</dd>
+  <dt>Retrieved token masking</dt>
+  <dd>检索结果是 retriever 给的，不是模型写的，所以算 loss 时跳过这些 token。<span class="eg">Search-R1 的 ablation（Qwen2.5-7B-Base，PPO）：平均 EM 有 masking 是 0.431，没有是 0.343。</span></dd>
+  <dt>PPO 与 GRPO</dt>
+  <dd>PPO 另训一个 critic 估 baseline，GRPO 用同一题一组回答的平均 reward 当 baseline，不需要 critic（详见 <a href="rlhf-dpo-grpo.html">RLHF、DPO、GRPO</a>）。Search-R1 的结论是，GRPO 收敛更快，但训久了 reward 可能崩。PPO 更稳，两者最终 reward 相近。</dd>
+  <dt>Reward hacking</dt>
+  <dd>模型找到让 reward 变高、但没完成任务的捷径。<span class="eg">例：reward 用 substring match，模型就把所有候选答案都列出来。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I'd start with supervised fine-tuning on good trajectories so the model learns the format, then use RL to improve search behavior. Each rollout interleaves reasoning, search queries, and retrieved results until an answer. The simplest reward is outcome-only, like exact match on the final answer; Search-R1 does this. The loss is computed only on tokens the model generated, masking the retrieved text. I'd cap the number of searches and watch for reward hacking: if the reward can be gamed, I tighten the verifier, keep a held-out check, and read the trajectories whose reward jumped.</p></div>
+
+<h2 id="reward">Reward 怎么选</h2>
+<table>
+  <thead><tr><th>设计</th><th>优点</th><th>风险</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Outcome only<br>（EM 或 verifier）</td><td>简单，难被格式骗</td><td>sparse；EM 太严，同义答案算错</td></tr>
+    <tr><td class="nw">加 process reward<br>（找到 gold 文档、步数惩罚）</td><td>信号更密</td><td>模型去刷中间分；需要 gold evidence</td></tr>
+    <tr><td class="nw">Reward model 或<br>LLM judge</td><td>能评开放式回答</td><td>judge 的漏洞和偏好会被模型学走</td></tr>
+  </tbody>
+</table>
+<p><strong>防 reward hacking</strong>：verifier 用 exact match 或规则，不用宽松匹配。训练用一个 verifier，评估另留一个 held-out 的。限制输出长度和 search 次数。抽看 reward 突然上涨的 trajectory。reward 和人工评分对不上就停下来修。</p>
+<p><strong>迁移到对话任务</strong>：对话没有唯一正确答案。把 reward 拆成两部分：可验证的（任务是否完成、事实是否 grounded）用规则或 verifier；偏好的（是否有帮助）用 pairwise 人工偏好训 reward model。对话里更容易被 hack 的是长度和讨好语气，所以要控制长度，并用人工校准 reward model。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>先 SFT 学格式，再 RL 学怎么搜</li>
+  <li>outcome reward 最简单；加 process reward 要小心被刷</li>
+  <li>loss 只算模型生成的 token（retrieved token masking）</li>
+  <li>PPO 稳，GRPO 快且不需要 critic</li>
+  <li>reward hacking：收紧 verifier、held-out 检查、人工看 trajectory</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么要 mask 检索回来的 token？</summary>
+  <p>它们不是 policy 的 action。对它们算 policy gradient，等于训练模型去“生成”检索结果，gradient 里全是噪声，训练不稳。</p>
+</details>
+<details>
+  <summary>GRPO 的 advantage 怎么算？</summary>
+  <p>同一题采样一组回答，每个回答的 reward 减去组内均值再除以组内 std，公式和算例见 <a href="rlhf-dpo-grpo.html">RLHF、DPO、GRPO</a>。</p>
+</details>
+<details>
+  <summary>reward 几乎全是 0（太 sparse）怎么办？</summary>
+  <p>先 SFT，让初始成功率不为 0。用 curriculum，从单跳题开始。加少量 process reward，比如是否检索到 gold 文档。</p>
+</details>
+<details>
+  <summary>一次最多搜几次？</summary>
+  <p>要设上限，否则 rollout 又长又贵。Search-R1 的 action 上限是 4，上限怎么定见<a href="search-loop.html">多步 search loop</a>。</p>
+</details>
+<details>
+  <summary>你的项目怎么接上？</summary>
+  <p>Excel Copilot 的 RL environment 是同一套东西，同样有 task、episode、reward、verifier，训练路线也是先 SFT 再 RL。只讲简历上公开的层面。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2503.09516">Jin et al. 2025, Search-R1</a>：四种 tag、outcome-only EM reward、retrieved token masking 的 ablation、PPO 与 GRPO 对比、Appendix B.2 的 action budget · <a href="https://www.nowcoder.com/feed/main/detail/6790299dba2544d8a25611b268863dd6">牛客：Apple 大模型算法面经</a></p>
+
+</main>
+</body>
+</html>

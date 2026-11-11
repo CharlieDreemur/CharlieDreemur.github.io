@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Memory 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>Training memory 由什么构成？怎么估？</h1>
+<p class="meta"><b>英文问法</b><q>What takes GPU memory during training?</q> · <q>How much memory does it take to train a 14B model with Adam?</q> · <q>Why does AdamW need 4× the parameter memory?</q> · <q>How many trainable parameters does LoRA add?</q></p>
+<p class="meta"><b>考过</b><strong>NVIDIA Senior MLE 电面 2025-10</strong>（全是计算题：SGD/Adam 各要多少 parameter、每层输出多大、LoRA/QLoRA 的 parameter count 和 initialization，Fail，<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）· NVIDIA DevTech NG 2026（MLP 的维度变化，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· 拼多多（"训练时占用显存的数据有哪些"）· 字节（"14B：FP16 权重大概多大；训练还要加哪些"）· 滴滴（"AdamW 优化器为什么会占用4倍模型参数量显存？"）· Anthropic（"Estimate VRAM and Compare Model Parallelism"，PracHub）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Parameter 与 gradient</dt>
+  <dd>每个参数存一份 weight、一份 gradient。mixed precision 下都是 bf16/fp16，各 2 bytes。<span class="eg">例：14B 模型光 bf16 weight 就是 28 GB。</span></dd>
+  <dt>Optimizer state</dt>
+  <dd>optimizer 给每个参数配的"账本"：Adam 记 m、v，mixed precision 还要一份 fp32 master weight，共 12 bytes，是大头（推导见 <a href="optimizer.html">optimizer</a>）。</dd>
+  <dt>Activation</dt>
+  <dd>forward 时留给 backward 用的中间结果，像做题的草稿纸，检查时还要翻。和参数量无关，随 \(b\)、\(s\) 线性涨，attention 的 score 还随 \(s^2\) 涨。</dd>
+  <dt>Buffer 与 fragmentation</dt>
+  <dd>gradient all-reduce 前常拼成一个大 buffer（1.5B 模型的 fp32 buffer 就 6 GB）。显存碎片化时，ZeRO 观察到还剩 30% 以上空闲却 OOM。</dd>
+  <dt>LoRA / QLoRA</dt>
+  <dd>冻结原 weight，只训练低秩的 \(BA\)；QLoRA 再把冻结的 weight 压成 4-bit。像只在书页边上贴便利贴，原书不改。</dd>
+</dl>
+
+<h2 id="figs">看图：16 bytes 怎么分，activation 有多大</h2>
+<figure class="fig">
+<svg viewBox="0 0 520 202" role="img" aria-label="14B 模型用 mixed precision 加 Adam 训练时，每个参数 16 bytes：bf16 的 parameter 和 gradient 各 2 bytes 共 56 GB，fp32 的 master weight、m、v 各 4 bytes 共 168 GB，合计 224 GB；inference 只要 28 GB 的 weight"><rect x="21" y="44" width="58" height="46" rx="4" class="f1"/><text x="50" y="64" text-anchor="middle" class="acc">param</text><text x="50" y="81" text-anchor="middle" class="m">2 bytes</text><text x="50" y="108" text-anchor="middle" class="m">28 GB</text><rect x="81" y="44" width="58" height="46" rx="4" class="f1"/><text x="110" y="64" text-anchor="middle" class="acc">grad</text><text x="110" y="81" text-anchor="middle" class="m">2 bytes</text><text x="110" y="108" text-anchor="middle" class="m">28 GB</text><rect x="141" y="44" width="118" height="46" rx="4" class="f2"/><text x="200" y="64" text-anchor="middle" class="c2">fp32 master</text><text x="200" y="81" text-anchor="middle" class="m">4 bytes</text><text x="200" y="108" text-anchor="middle" class="m">56 GB</text><rect x="261" y="44" width="118" height="46" rx="4" class="f2"/><text x="320" y="64" text-anchor="middle" class="c2">Adam m</text><text x="320" y="81" text-anchor="middle" class="m">4 bytes</text><text x="320" y="108" text-anchor="middle" class="m">56 GB</text><rect x="381" y="44" width="118" height="46" rx="4" class="f2"/><text x="440" y="64" text-anchor="middle" class="c2">Adam v</text><text x="440" y="81" text-anchor="middle" class="m">4 bytes</text><text x="440" y="108" text-anchor="middle" class="m">56 GB</text><path d="M22,38 V32 H138.0 V38" class="ln1"/><text x="80" y="26" text-anchor="middle" class="acc">bf16：2 + 2 = 4 bytes</text><path d="M142.0,38 V32 H498.0 V38" class="ln2"/><text x="320" y="26" text-anchor="middle" class="c2">fp32 optimizer state：4 + 4 + 4 = 12 bytes</text><path d="M22,118 V124 H498.0 V118" class="ln"/><text x="260" y="142" text-anchor="middle" class="hd">model states 合计：16 bytes × 14B 参数 = 224 GB</text><rect x="21" y="162" width="58" height="30" rx="4" class="f1"/><text x="50" y="182" text-anchor="middle" class="acc">weight</text><text x="90" y="182" text-anchor="start" class="m">inference 只要 bf16 weight：28 GB（再加 KV cache）</text></svg>
+<figcaption>图 1：14B 模型用 mixed precision 加 Adam 训练时，每个参数要存的 16 bytes，长度按 GB 画。橙色是 bf16 的 parameter 和 gradient，蓝色是 fp32 的 optimizer state（master weight、m、v），蓝色占了 3/4。所以 weight 只有 28 GB 的模型，训练时光 model states 就要 224 GB，还没算 activation。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 500 258" role="img" aria-label="手算例子的每层 activation：不切分不重算是 194 sbh，其中 s 乘 s 的部分占 160，80 层共 521 GB；TP 8 加 SP 加 selective 后每层 143 MB，80 层 11.4 GB；full recompute 每层只存 2sbh，80 层 5.4 GB"><text x="10" y="14" text-anchor="start" class="m">每层 activation，单位 sbh bytes（s = 4096、h = 8192、a = 64、b = 1，80 层）</text><text x="10" y="42" text-anchor="start" class="hd">不切分、不重算：sbh(34 + 5as/h) = 194 sbh</text><rect x="11" y="52" width="83" height="32" rx="4" class="f2"/><text x="52.5" y="73" text-anchor="middle" class="c2">34</text><rect x="96" y="52" width="398" height="32" rx="4" class="f1"/><text x="295" y="73" text-anchor="middle" class="acc">5as/h = 160：s×s 的 softmax、dropout</text><text x="10" y="102" text-anchor="start" class="m">34 = attention 11 + MLP 19 + LN 4</text><text x="495" y="102" text-anchor="end" class="m">每层 ≈ 6.5 GB，80 层 521 GB，放不下</text><text x="10" y="132" text-anchor="start" class="hd">TP = 8 + SP + selective：34sbh/8</text><rect x="10" y="142" width="485" height="32" rx="4" class="stale"/><rect x="10" y="142" width="10.6" height="32" rx="2" class="f2"/><text x="30.6" y="163" text-anchor="start">每层 ≈ 143 MB，80 层 11.4 GB</text><text x="10" y="206" text-anchor="start" class="hd">full recompute：只存每层输入 2sbh</text><rect x="10" y="216" width="485" height="32" rx="4" class="stale"/><rect x="10" y="216" width="5" height="32" rx="2" class="f2"/><text x="25" y="237" text-anchor="start">每层 ≈ 67 MB，80 层 5.4 GB，多一次 forward</text></svg>
+<figcaption>图 2：手算例子（s = 4096、h = 8192、80 层，不是图 1 的 14B）里一层存多少 activation，长度按 sbh 的倍数画。第一行里橙色的 s×s 部分（160）比蓝色的其余部分（34）大得多，所以 sequence 越长越吃显存。虚线框是第一行的长度：TP = 8 + SP + selective 和 full recompute 都只剩很短一截，full recompute 的代价是多一次 forward。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>There are four parts. Parameters and gradients in bf16 take 2 bytes each per parameter. Adam's optimizer state, an fp32 master copy plus two moments, takes 12, so model states total 16 bytes per parameter: a 14B model needs 28 GB for its bf16 weights but 224 GB to train. Activations are saved for backward and grow with batch and sequence length, about s·b·h·(34 + 5as/h) bytes per layer; tensor plus sequence parallelism divides that by t, and recomputation cuts it further. Then add communication buffers and fragmentation. LoRA trains only r·(d_in + d_out) parameters per adapted matrix, and QLoRA also stores the frozen weights in 4-bit.</p></div>
+
+<h2 id="how">怎么估：四部分分别算再相加</h2>
+<table>
+  <thead><tr><th>部分</th><th>bytes</th><th>14B 例</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">parameter（bf16）</td><td class="nw">\(2\Psi\)</td><td class="nw">28 GB</td></tr>
+    <tr><td class="nw">gradient（bf16）</td><td class="nw">\(2\Psi\)</td><td class="nw">28 GB</td></tr>
+    <tr><td class="nw">optimizer state（fp32 master、m、v）</td><td class="nw">\(12\Psi\)</td><td class="nw">168 GB</td></tr>
+    <tr><td class="nw"><strong>model states 合计</strong></td><td class="nw"><strong>\(16\Psi\)</strong></td><td class="nw"><strong>224 GB</strong></td></tr>
+    <tr><td class="nw">activation</td><td class="nw">每层见下式，\(\times L\)</td><td class="nw">看 \(b\)、\(s\)</td></tr>
+  </tbody>
+</table>
+<div class="deriv">
+  <h3 id="act">Activation（fp16，不做 parallelism / recompute）</h3>
+  \[ \text{每层} = sbh\Big(34 + \frac{5as}{h}\Big)\ \text{bytes} \]
+  <p>34 = attention 11 + MLP 19 + 两个 LayerNorm 4（单位 \(sbh\)）；\(5as/h\) 是 \(s\times s\) 的 softmax 输出、dropout mask 和 dropout 输出。</p>
+  \[ \text{TP + SP：} \div t;\qquad \text{再加 selective recompute：} \frac{34\,sbh}{t} \]
+  \[ \text{full recompute：} 2sbh\ \text{（只存每层输入）} \]
+  <p>PP 用 1F1B 时第一个 stage 存 \(p\) 个 micro-batch × \(L/p\) 层，仍是 \(L\) 层的量。</p>
+</div>
+
+<h2 id="example">手算例子</h2>
+<p>\(s = 4096\)、\(h = 8192\)、\(a = 64\)、\(L = 80\)、\(b = 1\)：</p>
+<ul>
+  <li>\(5as/h = 160\)，每层 \(sbh \times 194 \approx 6.5\) GB，80 层 521 GB，根本放不下。</li>
+  <li>TP = 8 + SP + selective：每层 \(34sbh/8 \approx 143\) MB，80 层 11.4 GB。</li>
+  <li>full recompute：每层 \(2sbh \approx 67\) MB，80 层 5.4 GB，代价是多一次 forward。</li>
+</ul>
+<p><strong>LoRA</strong>：每个矩阵加 \(r(d_\text{in} + d_\text{out})\) 个 trainable 参数，\(A\) 随机、\(B = 0\) → 初始 \(\Delta W = 0\)。冻结的 weight 只占 2 bytes/param，16 bytes 只算在 LoRA 参数上。例：\(h = 4096\)、32 层、只加在 \(W_q\)、\(W_v\)、\(r = 8\) → \(2\times32\times8\times8192 \approx 4.2\)M。<strong>QLoRA</strong>：冻结 weight 存成 NF4，65B finetune 从 &gt;780 GB 降到 &lt;48 GB。double quantization 和 paged optimizer 见 <a href="finetune-lora.html">LoRA</a>。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>四部分：parameter、gradient、optimizer state、activation（+ buffer、fragmentation）</li>
+  <li>mixed precision Adam：2 + 2 + 12 = 16 bytes/param；14B → 224 GB</li>
+  <li>activation 每层 \(sbh(34 + 5as/h)\)；TP + SP 除以 \(t\)，selective 去掉 \(5as/h\)，full recompute 只剩 \(2sbh\)</li>
+  <li>LoRA \(r(d_\text{in} + d_\text{out})\)，\(B = 0\)；QLoRA = NF4 + double quantization + paged optimizer</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>SGD、momentum、Adam 各要多少？"4 倍参数量"怎么来？</summary>
+  <p>全 fp32 时 weight + gradient 8 bytes，再加 state：SGD 0、momentum 4、Adam 8 → 8 / 12 / 16 bytes/param。Adam 的 w、g、m、v 四份就是"4 倍"。表格见 <a href="optimizer.html">optimizer</a>。</p>
+</details>
+<details>
+  <summary>ZeRO 能省多少？</summary>
+  <p>ZeRO-1/2/3 按 DP 度 \(N\) 依次切 optimizer state、gradient、parameter，7.5B、\(N = 64\) 时每卡从 120 GB 降到 31.4、16.6、1.9 GB，每级的公式见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>。</p>
+</details>
+<details>
+  <summary>LoRA 为什么 B 初始化成 0，而不是 A、B 都是 0？</summary>
+  <p>\(B = 0\) 让训练从原模型出发。两个都是 0 的话，\(A\) 和 \(B\) 的 gradient 互相乘着对方，都是 0，永远学不动。式子见 <a href="finetune-lora.html">LoRA</a>。</p>
+</details>
+<details>
+  <summary>OOM 了怎么办？</summary>
+  <p>先减 micro-batch 加 <a href="gradient-accumulation.html">gradient accumulation</a>，再上 selective recompute，full recompute 和 CPU offload 放最后，完整列表见 <a href="activation-recompute.html">activation recompute</a>。</p>
+</details>
+<details>
+  <summary>Inference 要多少？</summary>
+  <p>没有 gradient 和 optimizer state，只要 weight（14B bf16 28 GB）加 <a href="kv-cache.html">KV cache</a>，KV cache 随 batch 和长度线性涨。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022</a> §4.1 eq. 1（p.4）、§4.2 eq. 2–5（pp.5–8）、§5 Table 2（p.9）· <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2020, ZeRO</a> Fig. 1（p.3）、§3.1–3.2（pp.7–8）· <a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021, LoRA</a> §4.1–4.2（pp.4–5）· <a href="https://arxiv.org/abs/2305.14314">Dettmers et al. 2023, QLoRA</a> §1（p.2）、§3（pp.4–5）</p>
+
+</main>
+</body>
+</html>

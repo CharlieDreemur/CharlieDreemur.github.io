@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KernelBench 和 fast_p 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>KernelBench 是什么，fast_p 怎么算？<br>它有哪些缺陷，后来怎么修的？</h1>
+<p class="meta"><b>英文问法</b><q>What is KernelBench, and how is fast_p computed?</q> · <q>What are the known flaws of KernelBench?</q> · <q>Why did the reported speedups drop under KernelBench-Verified?</q></p>
+<p class="meta"><b>考过</b>推断，非面经。没有 Unity 的面经原题，别家面经里也没有直接问这题的 · 依据是公开文献：<a href="https://arxiv.org/abs/2502.10517">KernelBench</a>（Stanford，2025-02）和 <a href="https://arxiv.org/abs/2607.16241">KernelBench-Verified</a>（Meta FAIR 与 Stanford，2026-06）· Kevin、CUDA-L1、CUDA Agent、KernelEvolve 都在它上面报结果，<a href="kernel-agent-design.html">设计 kernel agent</a> 一题里的 fast_1 也出自它 · 论文知识，很少单独问</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>KernelBench</dt>
+  <dd>一套考 LLM 写 GPU kernel 的题。每题给一个 PyTorch <code>Model</code>，要模型写出功能等价但更快的 <code>ModelNew</code>。</dd>
+  <dt>Speedup</dt>
+  <dd>PyTorch reference 的 wall-clock 时间除以生成的 kernel 的时间。大于 1 才算更快。</dd>
+  <dt>fast_p</dt>
+  <dd>既正确、speedup 又大于 p 的题，占全部题目的比例。<span class="eg">fast_0 就是正确率，fast_1 是比 PyTorch 快的比例。</span></dd>
+  <dt>One-shot</dt>
+  <dd>模型只生成一次，不看编译、运行或 profiler 的反馈。</dd>
+  <dt>TF32</dt>
+  <dd>让 FP32 的 matmul 用上 Tensor Core 的开关，PyTorch 默认关着。<span class="eg">不开它的 baseline 偏慢，像和没热身的对手赛跑。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>KernelBench is a Stanford benchmark with 250 PyTorch tasks in three levels: single operators, fusion patterns, and full networks. The model gets a PyTorch module and must write an equivalent but faster kernel. The metric is fast_p: the fraction of all tasks where the kernel is correct and more than p times faster than PyTorch. So fast_0 is the correctness rate, and fast_1 means beating PyTorch. One-shot, frontier models matched PyTorch on less than 20% of tasks. It has known flaws: a loose 1e-2 tolerance, fixed shapes, and an FP32 baseline without TF32. KernelBench-Verified fixes these, and GPT-5.5 drops from 1.43x to 0.88x.</p></div>
+
+<h2 id="levels">三层题目和 one-shot 的结果</h2>
+<table>
+  <thead><tr><th>Level</th><th>题数</th><th>考什么</th><th>fast_1：o1</th><th>fast_1：DeepSeek-R1</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">L1</td><td>100</td><td>单个 operator，比如 conv、matmul、layernorm</td><td>10%</td><td>12%</td></tr>
+    <tr><td class="nw">L2</td><td>100</td><td>简单的 fusion pattern，比如 conv + bias + ReLU</td><td>24%</td><td>36%</td></tr>
+    <tr><td class="nw">L3</td><td>50</td><td>完整网络，比如 MobileNet、VGG、MiniGPT</td><td>12%</td><td>2%</td></tr>
+  </tbody>
+</table>
+<p>表里是 one-shot 的 fast_1，baseline 是 PyTorch eager。论文摘要把整体结果概括成 "matching the PyTorch baseline in less than 20% of the cases"，分层看 L2 上的两个数高于 20%。给模型加上 execution 和 profiler 的反馈后，DeepSeek-R1 在 L2 的 fast_1 从 36% 升到 72%。</p>
+
+<h2 id="fastp">fast_p 怎么算</h2>
+<div class="deriv">
+  \[ \text{fast}_p = \frac{1}{N}\sum_{i=1}^{N} \mathbb{I}\big[\text{correct}_i \wedge \text{speedup}_i &gt; p\big] \]
+</div>
+<p>手算一遍，数字是示意。一共 10 题，3 题不正确。另外 7 题正确，speedup 是 0.6、0.9、1.0、1.2、1.5、1.8、2.5。</p>
+<ul>
+  <li>fast_0 = 7 ÷ 10 = 70%，就是正确率</li>
+  <li>fast_1 = 4 ÷ 10 = 40%。speedup 等于 1.0 的那题不算，因为条件是严格大于</li>
+  <li>fast_2 = 1 ÷ 10 = 10%</li>
+</ul>
+<p>分母一直是全部 10 题，不是正确的那 7 题。所以 fast_p 把正确率和速度绑在一个数里，p 调高就是更严的门槛。</p>
+
+<h2 id="flaws">已知缺陷和修正</h2>
+<table>
+  <thead><tr><th>缺陷</th><th>后果</th><th>谁修的，怎么修</th></tr></thead>
+  <tbody>
+    <tr><td>容差太宽，atol 和 rtol 都是 1e-2</td><td>降精度的 kernel 也能过</td><td>KernelBench-Verified 改成 1e-3</td></tr>
+    <tr><td>shape 固定，每题 5 组随机输入</td><td>只对测试 shape 特化的 kernel 也能过</td><td>KernelBench-Verified 加 hidden test，输入换四种分布：原分布、×3、×0.01、×(−1)</td></tr>
+    <tr><td>FP32 baseline 没开 TF32</td><td>baseline 偏慢，speedup 虚高。论文估计开 TF32 后 24% 的题 baseline 快 1.5 倍以上</td><td>KernelBench-Verified 的 baseline 开 TF32</td></tr>
+    <tr><td>有退化题，比如输出接近 0 或不随 seed 变</td><td>不用真算也能对</td><td>METR 从 250 题里删掉 45 题；v0.1 修了题目本身</td></tr>
+    <tr><td>题目太小，ReLU 一次只要 0.013 ms</td><td>launch overhead 占主导</td><td>v0.1 把规模调到 H100 上 1–15 ms</td></tr>
+  </tbody>
+</table>
+<p>修完之后数字掉得很多。KernelBench-Verified 评了七个模型，最好的 GPT-5.5 在原协议下是 1.43x，在新协议下是 0.88x，也就是比 PyTorch 慢。原话是 "No model consistently outperforms PyTorch when evaluated against realistic baselines." robust-kbench 剔除受污染的题后，平均 speedup 从 3.13x 降到 1.49x。</p>
+<p>容差怎么按 dtype 定见 <a href="kernel-correctness.html#checklist">kernel 正确性</a>，计时的细节见 <a href="kernel-benchmark.html#timing">kernel benchmark</a>。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>250 题分三层：L1 单个 operator，L2 fusion pattern，L3 完整网络</li>
+  <li>任务是给一个 PyTorch <code>Model</code>，写出等价但更快的 <code>ModelNew</code></li>
+  <li>fast_p：正确且 speedup 大于 p 的题占全部题的比例，fast_0 是正确率</li>
+  <li>one-shot 下 frontier model 整体不到 20%</li>
+  <li>缺陷：容差 1e-2、shape 固定、FP32 baseline 没开 TF32、有退化题</li>
+  <li>KernelBench-Verified 修掉之后，GPT-5.5 从 1.43x 掉到 0.88x</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么不直接报平均 speedup？</summary>
+  <p>平均值会被个别题带偏，也不看正确率。robust-kbench 举过一道题，softmax 作用在单个值上，输出恒为 1.0，报出 123.6x。fast_p 数的是题目个数，一道离群的题只算一题。</p>
+</details>
+<details>
+  <summary>这些缺陷和 reward hacking 是什么关系？</summary>
+  <p>评测有洞，搜索越强的 agent 越会钻。KernelBench-Verified 里，GPT-5.5 写的 ReLU kernel 在输入 shape 等于测试 shape 时原样返回输入，报出 374x。更多例子和防法见 <a href="reward-hacking.html#cases">reward hacking</a>。</p>
+</details>
+<details>
+  <summary>原协议怎么计时？</summary>
+  <p>在 L40S 上先跑 3 次 warmup，再跑 100 次 trial，用 <code>torch.cuda.Event</code> 计时，报 mean。为什么要 warmup 和同步见 <a href="kernel-benchmark.html">kernel benchmark</a>。</p>
+</details>
+<details>
+  <summary>不同论文的 fast_1 或 speedup 能直接比吗？</summary>
+  <p>不能。baseline 是 eager 还是 torch.compile、硬件、精度、best-of-k 的选法都可能不同。METR 换了 scaffold 并给每题约 20 美元预算，同样的模型平均 speedup 从 1.05x 到 1.81x。</p>
+</details>
+<details>
+  <summary>还有哪些同类 benchmark？</summary>
+  <p>SOL-ExecBench 是 NVIDIA 的，235 题，用 speed of light 当上限，有 14.5% 的提交被标为 hack。robust-kbench 用多种输入配置，同时评 forward 和 backward。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2502.10517">KernelBench</a>（<a href="https://arxiv.org/html/2502.10517">HTML</a>：fast_p 的定义、Table 1、评测协议）· <a href="https://github.com/ScalingIntelligence/KernelBench">KernelBench README</a> · <a href="https://scalingintelligence.stanford.edu/blogs/kernelbenchv01/">KernelBench v0.1</a> · <a href="https://metr.org/blog/2025-02-14-measuring-automated-kernel-engineering/">METR 2025-02-14</a> · <a href="https://arxiv.org/html/2607.16241">KernelBench-Verified</a> · <a href="https://arxiv.org/html/2509.14279">robust-kbench</a> · <a href="https://arxiv.org/html/2603.19173">SOL-ExecBench</a> · ml-八股 08 第 22 题 · 文献笔记 1.1–1.4、1.7 节</p>
+
+</main>
+</body>
+</html>

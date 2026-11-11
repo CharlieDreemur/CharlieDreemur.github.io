@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 7 课 · CP 与 EP</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 7 课</p>
+<h1>v6：长序列和 MoE：Context Parallel 与 Expert Parallel</h1>
+<p class="lead">v5 用 TP + PP 把大模型放下了，但还有两件事没管。一是 sequence：视频很容易到几万 token，activation 跟着 s 涨，TP 最多只能切 8 份。二是参数：想要更多参数又不想多花 compute，就要用 MoE，而 expert 一多，每张卡都放一份就放不下了。这一课加两维：CP 沿 sequence 切，EP 把 expert 分到不同的卡上。</p>
+<p class="meta"><b>面试会这样问</b><q>Once the sequence is sharded, how do you compute full attention across GPUs?</q> · <q>Implement an MoE layer and show the dimensions.</q> · <q>How do dispatch and combine work under expert parallelism?</q></p>
+<p class="meta"><b>考过</b>NVIDIA SWE（"Implement MoE and show the dimensions"，Glassdoor RVW105422785，年份未核实；Glassdoor 的另一条摘要里，同一场还问了 CUDA kernel optimization，追问 kernel fusion 和 launch overhead）· 美团（"手撕：用python实现moe"）· 阿里（"ep的dispatch和combine"）· 智谱（手撕 MoE 层的 dispatch）· 牛客（"推导MoE架构的负载均衡损失函数，如何避免专家坍缩"）· 腾讯混元（"序列切块后，跨卡如何完成完整的 Attention 计算？"）· 牛客（"CP 的并行方式和并行思想，ring 和 ulysses 的技术介绍"）· Kimi（Ulysses 与 Ring Attention、online softmax 的 LSE 合并，营销号转发，可信度低）</p>
+
+<h2>问题：sequence 一长，activation 先爆</h2>
+<p>还是 Qwen3-VL-8B 的 LLM 部分（h = 4096、36 层、b = 1），按 Korthikanti 公式粗估：</p>
+<ul>
+  <li><b>activation 随 s 线性涨</b>：开 FlashAttention 后每层约 34·s·h bytes。s = 8K 时每层 1.14 GB，36 层 41 GB；s = 128K 时 ×16，每层 18.3 GB，36 层约 657 GB</li>
+  <li><b>attention 随 s² 涨</b>：不开 FlashAttention 还要存 s × s 的 score，8K 时每层 10.7 GB，128K 时再 ×256。FlashAttention 不存它，但 attention 的 compute 照样随 s² 涨</li>
+  <li><b>前几课的办法不够</b>：TP + SP 最多切 8 份（第 5 课）。PP 也帮不上：1F1B 下第一个 stage 存 p 个 micro-batch，每个 L/p 层，加起来还是 L 层的量。要再切，只能沿 sequence 切</li>
+</ul>
+
+<h2>CP：每张卡只管一段 token</h2>
+<p><b>Context Parallel（CP）</b>把所有 activation 沿 sequence 切成 cp 份。像一本很厚的书分给 cp 个人，每人读一段。LayerNorm、MLP 都是逐 token 算的，各算各的；只有 attention 需要看别人的 token。</p>
+<ul>
+  <li><b>效果</b>：128K、cp = 16 → 每卡 8K token，activation 回到约 41 GB。Llama 3 训 128K 时开的正是 CP 16</li>
+  <li><b>Ring attention</b>：每张卡的 Q 块不动，K、V 块沿着环传。每一步用自己的 Q 和手上那块 KV 算一次，同时把这块 KV 传给下一张卡。像旋转寿司，转 cp 步，每个人都尝过所有盘子</li>
+  <li><b>合并结果</b>：每块 KV 算出一份局部输出和它的 log-sum-exp（LSE），按 LSE 重新加权相加，结果和一次看完整个序列完全一样。这就是 FlashAttention 里的 online softmax，同一个技巧</li>
+  <li><b>传输藏得住</b>：一块 8K token 的 K、V（8 个 KV head × 128 维）是 8192 × 2 × 1024 × 2 bytes = 32 MiB，走 NVLink 约 0.07 ms，走 IB 约 0.67 ms；这块 attention 的计算是 4·c²·h（块长 c = 8192）≈ 1.1e12 FLOPs，按 400 TFLOPS 约 2.7 ms。边算边传，通信几乎不露出来</li>
+  <li><b>Causal load balancing</b>：causal mask 下越靠后的 token 要看的 KV 越多。cp = 4 按顺序切，4 张卡的计算量是 0.5 : 1.5 : 2.5 : 3.5，最慢的是平均的 1.75 倍。改成切 2·cp = 8 块，卡 i 拿第 i 块和第 2cp−1−i 块，一头一尾配对，每卡都是 8 个单位，完全均衡</li>
+</ul>
+
+<h2>另一种做法 Ulysses，以及 CP 和 SP 的区别</h2>
+<p><b>DeepSpeed-Ulysses</b> 不让 KV 绕环：先对 Q、K、V 做一次 all-to-all，把“按 sequence 切”换成“按 head 切”，每卡拿到完整序列、a/cp 个 head，本地算普通 attention，再 all-to-all 换回来。所以 cp 不能超过 head 数。Qwen3-8B 有 32 个 query head，但只有 8 个 KV head，K、V 要切成 8 份以上就得复制 KV head。</p>
+<table>
+  <thead><tr><th></th><th>SP（第 5 课）</th><th>CP（ring）</th><th>Ulysses</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">切什么</td><td>只切 TP 没切的 LayerNorm、dropout 的 activation</td><td>全部 activation</td><td>全部 activation</td></tr>
+    <tr><td class="nw">和 TP 的关系</td><td>依附 TP，份数就是 t</td><td>独立的一维，可以和 TP + SP 叠加</td><td>独立的一维</td></tr>
+    <tr><td class="nw">attention 时</td><td>all-gather 回完整序列，再按 head 交给 TP</td><td>Q 不动，KV 块绕环 p2p</td><td>all-to-all 换成按 head 切</td></tr>
+    <tr><td class="nw">通信</td><td>和 TP 一样多</td><td>能和计算 overlap</td><td>要等 all-to-all 完才能算</td></tr>
+    <tr><td class="nw">上限</td><td>t ≤ 8</td><td>每块要够长，算得比传得久</td><td>cp ≤ head 数</td></tr>
+  </tbody>
+</table>
+<p>Megatron 用 <code>--cp-comm-type</code> 选：<code>p2p</code>（ring，默认）、<code>a2a</code>（Ulysses 式）、<code>allgather</code>（先收齐全部 KV，不能 overlap）、<code>a2a+p2p</code>（机内 a2a 走 NVLink，机间 p2p 走 IB）。</p>
+<p class="you"><b>你的经验</b>视频 VLM 的长序列正是 CP 要解决的场景。帧一多，token 数和 activation 一起涨，attention 的 compute 按 s² 涨。去查一下：你 TikTok 任务里最长的样本有多少 token？当时靠什么放下的（截断、少抽帧、gradient checkpointing）？另外，verl 的 FSDP 后端自带 Ulysses（<code>ulysses_sequence_parallel_size</code>），看看 OpenManus-RL 的配置里开没开。这是从你的项目接到 CP 最自然的入口。</p>
+
+<h2>MoE：参数很多，每个 token 只算一点</h2>
+<ul>
+  <li><b>dense FFN</b>：每个 token 都要过完整的 FFN。Qwen3-8B 一层 FFN（SwiGLU）是 3 × 4096 × 12288 ≈ 151M 参数</li>
+  <li><b>MoE</b>：把 FFN 换成 E 个 expert FFN，再加一个 <b>router</b>，每个 token 只走分数最高的 k 个 expert。像医院分诊：每个病人只去最相关的 k 个科室</li>
+  <li><b>例</b>：E = 8、k = 2，每个 expert 和原来的 FFN 一样大。这一层参数 ×8（约 1.21B），每个 token 的 FFN 计算只 ×2。Mixtral 8x7B 就是这样：总参数 47B，每个 token 只用 13B</li>
+</ul>
+
+<h2>NVIDIA 原题：Implement MoE and show the dimensions</h2>
+<p>设一个 micro-batch 有 T = 4096 个 token，h = 4096，E = 8，k = 2，capacity factor cf = 1.25：</p>
+<table>
+  <thead><tr><th>步骤</th><th>做什么</th><th>shape</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">输入</td><td>把 batch 和 sequence 两维拍平</td><td class="nw">x：[T, h] = [4096, 4096]</td></tr>
+    <tr><td class="nw">router</td><td>x 乘 W<sub>r</sub>（[h, E]），再 softmax</td><td class="nw">[T, E] = [4096, 8]</td></tr>
+    <tr><td class="nw">top-k</td><td>每个 token 取最大的 k 个，记下 expert 编号和 gate 值</td><td class="nw">[T, k] = [4096, 2]</td></tr>
+    <tr><td class="nw">dispatch</td><td>按 expert 分组，每组最多 C 个 token，不满的 pad</td><td class="nw">[E, C, h] = [8, 1280, 4096]</td></tr>
+    <tr><td class="nw">expert</td><td>每个 expert 跑自己的 FFN：h → 12288 → h</td><td class="nw">[E, C, h]</td></tr>
+    <tr><td class="nw">combine</td><td>放回原位置，k 份输出按 gate 加权求和</td><td class="nw">y：[T, h] = [4096, 4096]</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><b>Capacity</b>：\(C = \text{cf}\cdot kT/E = 1.25 \times 2 \times 4096 / 8 = 1280\)，像每个科室限号。超出的 token 被 drop：这个 expert 不算它，它只经 residual 进下一层；没收满的位置 pad。cf 越大 drop 越少，但多算多传。Megatron 默认不设 capacity，也就是 dropless</li>
+  <li><b>Load balancing loss</b>：router 一开始稍微偏爱某个 expert，这个 expert 就被训练得更好、更被偏爱，最后少数几个包揽一切，其余白占参数，这叫 <b>expert collapse</b>。Switch Transformer 加一项 \(\alpha E\sum_i f_i P_i\)：\(f_i\) 是分到 expert i 的 token 比例（不可导），\(P_i\) 是 router 给 i 的平均概率（gradient 走这里）。分得均匀时 loss = α；全挤到一个 expert 时 = αE，E = 8 就是 8 倍</li>
+  <li><b>DeepSeek-V3 的 aux-loss-free</b>：每个 expert 加一个 bias，只在选 top-k 时用，过载就调低、欠载就调高；不经过 loss，所以不干扰主目标</li>
+</ul>
+
+<h2>EP：expert 分到不同的卡上，用 all-to-all 送 token</h2>
+<ul>
+  <li><b>Expert Parallel（EP）</b>：EP = 8 时，8 张卡各放 1 个 expert，attention 部分照常每卡一份。expert 的参数和 optimizer state 都缩成 1/8</li>
+  <li><b>为什么是 all-to-all</b>：每张卡上的 token 要去的 expert 散在所有卡上，所以每张卡要给每张卡各发一份不同的数据，这正是 all-to-all（第 3 课）。dispatch 把 token 发过去，expert 算完，combine 再反向 all-to-all 发回原来的卡</li>
+  <li><b>all-to-all 常是瓶颈</b>：每卡 4096 个 token、k = 2，一次 dispatch 共 4096 × 2 × 4096 × 2 bytes = 64 MiB，其中 7/8（56 MiB）发往别的卡，走 IB 约 1.2 ms。forward 一层有 dispatch、combine 两次，约 2.3 ms；而这层 expert 的计算按 400 TFLOPS 约 6.2 ms。再加上热门 expert 所在的卡会变成 straggler，大家都要等它</li>
+  <li><b>办法</b>：EP 尽量留在机内走 NVLink（64 MiB 约 0.15 ms）；用 grouped GEMM 把 E 个小 GEMM 合成一个；把 all-to-all 和另一个 micro-batch 的计算 overlap（DeepEP、DualPipe）</li>
+</ul>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>Long sequences blow up activation memory, so context parallelism shards every activation along the sequence across cp GPUs. Only attention needs other GPUs' tokens: each GPU keeps its query block and passes KV blocks around a ring, merging partial results with online softmax while the transfer hides behind compute. With a causal mask, split into 2·cp chunks, pairing early with late ones. MoE replaces the FFN with E experts and a router that picks the top-k per token, so parameters grow with E but compute only with k. Expert parallelism puts experts on different GPUs; dispatch and combine are all-to-alls, often the bottleneck. A load-balancing loss prevents expert collapse.</p></div>
+
+<h2>自测</h2>
+<details><summary>MoE 不加 load balancing loss 会怎样？</summary><p>router 越来越偏向少数 expert（expert collapse）。其他 expert 拿不到 token、学不到东西，参数白占。有 capacity 时热门 expert 大量 drop token。EP 下热门 expert 所在的卡过载，成为 straggler。Switch 的 \(\alpha E\sum_i f_i P_i\) 在分配均匀时最小（= α）。</p></details>
+<details><summary>CP 和 SP 有什么区别？</summary><p>SP 只切 TP 没切的 LayerNorm、dropout 的 activation，依附 TP，进 attention 前要 all-gather 回完整序列。CP 切全部 activation，包括 attention，是独立的一维，专为长序列。attention 靠 KV 绕环（或 Ulysses 的 all-to-all）完成。两者可以同时开。</p></details>
+<details><summary>EP 为什么用 all-to-all，不用 all-gather 或 all-reduce？</summary><p>每张卡发给每张卡的是不同的 token，去哪张卡由 router 决定。all-reduce 是把同形状的数据求和，语义不对；all-gather 会把每个 token 发给所有卡，大部分用不上。all-to-all 只发“该去那里”的那部分。</p></details>
+<details><summary>某个 expert 收到的 token 超过 capacity 会怎样？</summary><p>超出的 token 在这个 expert 上被 drop：不进 FFN，这一路输出为 0，token 只经 residual 进下一层（k = 2 时另一个 expert 可能还在算它）。没收满的位置 pad。cf 调大能少 drop，但多算多传。Megatron 默认 dropless，不设 capacity。</p></details>
+<details><summary>写出 MoE forward 每一步的 shape。（NVIDIA SWE 原题）</summary><p>x [T, h] → router [T, E] → top-k 的编号和 gate [T, k] → dispatch [E, C, h]，\(C = \text{cf}\cdot kT/E\) → expert FFN [E, C, h] → combine 加权求和 → y [T, h]。延伸（自拟）：kernel 太碎、launch overhead 大时，先按 expert 给 token 排序，用一个 grouped GEMM 算完所有 expert。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="context-parallel.html">6.7 Context Parallel</a>（ring 和 Ulysses 的通信公式）· <a href="moe-expert-parallel.html">6.8 MoE 与 Expert Parallel</a>（NumPy 手撕代码、Mixtral 参数账）· <a href="sequence-parallel.html">6.3 Sequence Parallel</a> · <a href="flashattention.html">6.25 FlashAttention</a>（online softmax）</p>
+
+<div class="next"><b>下一课</b>到 v6，五种切法都有了：TP、PP、CP、EP、DP。下一课把它们拼成一个完整配置：给定模型和卡数，每种开多大、怎么排，再讲怎么跑到 40% 左右的 MFU，以及慢了、hang 了怎么查。</div>
+
+</main>
+</body>
+</html>

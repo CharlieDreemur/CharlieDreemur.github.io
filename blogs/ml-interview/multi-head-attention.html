@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-head Attention 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Transformer &amp; LLM</p>
+<h1>multi-head attention 怎么算？参数量、FLOPs 多少？<br>为什么要 multi-head？</h1>
+<p class="meta"><b>英文问法</b><q>Walk me through multi-head attention with shapes.</q> · <q>How many parameters and FLOPs?</q> · <q>Why multiple heads?</q> · <q>Implement multi-head self-attention.</q></p>
+<p class="meta"><b>考过</b>面经：NVIDIA LLM 日常实习 2023（"MultiheadAttention的计算流程，参数量，FLOPs，以及具体实现需要注意什么"，<a href="https://www.nowcoder.com/feed/main/detail/cfa7b8487e63422f88de9f30e7888422">牛客</a>）、NVIDIA DL Algorithm Engineer（"Implement multi headed self attention"，Glassdoor）、MAI Senior L63（手写 self-attention 和 masked self-attention）；他司：Apple、Meta MLE 手写 MHA（PracHub）、字节 AI infra 实习"mha手撕"。完整练习见 ml-coding。</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Q、K、V projection</dt>
+  <dd>每个 token 乘三个 \(d\times d\) 矩阵，变出三个向量：Q 是"我要找什么"，K 是"别人凭什么找到我"，V 是"被找到后交出的内容"。</dd>
+  <dt>Head</dt>
+  <dd>把 \(d\) 维切成 \(h\) 段，每段 \(d_k = d/h\) 维，各自独立做一遍 attention。像评审团里 \(h\) 个评委各盯一个方面（语法、指代、相邻词），最后汇总。<span class="eg">例：\(d = 512\)，\(h = 8\) → 每个 head 64 维。</span></dd>
+  <dt>拆头（split heads）</dt>
+  <dd>只是 reshape + transpose，把一个 8 维向量看成 2 个 4 维向量，不加参数、不多算。</dd>
+  <dt>Concat + \(W_O\)</dt>
+  <dd>把 \(h\) 个 head 的输出拼回 \(d\) 维，再乘 \(W_O\) 让各 head 的信息混在一起。</dd>
+  <dt>Mask</dt>
+  <dd>softmax 前把不能看的位置设成 \(-\infty\)，exp 之后权重正好是 0。causal mask 遮住未来，padding mask 遮住补齐用的 token。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Multi-head attention projects the input X of shape (b, s, d) into queries, keys and values with three d×d matrices, splits each into h heads of size d_k = d/h, and runs scaled dot-product attention in every head in parallel: softmax(QKᵀ/√d_k + mask)·V, with scores of shape (b, h, s, s). The heads are concatenated back to (b, s, d) and multiplied by the output projection W_O. Parameters are 4d², or 4d² + 4d with biases, independent of h. Forward FLOPs per sequence are about 8sd² for the projections plus 4s²d for the two attention matmuls. Multiple heads let the model attend to different subspaces and positions at once, at the same cost as one full-width head.</p></div>
+
+<h2 id="shapes">计算流程：每一步的 shape</h2>
+<p>例子：\(b = 2\)，\(s = 3\)，\(d = 8\)，\(h = 2\)，所以 \(d_k = 4\)。</p>
+<table>
+  <thead><tr><th>步骤</th><th>操作</th><th>shape</th><th>例子</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">投影</td><td>\(Q = XW_Q\)，K、V 同理</td><td class="nw">(b, s, d)</td><td class="nw">(2, 3, 8)</td></tr>
+    <tr><td class="nw">拆头</td><td>reshape 成 (b, s, h, d_k)，再交换 s、h</td><td class="nw">(b, h, s, d_k)</td><td class="nw">(2, 2, 3, 4)</td></tr>
+    <tr><td class="nw">score</td><td>\(QK^\top/\sqrt{d_k}\) + mask，softmax</td><td class="nw">(b, h, s, s)</td><td class="nw">(2, 2, 3, 3)</td></tr>
+    <tr><td class="nw">加权</td><td>\(AV\)</td><td class="nw">(b, h, s, d_k)</td><td class="nw">(2, 2, 3, 4)</td></tr>
+    <tr><td class="nw">合头</td><td>交换回来，reshape，再乘 \(W_O\)</td><td class="nw">(b, s, d)</td><td class="nw">(2, 3, 8)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="params">参数量和 FLOPs</h2>
+\[ W_Q, W_K, W_V, W_O \in \mathbb R^{d\times d} \;\Rightarrow\; 4d^2\ (+\,4d\ \text{bias}) \]
+<p>例：\(d = 512\) → \(4\cdot 512^2 = 1{,}048{,}576\)，加 bias 是 1,050,624。和 \(h\) 无关，\(h\) 只决定怎么切。</p>
+<p><strong>FLOPs</strong>（每条序列 forward）：4 个投影各 \(2sd^2\)，\(QK^\top\) 和 \(AV\) 各 \(2s^2d\)，合计 \(8sd^2 + 4s^2d\)；只看 attention 子层，\(s &gt; 2d\) 时 \(s^2\) 项占主导（算上 FFN 的整层要到 \(s &gt; 6d\)）。怎么数见 <a href="transformer-complexity.html">Transformer 复杂度速查</a>。</p>
+
+<h2 id="why">为什么要 multi-head</h2>
+<p>一个 head 只给出一组 attention 权重，不同关系会被平均到一起；\(h\) 个 head 在不同 subspace 里各算一组，可以同时看不同位置、不同关系。因为每个 head 只有 \(d/h\) 维，总计算量和一个 \(d\) 维 head 差不多。原论文 Table 3：\(h = 1\) 比最好的设置低 0.9 BLEU，\(h = 32\) 也变差。</p>
+
+<h2 id="code">手撕代码（NumPy）</h2>
+<pre><code>def mha(X, Wq, Wk, Wv, Wo, h, mask=None):
+    # X: (b, s, d)；W*: (d, d)；mask: (s, s)，True = 不能看
+    b, s, d = X.shape
+    dk = d // h
+    def split(M):                    # (b, s, d) → (b, h, s, dk)
+        return M.reshape(b, s, h, dk).transpose(0, 2, 1, 3)
+    Q, K, V = split(X @ Wq), split(X @ Wk), split(X @ Wv)
+    S = Q @ K.transpose(0, 1, 3, 2) / np.sqrt(dk)    # (b, h, s, s)
+    if mask is not None:
+        S = np.where(mask, -np.inf, S)
+    S = S - S.max(-1, keepdims=True)                 # 防 overflow
+    A = np.exp(S)
+    A = A / A.sum(-1, keepdims=True)
+    O = (A @ V).transpose(0, 2, 1, 3).reshape(b, s, d)  # concat
+    return O @ Wo</code></pre>
+
+<h2>必答点</h2>
+<ul>
+  <li>流程：投影 → 拆成 \(h\) 个 head → \(\mathrm{softmax}(QK^\top/\sqrt{d_k} + \text{mask})V\) → concat → \(W_O\)</li>
+  <li>score 的 shape 是 (b, h, s, s)；\(d_k = d/h\)，缩放用 \(\sqrt{d_k}\) 不是 \(\sqrt{d}\)</li>
+  <li>参数 \(4d^2\)（+\(4d\) bias），与 \(h\) 无关</li>
+  <li>FLOPs ≈ \(8sd^2 + 4s^2d\)</li>
+  <li>实现：先 reshape (b, s, h, d_k) 再 transpose；mask 填 \(-\infty\)；softmax 先减 max</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>head 数变了，参数量和 FLOPs 变不变？</summary>
+  <p>都不变，因为投影矩阵还是 \(d\times d\)，\(h\cdot d_k = d\) 让 matmul 总量不变。变的是 score 矩阵 (b, h, s, s) 的内存，随 \(h\) 线性增长。</p>
+</details>
+<details>
+  <summary>拆头为什么不能直接 reshape 成 (b, h, s, d_k)？</summary>
+  <p>每个 token 的 \(d\) 维在内存里是连续的，直接 reshape 会把不同 token 的维度塞进同一个 head。例：\(s = 3\)，\(d = 8\)，head 0 应该是每个 token 的前 4 维，直接 reshape 却拿到 token 0 的全部 8 维和 token 1 的前 4 维。</p>
+</details>
+<details>
+  <summary>cross-attention 的 shape 是什么？</summary>
+  <p>Q 来自 decoder（长度 \(s_q\)），K、V 来自 encoder（长度 \(s_k\)），所以 score 是 (b, h, \(s_q\), \(s_k\))，输出长度跟 Q 一样。</p>
+</details>
+<details>
+  <summary>一整行都被 mask 掉会怎样？</summary>
+  <p>整行是 \(-\infty\)，减 max 时出现 \(-\infty - (-\infty)\) = nan。用一个很大的负数（如 −1e9）代替 \(-\infty\)，或者把这一行输出直接置 0。</p>
+</details>
+<details>
+  <summary>MQA / GQA 改了什么？</summary>
+  <p>K、V 只投影出 \(g &lt; h\) 组 head，每组被 \(h/g\) 个 query head 共享（MQA 是 \(g = 1\)）。\(W_K\)、\(W_V\) 变成 \(d\times g d_k\)，KV cache 缩小 \(h/g\) 倍。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.2.2（pp.4–5）、Table 3 rows (A)（p.9）· <a href="https://d2l.ai/chapter_attention-mechanisms-and-transformers/multihead-attention.html">Dive into Deep Learning</a> §11.5.1–11.5.2 · <a href="https://arxiv.org/abs/2305.13245">Ainslie et al. 2023（GQA）</a></p>
+
+</main>
+</body>
+</html>

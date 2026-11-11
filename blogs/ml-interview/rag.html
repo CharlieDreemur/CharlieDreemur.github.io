@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Transformer &amp; LLM</p>
+<h1>RAG 的 pipeline 是什么？<br>hallucination、data poisoning、context length 怎么解决？</h1>
+<p class="meta"><b>英文问法</b><q>Design a RAG system.</q> · <q>How do you reduce hallucination in RAG?</q> · <q>How would you defend against data poisoning or prompt injection?</q> · <q>What if the retrieved context doesn't fit?</q></p>
+<p class="meta"><b>考过</b>面经：微软 AS 实习 VO 设计 RAG 系统（<a href="https://www.1point3acres.com/bbs/thread-1166088-1-1.html">1p3a 1166088</a>）· 微软 Teams AS IC2 · 微软中国 Bing LLM 应用组实习（三个难点都是原题）· 以色列 Senior AS（RAG on complex stock data）· 印度 Senior Applied AI Scientist（RAG 架构）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>RAG</dt>
+  <dd>开卷考试：先翻资料找相关段落（retrieve），再看着这几段答题（generate）。知识在外部 index 里，更新知识只要换 index，不用重新训练。</dd>
+  <dt>Chunk 与 embedding</dt>
+  <dd>chunk 是把文档切成的小段；embedding 把每段变成一个向量，意思越近夹角越小。<span class="eg">例：query \((1, 0)\)，chunk A \((0.8, 0.6)\) 的 cosine 是 0.8，chunk B \((0, 1)\) 是 0 → 取 A。</span></dd>
+  <dt>Dense、BM25 与 hybrid search</dt>
+  <dd>BM25 数关键词重叠，擅长人名、型号这类精确匹配；dense 检索懂同义改写。两路分数合起来就是 hybrid。原论文里实体为主的 FEVER 上 BM25 反而最好。</dd>
+  <dt>ANN index 与 rerank</dt>
+  <dd>像海选加复试。ANN（如 FAISS 的 HNSW）在百万向量里近似找 top-k，快但可能漏；cross-encoder 把 query 和每段放在一起读，精排，慢但准。</dd>
+  <dt>Data poisoning 与 prompt injection</dt>
+  <dd>有人往知识库塞假文档，或在网页里藏一句"忽略之前的指令"。<span class="eg">例：PoisonedRAG 对每个目标问题只注入 5 段文本，知识库有几百万段，attack success rate 约 90%。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Offline, I chunk the documents, embed each chunk, and build an ANN index plus a BM25 index. Online, I rewrite the query, retrieve top-k with hybrid search, rerank with a cross-encoder, put the best few chunks in the prompt, and generate with citations. For hallucination: answer only from the context, cite each claim, check numbers against the source, and say "I don't know" without evidence. For poisoning: trusted sources only, cross-check them, and treat retrieved text as data, never as instructions. For context length: keep only top reranked chunks, compress, or map-reduce. Evaluate retrieval with recall@k and MRR, generation with faithfulness and answer relevance.</p></div>
+
+<h2 id="pipeline">Pipeline</h2>
+<ol>
+  <li><strong>Offline</strong>：chunking（size、overlap）→ embedding → ANN index + BM25 index，存 metadata（来源、日期）</li>
+  <li><strong>Retrieve</strong>：query rewriting → hybrid search 取 top-k（比如 50）</li>
+  <li><strong>Rerank</strong>：cross-encoder 精排，留 top-n（比如 5）</li>
+  <li><strong>Generate</strong>：chunk 带编号放进 prompt，要求只依据材料、逐句标出处</li>
+</ol>
+
+<h2 id="hard">三个难点</h2>
+<table>
+  <thead><tr><th>难点</th><th>为什么会发生</th><th>怎么解决</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">hallucination<br>（数字、时间）</td><td>检索错或没检索到，模型照样编出流畅答案</td><td>rerank、按日期 filter；逐句 citation；数字回原文核对；没依据就说不知道；structured data 走 SQL / tool</td></tr>
+    <tr><td class="nw">data poisoning /<br>prompt injection</td><td>知识库成了新攻击面：少量恶意文本就能被检索到，网页里的指令会被当成命令</td><td>source allowlist、可信度加权；多 source 交叉验证，冲突标出；retrieved content 用 delimiter 包住，system prompt 规定只当数据</td></tr>
+    <tr><td class="nw">context length</td><td>放不下；放太多时中间的内容被忽略，成本也涨</td><td>只留 rerank 最靠前的；compression / summarization；按 token budget 动态选；map-reduce；long-context model</td></tr>
+  </tbody>
+</table>
+<p><strong>Evaluation</strong>：retrieval 看 recall@k、MRR；generation 看 faithfulness（答案能否由 context 推出）和 answer relevance（RAGAS，不需要参考答案）。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>pipeline：chunk → embed → index → hybrid retrieve → rerank → 带 citation 生成</li>
+  <li>hallucination：grounding + 逐句 citation + 数字核对 + 允许说不知道</li>
+  <li>poisoning：控制 source、交叉验证；retrieved content 是数据不是指令</li>
+  <li>context：先 rerank 再少放，compression / map-reduce</li>
+  <li>retrieval 和 generation 分开评估</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>chunk size 怎么选？</summary>
+  <p>没有通用值。太小丢上下文，太大噪声多、占 context。在自己的 query 集上扫几个 size 和 overlap，看 recall@k 和最终答案质量。原论文用 100 词一段、不重叠。</p>
+</details>
+<details>
+  <summary>recall@k 和 MRR 怎么算？</summary>
+  <p>3 个 query，第一个相关 chunk 分别排在第 1、第 3、没召回：recall@3 \(= 2/3\)；MRR \(= (1 + 1/3 + 0)/3 = 0.44\)。</p>
+</details>
+<details>
+  <summary>context 放得越多越好吗？</summary>
+  <p>不是。Lost in the Middle：相关段落在开头或结尾时准确率最高，在中间时明显下降（U 形）。attention 的计算量还随长度平方增长（<a href="transformer-complexity.html">复杂度</a>）。所以少放，最相关的放首尾。</p>
+</details>
+<details>
+  <summary>多检索几段能把投毒稀释掉吗？</summary>
+  <p>不够。PoisonedRAG 里 k = 50 时 HotpotQA 上仍有约 41% 的 attack success rate，paraphrasing、perplexity 检测、去重也都挡不住。要从 source 准入和交叉验证上防。</p>
+</details>
+<details>
+  <summary>原论文的 RAG 怎么训练？</summary>
+  <p>retriever \(p_\eta\)（DPR）和 generator \(p_\theta\)（BART）end-to-end 微调，把检索到的文档 \(z\) 当 latent variable 求和：</p>
+  \[ p(y\mid x) \approx \sum_{z\in\text{top-}k} p_\eta(z\mid x)\, p_\theta(y\mid x, z) \]
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2005.11401">Lewis et al. 2020</a> §2.1（p.3）、§3（p.4，100 词 chunk、FAISS HNSW）、§4.5（p.7，BM25、index hot-swapping）· <a href="https://arxiv.org/abs/2402.07867">Zou et al. 2024, PoisonedRAG</a> abstract（p.1）、§7.1–7.4（pp.13–14）· <a href="https://arxiv.org/abs/2302.12173">Greshake et al. 2023</a> abstract（indirect prompt injection）· <a href="https://arxiv.org/abs/2307.03172">Liu et al. 2023, Lost in the Middle</a> abstract、Fig. 1（p.1）· <a href="https://arxiv.org/abs/2309.15217">Es et al. 2023, RAGAS</a> §3（p.3）</p>
+
+</main>
+</body>
+</html>

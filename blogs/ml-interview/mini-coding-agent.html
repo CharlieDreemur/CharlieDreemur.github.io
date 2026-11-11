@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini coding agent 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>手写一个 mini coding agent：<br>要哪些 tool，edit 冲突怎么处理？</h1>
+<p class="meta"><b>英文问法</b><q>Build a minimal coding agent. Which tools does it need?</q> · <q>The user and the agent edit the same file at the same time. How do you avoid overwriting?</q> · <q>How would you run it on multiple nodes?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：蚂蚁 Agent 开发日常实习一面（发帖 2026-11-06）「追问edit tool，如果用户和agent同时修改一份文件，覆写问题怎么解决」「追问read tool，如果要读取一个10兆的文件，全放进去上下文直接爆了，你怎么解决」（<a href="https://www.nowcoder.com/feed/main/detail/3b05460868c7429193e93f8d09f62794">牛客</a>）、阿里 AI Infra（面试 2026-05-02）「AI Coding：实现一个类似 Claude Code 的命令行交互？为了让 agent 支持读取文件、修改文件，需要怎么做？」（<a href="https://www.nowcoder.com/discuss/923309531445071872">牛客合集</a>，只读到搜索摘要，岗位归属不确定）、虾皮 Data Infra 实习一面（面试 2026-05-26）「使用Claudecode将将智能体项目，改造为可以多节点部署的项目？」（<a href="https://www.nowcoder.com/discuss/893137787367477248">牛客</a>） · 英文侧：Anthropic SWE 电面的 agents coding 轮，一亩三分地站方摘要写 "building a Claude agent loop for multi-step tool calls"（<a href="https://www.1point3acres.com/bbs/thread-1180230-1-1.html">1p3a 1180230</a>，只读到回帖和摘要，是转述） · 中文面经样本里现场 coding 和设计题有 29 帖 · 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Agent loop</dt>
+  <dd>model 发 tool call，harness 执行，把 tool result 放回 messages，再调 model，直到 model 不再发 tool call。一般概念见 <a href="agent-mcp.html#loop">agent 与 MCP</a> 和 <a href="llm-harness.html">LLM harness</a>。</dd>
+  <dt>read tool</dt>
+  <dd>把文件内容读进 context，同时记下这份内容的 hash。</dd>
+  <dt>edit tool</dt>
+  <dd>精确字符串替换。给一段 old string 和一段 new string，只改这一处。</dd>
+  <dt>Optimistic concurrency</dt>
+  <dd>不加锁，写的时候才检查文件有没有被别人动过，动过就拒绝。像共享文档提示“版本冲突，请刷新”。</dd>
+  <dt>bash tool</dt>
+  <dd>跑一条 shell command，把输出还给 model。</dd>
+</dl>
+
+<h2 id="figs">看图：一个 loop 加三个 tool</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 190" role="img" aria-label="agent loop：model 发 tool call，harness 交给 read、edit、bash 执行，再把 tool result 还给 model">
+  <defs><marker id="mcA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+  <rect class="box" x="14" y="68" width="100" height="44" rx="4"/>
+  <text class="hd" x="64" y="94" text-anchor="middle">model</text>
+  <rect class="hot" x="200" y="60" width="130" height="60" rx="4"/>
+  <text class="hd" x="265" y="85" text-anchor="middle">harness</text>
+  <text class="m" x="265" y="104" text-anchor="middle">loop + messages</text>
+  <path class="ln" d="M114,80 H198" marker-end="url(#mcA)"/>
+  <text class="m" x="157" y="72" text-anchor="middle">tool call</text>
+  <path class="ln" d="M200,100 H116" marker-end="url(#mcA)"/>
+  <text class="m" x="157" y="118" text-anchor="middle">tool result</text>
+  <path class="ln" d="M330,78 L418,31" marker-end="url(#mcA)"/>
+  <path class="ln" d="M330,90 H418" marker-end="url(#mcA)"/>
+  <path class="ln" d="M330,102 L418,147" marker-end="url(#mcA)"/>
+  <rect class="f2" x="420" y="14" width="126" height="30" rx="4"/>
+  <text x="483" y="34" text-anchor="middle">read</text>
+  <text class="m" x="483" y="59" text-anchor="middle">记下读到时的 hash</text>
+  <rect class="f2" x="420" y="74" width="126" height="30" rx="4"/>
+  <text x="483" y="94" text-anchor="middle">edit</text>
+  <text class="m" x="483" y="119" text-anchor="middle">hash 变了就报错</text>
+  <rect class="f2" x="420" y="134" width="126" height="30" rx="4"/>
+  <text x="483" y="154" text-anchor="middle">bash</text>
+  <text class="m" x="483" y="179" text-anchor="middle">sandbox + timeout</text>
+  <path class="ln" d="M265,120 V148" marker-end="url(#mcA)"/>
+  <text class="m" x="265" y="166" text-anchor="middle">没有 tool call 就返回回答</text>
+</svg>
+<figcaption>图 1：harness 把 model 的 tool call 交给 read、edit 或 bash 执行，再把 tool result 追加到 messages。model 不再发 tool call 时 loop 结束。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>The core is a loop around three tools: read a file, edit a file by replacing an exact string, and run a shell command. Each turn the model either answers or asks for a tool; the harness runs it and appends the result, errors included, so the model can correct itself. The edit tool requires that the file was read first and fails if the file changed since then, which is optimistic concurrency: compare a hash before writing, and make the model re-read on a mismatch. Commands run in a sandbox with a timeout and truncated output, and risky ones ask for permission.</p></div>
+
+<h2 id="loop">Agent loop 的最小实现</h2>
+<pre><code>def run_agent(task, tools, max_steps=50):
+    messages = [{"role": "user", "content": task}]
+    for _ in range(max_steps):
+        reply = llm(messages, tool_schemas(tools))
+        messages.append(reply)
+        if not reply.tool_calls:           # 不再要 tool，任务结束
+            return reply.content
+        for call in reply.tool_calls:
+            try:
+                out = tools[call.name](**call.args)
+            except Exception as e:         # 报错也还给 model，让它改
+                out = f"error: {e}"
+            messages.append({"role": "tool", "id": call.id, "content": out})
+    return "stopped: max steps reached"</code></pre>
+
+<h2 id="edit">edit tool 怎么防覆写</h2>
+<table>
+  <thead><tr><th>版本</th><th>做法</th><th>还剩的问题</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">v1 整文件重写</td><td>model 输出整份新文件，直接覆盖</td><td>费 token；用户刚改的内容被冲掉</td></tr>
+    <tr><td class="nw">v2 字符串替换</td><td>只把 old string 换成 new string，old string 找不到就报错</td><td>文件在 read 之后被别人改过，model 还按旧内容在改</td></tr>
+    <tr><td class="nw">v3 加 hash 检查</td><td>先 read 才能 edit；写之前重算文件的 hash，和 read 时不一样就报错，让 model 重新 read</td><td>冲突频繁时要反复重读</td></tr>
+  </tbody>
+</table>
+<p>v3 就是 optimistic concurrency。蚂蚁那场面试里，候选人先答拍快照比较 diff，被否定了。面经原话是面试官「说比较原文为什么不比较原文的hash（后面反问的时候解释codex就是比较的哈希）」。Codex 的做法只有这位面试官的说法作依据。</p>
+
+<h2 id="tools">三个 tool 各要管住什么</h2>
+<table>
+  <thead><tr><th>Tool</th><th>要管住什么</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">read</td><td>大文件只读一段，用 offset 和 limit（见 <a href="long-document.html">文件放不进 context</a>）</td></tr>
+    <tr><td class="nw">edit</td><td>没 read 过的文件不让改；hash 不一致就拒绝</td></tr>
+    <tr><td class="nw">bash</td><td>在 <a href="agent-sandbox.html">sandbox</a> 里跑；加 timeout；输出太长就截断</td></tr>
+  </tbody>
+</table>
+<p>再加一个 search tool 用来按文件名或内容找文件。权限上读默认放行，写和执行按规则确认。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>三个 tool：read、edit（精确字符串替换）、bash，再加 search</li>
+  <li>loop：model 发 tool call，harness 执行并追加 tool result，没有 tool call 就结束</li>
+  <li>报错也当作 tool result 还给 model，并设 max steps</li>
+  <li>edit 冲突：先 read 才能 edit，写前比对 hash 或 mtime，变了就报错让 model 重读</li>
+  <li>bash 在 sandbox 里跑，有 timeout，输出截断</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>edit 为什么用字符串替换，不整文件重写？</summary>
+  <p>省 token，diff 能 review，也不会误改别处。</p>
+</details>
+<details>
+  <summary>比对 hash 还是 mtime？</summary>
+  <p>hash 只看内容，最可靠。mtime 不用读文件所以便宜，但内容没变时它也可能变。</p>
+</details>
+<details>
+  <summary>要读一个 10 MB 的文件怎么办？（蚂蚁原题）</summary>
+  <p>read 带 offset 和 limit，一次只读一段。先用 search 定位，再读命中的那一段（见 <a href="long-document.html">文件放不进 context</a>）。</p>
+</details>
+<details>
+  <summary>改成多节点部署要考虑什么？（虾皮原题）</summary>
+  <p>会话状态放到外部存储，workspace 跟着会话走，这样任何一个节点都能接着跑。请求要幂等，重发不会多改一次文件。</p>
+</details>
+<details>
+  <summary>权限规则写进 prompt，还是由程序执行？</summary>
+  <p>由程序执行。harness 在执行 tool 之前检查规则，不依赖 model 自觉遵守。</p>
+</details>
+
+<p class="src"><b>来源</b>面经原帖：<a href="https://www.nowcoder.com/feed/main/detail/3b05460868c7429193e93f8d09f62794">蚂蚁 Agent 开发日常实习一面</a>（read、edit、bash 的追问，面试官关于 hash 的说法）、<a href="https://www.nowcoder.com/discuss/893137787367477248">虾皮 Data Infra 实习一面</a>（多节点部署）、<a href="https://www.nowcoder.com/discuss/923309531445071872">阿里合集</a>、<a href="https://www.nowcoder.com/discuss/942819943425245184">作业帮 Golang 实习</a>（规则由程序执行还是写进提示词） · <a href="https://www.1point3acres.com/bbs/thread-1180230-1-1.html">1p3a 1180230</a> · ml-八股 08 第 37 题 · 中文平台调研笔记 1.2 节和第 2 节</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gradient accumulation 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>Gradient accumulation 怎么做？<br>为什么 PyTorch 默认累加 gradient？</h1>
+<p class="meta"><b>英文问法</b><q>Why does PyTorch accumulate gradients by default?</q> · <q>Implement gradient accumulation.</q> · <q>Is it equivalent to training with a larger batch?</q></p>
+<p class="meta"><b>考过</b>面经：NVIDIA 框架岗 2023 onsite 第 3 轮（实现 backprop 后追问实现 grad-accumulation，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· NVIDIA DL 全职 VO 2022（讨论"为什么by default grad 要累计"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt><code>.grad</code> 累加</dt>
+  <dd>每次 <code>backward()</code> 都把新 gradient 加到 parameter 的 <code>.grad</code> 上，不覆盖，像存钱罐，不倒空就一直往里存。<span class="eg">例：同一个 batch 连续 backward 两次，<code>.grad</code> 是一次的 2 倍。</span></dd>
+  <dt><code>zero_grad()</code></dt>
+  <dd>每次 optimizer step 之后把存钱罐倒空。忘了清零，这一步的 gradient 会混进上一步的。</dd>
+  <dt>Micro-batch 与 gradient accumulation</dt>
+  <dd>显存只放得下 \(b\) 个样本，却想要更大的 batch：把它拆成 \(m\) 个 micro-batch，逐个 forward + backward，gradient 攒在 <code>.grad</code> 里，攒满 \(m\) 个才 step 一次。像搬家一趟搬不完，分几趟搬，最后一次结账。activation memory 只按 \(b\) 算。<span class="eg">例：\(b = 8\)，\(m = 4\)，DP 卡数 \(N = 2\) → global batch \(B = 64\)。</span></dd>
+  <dt>Loss ÷ m</dt>
+  <dd>每个 micro-batch 的 loss 是自己 \(b\) 个样本的 mean，\(m\) 个 gradient 直接相加会是大 batch 的 \(m\) 倍，所以每个 loss 先除以 \(m\)。</dd>
+  <dt><code>no_sync()</code></dt>
+  <dd>DDP 每次 backward 都会 all-reduce gradient。前 \(m-1\) 个 micro-batch 放进 <code>model.no_sync()</code>，只在本卡累加，最后一个才 all-reduce，通信次数从 \(m\) 降到 1。</dd>
+</dl>
+
+<h2 id="figs">看图：4 个 micro-batch 怎么攒成一次更新</h2>
+<figure class="fig">
+<svg viewBox="-4 0 526 392" role="img" aria-label="gradient accumulation 时间线：每张卡依次做 4 个 micro-batch，每个 loss 先除以 4 再 backward，.grad 一份份攒满；前 3 个在 no_sync 里不通信，最后一次 all-reduce 后 step 一次再 zero_grad"><text x="0" y="14" text-anchor="start" class="hd">b = 8 个样本一个 micro-batch，m = 4，N = 2 张卡 → B = 8 × 4 × 2 = 64</text><text x="179" y="40" text-anchor="middle" class="hd">GPU0</text><text x="284" y="40" text-anchor="middle" class="m">.grad</text><text x="393" y="40" text-anchor="middle" class="hd">GPU1</text><text x="498" y="40" text-anchor="middle" class="m">.grad</text><text x="0" y="40" text-anchor="start" class="m">时间 ↓</text><rect x="104" y="50" width="150" height="40" rx="5" class="box"/><text x="179" y="67" text-anchor="middle">micro-batch 1</text><text x="179" y="83" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="263" y="62" width="9" height="16" rx="2" class="f2"/><rect x="274" y="62" width="9" height="16" rx="2" class="stale"/><rect x="285" y="62" width="9" height="16" rx="2" class="stale"/><rect x="296" y="62" width="9" height="16" rx="2" class="stale"/><rect x="318" y="50" width="150" height="40" rx="5" class="box"/><text x="393" y="67" text-anchor="middle">micro-batch 1</text><text x="393" y="83" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="477" y="62" width="9" height="16" rx="2" class="f2"/><rect x="488" y="62" width="9" height="16" rx="2" class="stale"/><rect x="499" y="62" width="9" height="16" rx="2" class="stale"/><rect x="510" y="62" width="9" height="16" rx="2" class="stale"/><rect x="104" y="100" width="150" height="40" rx="5" class="box"/><text x="179" y="117" text-anchor="middle">micro-batch 2</text><text x="179" y="133" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="263" y="112" width="9" height="16" rx="2" class="f2"/><rect x="274" y="112" width="9" height="16" rx="2" class="f2"/><rect x="285" y="112" width="9" height="16" rx="2" class="stale"/><rect x="296" y="112" width="9" height="16" rx="2" class="stale"/><rect x="318" y="100" width="150" height="40" rx="5" class="box"/><text x="393" y="117" text-anchor="middle">micro-batch 2</text><text x="393" y="133" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="477" y="112" width="9" height="16" rx="2" class="f2"/><rect x="488" y="112" width="9" height="16" rx="2" class="f2"/><rect x="499" y="112" width="9" height="16" rx="2" class="stale"/><rect x="510" y="112" width="9" height="16" rx="2" class="stale"/><rect x="104" y="150" width="150" height="40" rx="5" class="box"/><text x="179" y="167" text-anchor="middle">micro-batch 3</text><text x="179" y="183" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="263" y="162" width="9" height="16" rx="2" class="f2"/><rect x="274" y="162" width="9" height="16" rx="2" class="f2"/><rect x="285" y="162" width="9" height="16" rx="2" class="f2"/><rect x="296" y="162" width="9" height="16" rx="2" class="stale"/><rect x="318" y="150" width="150" height="40" rx="5" class="box"/><text x="393" y="167" text-anchor="middle">micro-batch 3</text><text x="393" y="183" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="477" y="162" width="9" height="16" rx="2" class="f2"/><rect x="488" y="162" width="9" height="16" rx="2" class="f2"/><rect x="499" y="162" width="9" height="16" rx="2" class="f2"/><rect x="510" y="162" width="9" height="16" rx="2" class="stale"/><rect x="104" y="200" width="150" height="40" rx="5" class="box"/><text x="179" y="217" text-anchor="middle">micro-batch 4</text><text x="179" y="233" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="263" y="212" width="9" height="16" rx="2" class="f2"/><rect x="274" y="212" width="9" height="16" rx="2" class="f2"/><rect x="285" y="212" width="9" height="16" rx="2" class="f2"/><rect x="296" y="212" width="9" height="16" rx="2" class="f2"/><rect x="318" y="200" width="150" height="40" rx="5" class="box"/><text x="393" y="217" text-anchor="middle">micro-batch 4</text><text x="393" y="233" text-anchor="middle" class="m">loss ÷ 4 → backward</text><rect x="477" y="212" width="9" height="16" rx="2" class="f2"/><rect x="488" y="212" width="9" height="16" rx="2" class="f2"/><rect x="499" y="212" width="9" height="16" rx="2" class="f2"/><rect x="510" y="212" width="9" height="16" rx="2" class="f2"/><path d="M98,50 H92 V190 H98" class="ln"/><text x="86" y="112" text-anchor="end" class="hd">no_sync()</text><text x="86" y="129" text-anchor="end" class="m">只在本卡累加</text><text x="86" y="145" text-anchor="end" class="m">不通信</text><text x="86" y="217" text-anchor="end" class="m">最后一个</text><text x="86" y="233" text-anchor="end" class="m">正常 backward</text><rect x="104" y="250" width="418" height="40" rx="5" class="hot"/><text x="313" y="267" text-anchor="middle" class="acc">all-reduce .grad：两张卡求平均</text><text x="313" y="283" text-anchor="middle" class="m">4 次 backward 只通信这 1 次（DDP 在第 4 次 backward 里发）</text><text x="86" y="275" text-anchor="end" class="acc">同步一次</text><rect x="104" y="300" width="150" height="40" rx="5" class="box"/><text x="179" y="317" text-anchor="middle">optimizer.step()</text><text x="179" y="333" text-anchor="middle" class="m">用 B = 64 的 gradient</text><rect x="263" y="312" width="9" height="16" rx="2" class="f2"/><rect x="274" y="312" width="9" height="16" rx="2" class="f2"/><rect x="285" y="312" width="9" height="16" rx="2" class="f2"/><rect x="296" y="312" width="9" height="16" rx="2" class="f2"/><rect x="318" y="300" width="150" height="40" rx="5" class="box"/><text x="393" y="317" text-anchor="middle">optimizer.step()</text><text x="393" y="333" text-anchor="middle" class="m">用 B = 64 的 gradient</text><rect x="477" y="312" width="9" height="16" rx="2" class="f2"/><rect x="488" y="312" width="9" height="16" rx="2" class="f2"/><rect x="499" y="312" width="9" height="16" rx="2" class="f2"/><rect x="510" y="312" width="9" height="16" rx="2" class="f2"/><text x="86" y="325" text-anchor="end" class="m">更新一次</text><rect x="104" y="350" width="150" height="40" rx="5" class="box"/><text x="179" y="367" text-anchor="middle">zero_grad()</text><text x="179" y="383" text-anchor="middle" class="m">清空，留给下一个 step</text><rect x="263" y="362" width="9" height="16" rx="2" class="stale"/><rect x="274" y="362" width="9" height="16" rx="2" class="stale"/><rect x="285" y="362" width="9" height="16" rx="2" class="stale"/><rect x="296" y="362" width="9" height="16" rx="2" class="stale"/><rect x="318" y="350" width="150" height="40" rx="5" class="box"/><text x="393" y="367" text-anchor="middle">zero_grad()</text><text x="393" y="383" text-anchor="middle" class="m">清空，留给下一个 step</text><rect x="477" y="362" width="9" height="16" rx="2" class="stale"/><rect x="488" y="362" width="9" height="16" rx="2" class="stale"/><rect x="499" y="362" width="9" height="16" rx="2" class="stale"/><rect x="510" y="362" width="9" height="16" rx="2" class="stale"/><text x="86" y="375" text-anchor="end" class="m">倒空</text></svg>
+<figcaption>图 1：本页的例子 b = 8、m = 4、N = 2，时间从上往下走。每张卡依次算 4 个 micro-batch，每个 loss 先除以 4 再 backward；右边 4 个小格是 .grad，蓝色格是已经攒进去的份数，backward 一次多一格。前 3 个放在 no_sync() 里，只在本卡累加；第 4 次 backward 时 DDP 才把 .grad 在两张卡之间 all-reduce（暖色框，整个 step 只通信这一次），然后 step 一次，再 zero_grad() 把 .grad 倒空。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>backward() adds into .grad instead of overwriting it. Gradients are linear, so two backward calls give the gradient of the summed loss; that makes accumulating over micro-batches or backpropagating several losses separately just work, and the price is calling zero_grad() every step. To accumulate, I split the batch into m micro-batches, divide each micro-batch loss by m, call backward on each, then step once and zero the grads. With equal-sized micro-batches that gives exactly the big-batch gradient, with activation memory for only one micro-batch. It breaks for BatchNorm, whose statistics only see the micro-batch. Under DDP I wrap the first m − 1 backwards in no_sync(), so the all-reduce runs once.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <p>\(L_k\) 是第 \(k\) 个 micro-batch 的 mean loss，每个 micro-batch 都是 \(b\) 个样本：</p>
+  \[ L_B = \frac1B\sum_{i=1}^{B}\ell_i = \frac1m\sum_{k=1}^{m} L_k \]
+  \[ \nabla L_B = \sum_{k=1}^{m}\nabla\Big(\frac{L_k}{m}\Big) \]
+  <p>右边就是 \(m\) 次 backward 用 += 攒出来的。不除以 \(m\)，gradient 是 \(m\) 倍，SGD 下等于 learning rate 放大 \(m\) 倍。再加上 \(N\) 张卡的 DP，global batch：</p>
+  \[ B = b\cdot m\cdot N \]
+</div>
+
+<h2 id="example">手算例子</h2>
+<p>\(y = wx\)，\(w = 0\)，\(x = (1, 2, 3, 4)\)，\(y = 2x\)，loss 取 \((wx - y)^2\) 的 mean，gradient \(= \text{mean}\big(2(wx - y)x\big)\)：</p>
+<ul>
+  <li>大 batch：\(-\tfrac{2}{4}(2 + 8 + 18 + 32) = -30\)</li>
+  <li>\(m = 2\)：前两个点得 \(-10\)，后两个点得 \(-50\)，直接累加 \(-60\)，多了一倍</li>
+  <li>每个 loss 先 ÷ 2：\(-5 + (-25) = -30\)，和大 batch 一样</li>
+</ul>
+
+<h2 id="code">手撕代码（PyTorch + DDP）</h2>
+<pre><code>from contextlib import nullcontext
+
+def train_step(model, opt, micro_batches, loss_fn):
+    m = len(micro_batches)
+    for k, (x, y) in enumerate(micro_batches):
+        last = k == m - 1
+        # DDP：前 m−1 次 no_sync，只在本卡累加
+        with nullcontext() if last else model.no_sync():
+            loss = loss_fn(model(x), y) / m  # ÷ m
+            loss.backward()                  # .grad +=
+    opt.step()          # m 次 backward 后 step 一次
+    opt.zero_grad()     # 清空，留给下一个 step</code></pre>
+
+<h2>必答点</h2>
+<ul>
+  <li><code>backward()</code> 是 <code>.grad +=</code>：gradient 对 loss 是 linear 的，累加 = 对 loss 之和求导；代价是每步 <code>zero_grad()</code></li>
+  <li>做法：loss ÷ \(m\) → backward \(m\) 次 → <code>step()</code> → <code>zero_grad()</code></li>
+  <li>等价于 \(B = b\cdot m\cdot N\) 的大 batch，activation memory 只按 \(b\)</li>
+  <li>不等价：BatchNorm；micro-batch 大小（或 token 数）不同</li>
+  <li>DDP：前 \(m-1\) 次 <code>no_sync()</code>，all-reduce 从 \(m\) 次降到 1 次</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>micro-batch 大小不同（或 LLM 每个 micro-batch 的 token 数不同）怎么办？</summary>
+  <p>÷ \(m\) 默认每个 micro-batch 权重一样。上例按 3 + 1 拆，得 \(-41.3\) 而不是 \(-30\)。应该用 sum 的 loss 除以整个 step 的样本数（LLM 用非 padding token 数），按大小加权就回到 \(-30\)。Hugging Face 2024 年修过 Trainer 的这个 bug。</p>
+</details>
+<details>
+  <summary>和 BatchNorm 一起用有什么问题？</summary>
+  <p>BN 的 mean / variance 只来自 \(b\) 个样本，running statistics 也按 micro-batch 更新，和真的大 batch 不一样。换 GroupNorm / LayerNorm。Transformer 用 LayerNorm / RMSNorm，不受影响（见 <a href="batchnorm-layernorm.html">BatchNorm vs LayerNorm</a>）。</p>
+</details>
+<details>
+  <summary>加了 accumulation，learning rate 要改吗？</summary>
+  <p>global batch \(B\) 不变就不用改。lr schedule 和 warmup 按 optimizer step 计数，不按 micro-batch。如果是为了把 \(B\) 变大才加 accumulation，就按新的 \(B\) 重新调 lr。</p>
+</details>
+<details>
+  <summary>FSDP 里也用 <code>no_sync()</code> 吗？</summary>
+  <p>可以，但 <code>no_sync()</code> 期间每张卡累加的是完整 gradient 而不是 gradient shard，memory 更高。是省通信还是省 memory 要权衡（见 <a href="dp-zero-fsdp.html">DP / ZeRO / FSDP</a>）。</p>
+</details>
+<details>
+  <summary><code>zero_grad()</code> 设成 None 和设成 0 有什么区别？</summary>
+  <p>PyTorch 2.x 默认 <code>set_to_none=True</code>：省 memory，也少一次写 0。但 gradient 为 None 的 parameter，optimizer 直接跳过；gradient 为 0 时仍然会 step（比如 momentum 还会推着走）。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.pytorch.org/docs/stable/generated/torch.Tensor.backward.html">torch.Tensor.backward</a> · <a href="https://docs.pytorch.org/tutorials/recipes/recipes/zeroing_out_gradients.html">PyTorch recipe: Zeroing out gradients</a> · <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.Optimizer.zero_grad.html">Optimizer.zero_grad</a>（set_to_none）· <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html">DistributedDataParallel</a>（<code>no_sync</code>）· <a href="https://docs.pytorch.org/docs/stable/fsdp.html">FSDP</a>（<code>no_sync</code> 的 memory note）· <a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a> §3.3.1（p.5，\(m = B/(d\cdot b)\)）· <a href="https://huggingface.co/blog/gradient_accumulation">Hugging Face, Fixing Gradient Accumulation</a>（2024-10-16）</p>
+
+</main>
+</body>
+</html>

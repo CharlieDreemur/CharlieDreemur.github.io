@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合成数据质量 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>怎么评估 LLM 合成数据的质量？</h1>
+<p class="meta"><b>英文问法</b><q>How do you evaluate the quality of LLM-generated synthetic data?</q> · <q>How do you know your synthetic eval set reflects real users?</q></p>
+<p class="meta"><b>考过</b>Apple 大模型算法面经第 1 题「怎么评估大模型合成数据的输出质量」（<a href="https://www.nowcoder.com/feed/main/detail/6790299dba2544d8a25611b268863dd6">牛客 2026-03</a>，团队未写）· Agentic Search 评测组的 JD 写 "data generation, data quality assessment"（<a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">200670397</a>）· personal search 看不到真实用户数据，评测集只能靠合成</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Synthetic data</dt>
+  <dd>LLM 生成的训练或评测样本。对 personal search 来说，就是一个虚构的人和他的 mail、message、calendar，再加上问题和 gold answer。</dd>
+  <dt>Validity（对不对）</dt>
+  <dd>gold answer 是否正确、能否从数据里推出来。<span class="eg">例：题目问酒店确认号，那这个号码必须真的出现在某封合成邮件里。</span></dd>
+  <dt>Fidelity（像不像）</dt>
+  <dd>和真实数据的分布是否接近：长度、话题、错别字、语言混用。</dd>
+  <dt>Diversity（全不全）</dt>
+  <dd>覆盖面够不够。<span class="eg">例：1000 条 query 去重后只剩 300 种问法，说明生成器在重复自己。</span></dd>
+  <dt>Utility（有没有用）</dt>
+  <dd>最终检验：在合成集上得出的结论，放到真实数据上还成立吗？</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I'd check four things. Validity: are the gold answers correct and derivable from the data, checked by rules, a second model, and human spot checks. Fidelity: does it look like real data in length, topics, and noise; I compare distributions and see whether a classifier can tell real from synthetic. Diversity: near-duplicate rate and coverage of intents and difficulty. Utility is the real test: do models rank the same way on the synthetic set as on a small real or dogfood set. I filter bad samples instead of only measuring them, and keep a human-audited sample to calibrate the automatic checks.</p></div>
+
+<h2 id="dims">四个维度</h2>
+<table>
+  <thead><tr><th>维度</th><th>怎么量</th><th>有问题怎么办</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Validity</td><td>规则校验（答案在不在 source 里）；换一个模型复核；人工抽检算 error rate</td><td>过滤、重新生成</td></tr>
+    <tr><td class="nw">Fidelity</td><td>长度、话题分布对比；训一个 real-vs-synthetic classifier，AUC 越接近 0.5 越像</td><td>用真实样本做 seed；注入噪声</td></tr>
+    <tr><td class="nw">Diversity</td><td>embedding 去重率；intent × 难度的覆盖表</td><td>按 persona、场景、难度的网格去生成</td></tr>
+    <tr><td class="nw">Utility</td><td>几个模型在合成集和真实集上的排序是否一致</td><td>调整配比，或者不用这批数据</td></tr>
+  </tbody>
+</table>
+<p><strong>Personal search 还要查一致性</strong>（推断）：同一个 persona 的各个 source 要对得上，比如 message 里约的饭局在 calendar 上有对应事件。时间线要合理，gold answer 要唯一。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>四个维度：validity、fidelity、diversity、utility</li>
+  <li>utility 最重要：合成集上的结论要能迁移到真实数据</li>
+  <li>不只是量，还要过滤；自动检查用人工抽检校准</li>
+  <li>生成和评估不要用同一个模型</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>人工抽检抽多少条？</summary>
+  <p>看你要多窄的 confidence interval（CI）。抽 100 条错 5 条 → error rate 5%，95% CI 约 \(\pm 1.96\sqrt{0.05\times 0.95/100} \approx \pm 4.3\) 个百分点。想更窄就加样本，CI 宽度按 \(1/\sqrt{n}\) 缩小。</p>
+</details>
+<details>
+  <summary>合成数据太干净怎么办？</summary>
+  <p>真实邮件有错别字、口语、转发链、无关广告。往合成数据里注入这些噪声和 distractor（看着相关但不含答案的内容），再用内部 dogfood 数据校准难度。</p>
+</details>
+<details>
+  <summary>用同一个模型生成又评估，有什么问题？</summary>
+  <p>模型会偏爱自己的输出，也会放过自己容易犯的错。换一个不同的模型做复核，再加人工抽检。</p>
+</details>
+<details>
+  <summary>“把优化过程压缩成 CoT，训练数据长什么样？”（同一篇面经第 2 题）</summary>
+  <p>原题是跟着候选人的项目问的，通用答法：每条样本是（输入，reasoning trace，最终答案）。trace 是长过程的压缩版，只保留通向最终答案的关键步骤，去掉走错的分支。要检查两点：trace 和答案一致；只看 trace 能推出答案。</p>
+</details>
+<details>
+  <summary>怎么防止合成评测集泄漏进训练集？</summary>
+  <p>训练和评测用不同的 persona 和 seed。按内容 hash 去重。评测集的 persona 不公开给生成训练数据的流程。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/6790299dba2544d8a25611b268863dd6">牛客：Apple 大模型算法面经</a> · <a href="https://jobs.apple.com/en-us/details/200670397/senior-machine-learning-engineer-evaluation-agentic-search-capabilities">Apple JD 200670397</a> · <a href="https://arxiv.org/abs/2603.01357">ASTRA-bench（Apple）</a>：用 event-driven pipeline 合成 4 个 protagonist 的 2,413 个 scenario</p>
+
+</main>
+</body>
+</html>

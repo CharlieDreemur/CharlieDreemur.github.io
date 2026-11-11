@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 3 课 · 通信 101</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 3 课</p>
+<h1>通信 101：GPU 之间怎么传数据</h1>
+<p class="lead">v1 把单卡能省的都省了，可 8B 模型光 model state 就要 128 GB，一张 80 GB 的卡还是放不下，只能上多卡。卡一多，就多出一笔新开销：卡与卡之间传数据（communication）。这一课先学会这门“语言”：几种标准传法（collective）各做什么、每张卡要发多少、在 NVLink 和 InfiniBand 上各要多久。下一课的 DDP 和 ZeRO 全靠它。</p>
+<p class="meta"><b>面试会这样问</b><q>How much data does each GPU send in a ring all-reduce?</q> · <q>What are all-reduce, reduce-scatter, all-gather and all-to-all, and where is each used?</q> · <q>What is RDMA, and what does GPUDirect RDMA skip?</q></p>
+<p class="meta"><b>考过</b>NVIDIA Research System AI 实习 2024 一面（"先问了一些基础知识，包括分布式训练，RDMA的工作流程和编程，网络的一些知识"，<a href="https://www.1point3acres.com/bbs/thread-1060932-1-1.html">1p3a 1060932</a>）· 阿里淘天（"有4块卡，数据被切成了4份…设一次通信量是x，如果要实现一次All Reduce操作，需要多少通信量？"）· 阿里（"NCCL中Ring AllReduce、Tree AllReduce的工作原理"）· Anthropic Perf/Infra 技术电面（10 个 node 求 distributed mode 和 median，讨论用哪种 collective、tree 还是 ring，<a href="https://www.1point3acres.com/bbs/thread-1188498-1-1.html">1p3a 1188498</a>）</p>
+
+<h2>为什么卡之间非“说话”不可</h2>
+<p>多卡训练只有两种切法，哪种都要传数据：</p>
+<ul>
+  <li><b>切数据</b>（data parallel）：每张卡一份完整模型，各吃不同的样本，算出的 gradient 就不一样。比如 GPU0 算出 (1, 2)，GPU1 算出 (3, 4)，真正该用的是平均值 (2, 3)。不同步的话，两份模型各走各的，几步之后就成了两个不同的模型</li>
+  <li><b>切模型</b>：每张卡只放模型的一部分，要用别的卡算出的中间结果。TP（tensor parallel）把每层的矩阵切开，要把各卡的部分和加起来；PP（pipeline parallel）把不同的层放到不同的卡，要把上一段的 activation 交给下一段；EP（expert parallel）把 MoE 的 expert 分到不同的卡，要把每个 token 送到放着它那个 expert 的卡</li>
+</ul>
+<p>传数据的时候 GPU 常常只能干等。所以和第 0 课一样，办法只有两个：少搬，或者边算边搬（overlap）。</p>
+
+<h2>三种距离：厨房、楼、货车</h2>
+<ul>
+  <li><b>一张卡 = 一个厨房</b>：厨师（Tensor Core）从自家仓库（HBM）取货，3.35 TB/s</li>
+  <li><b>一台机器的 8 张卡 = 一栋楼里的 8 个厨房</b>：之间有传菜电梯 <b>NVLink</b>，每卡每个方向 450 GB/s（两个方向合计 900 GB/s）</li>
+  <li><b>不同机器 = 不同的楼</b>：只能开货车 <b>InfiniBand（IB）</b>。每张卡配一块 400 Gb/s 的网卡，小写 b 是 bit，除以 8 得 50 GB/s，比 NVLink 慢 9 倍</li>
+</ul>
+<p>拿 8B 模型的 bf16 gradient 算一下：8B × 2 bytes = 16 GB。从本卡 HBM 读一遍约 5 ms，经 NVLink 传一遍约 36 ms，经 IB 传一遍要 320 ms。后面每一课都在想办法让重的通信留在楼里。</p>
+
+<h2>五个常用的 collective（外加 broadcast）</h2>
+<p>collective 是“一组卡一起参与”的通信操作，名字全行业通用，面试直接说英文。rank 就是卡的编号。下面都用 2 张卡举例：rank0 有 (1, 2)，rank1 有 (3, 4)。</p>
+<table>
+  <thead><tr><th>collective</th><th>做什么</th><th>例子的结果</th><th>谁在用</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">all-reduce</td><td>对应位置求和，每张卡都拿到完整的和</td><td>两张卡都得到 (4, 6)</td><td>DDP 同步 gradient；TP 合并部分和</td></tr>
+    <tr><td class="nw">reduce-scatter</td><td>也求和，但每张卡只拿和的 1/N</td><td>rank0 得 4，rank1 得 6</td><td>ZeRO、FSDP 同步 gradient；SP（第 5 课）</td></tr>
+    <tr><td class="nw">all-gather</td><td>每张卡出一块，拼成完整的，发给所有卡</td><td>rank0 出 4、rank1 出 6 → 两张卡都得到 (4, 6)</td><td>ZeRO、FSDP 拼回 parameter；SP</td></tr>
+    <tr><td class="nw">all-to-all</td><td>每张卡把第 j 块发给 rank j，只交换、不求和</td><td>rank0 得 (1, 3)，rank1 得 (2, 4)</td><td>MoE 把 token 送到 expert（EP）</td></tr>
+    <tr><td class="nw">send / recv</td><td>一张卡发、一张卡收，点对点</td><td>rank0 把 (1, 2) 发给 rank1</td><td>PP 在相邻 stage 之间传 activation</td></tr>
+    <tr><td class="nw">broadcast</td><td>把一张卡的数据复制给所有卡</td><td>两张卡都是 (1, 2)</td><td>DDP 开始时把 rank0 的初始 weight 发给大家</td></tr>
+  </tbody>
+</table>
+<p>看第 2、3 行：(1, 2)、(3, 4) 先 reduce-scatter，rank0 得 4、rank1 得 6；再 all-gather，两张卡都得到 (4, 6)，和第 1 行一样。这是这一课最重要的等式：<b>all-reduce = reduce-scatter + all-gather</b>。第 4 课的 ZeRO 就是在这两步中间插了一步。</p>
+
+<h2>ring all-reduce：4 张卡一步一步来</h2>
+<p>最笨的做法是全发给 GPU0，加完再发回去。GPU0 要收 3 份、发 3 份，别的卡闲着，瓶颈全压在它一张卡上。ring 让 4 张卡围成一圈，每一步每张卡只给右边的邻居发 1/4 的数据，所有链路同时在用，像传送带。</p>
+<p>每张卡的 gradient 切成 A、B、C、D 四块。为了好算，GPU0 每块都是 1，GPU1 都是 2，GPU2 都是 3，GPU3 都是 4，正确答案是每块 1 + 2 + 3 + 4 = 10。</p>
+<p><b>第一阶段 reduce-scatter，3 步</b>：每一步发一块给右边，收到的加到自己那块上（GPU3 的右边是 GPU0）。表里是每一步发出去的那块和它当时的值：</p>
+<table>
+  <thead><tr><th>步</th><th>GPU0 → GPU1</th><th>GPU1 → GPU2</th><th>GPU2 → GPU3</th><th>GPU3 → GPU0</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td class="nw">A = 1</td><td class="nw">B = 2</td><td class="nw">C = 3</td><td class="nw">D = 4</td></tr>
+    <tr><td>2</td><td class="nw">D = 4 + 1 = 5</td><td class="nw">A = 1 + 2 = 3</td><td class="nw">B = 2 + 3 = 5</td><td class="nw">C = 3 + 4 = 7</td></tr>
+    <tr><td>3</td><td class="nw">C = 7 + 1 = 8</td><td class="nw">D = 5 + 2 = 7</td><td class="nw">A = 3 + 3 = 6</td><td class="nw">B = 5 + 4 = 9</td></tr>
+  </tbody>
+</table>
+<p>第 3 步收到后再加上自己那份：GPU1 的 C = 8 + 2 = 10，GPU2 的 D = 7 + 3 = 10，GPU3 的 A = 6 + 4 = 10，GPU0 的 B = 9 + 1 = 10。每张卡各有一块“加完了”的结果，这正是 reduce-scatter 的输出。</p>
+<p><b>第二阶段 all-gather，3 步</b>：把加完的那块沿着圈再传一圈，这次收到的直接覆盖，不再相加。3 步后每张卡都是 (10, 10, 10, 10)。</p>
+<p><b>每张卡发了多少</b>：6 步，每步 1/4 份，一共 1.5 份。一般地，N 张卡、数据大小 S：</p>
+\[ \text{每卡发送} = 2(N-1)\cdot\frac{S}{N} = \frac{2(N-1)}{N}\,S \]
+<p>N = 4、8、32 时分别是 1.5S、1.75S、1.94S，永远不超过 2S，几乎和卡数无关。单独做一次 reduce-scatter 或 all-gather 是它的一半，\((N-1)S/N\)。</p>
+
+<h2>ring 和 tree</h2>
+<p>ring 发的数据最少，但要走 \(2(N-1)\) 步，每步都有一点固定的启动延迟（latency），1024 张卡要 2046 步。tree 沿二叉树往上加、再往下发，只要约 \(2\log_2 N\) 步，1024 张卡约 20 步。所以数据大用 ring，数据小、卡又多用 tree。</p>
+
+<h2>粗算：8B 的 gradient 同步一次要多久</h2>
+<p>S = 16 GB。时间 = 每卡发送量 ÷ 链路 bandwidth：</p>
+<table>
+  <thead><tr><th>场景</th><th>每卡发送</th><th>链路</th><th>时间</th></tr></thead>
+  <tbody>
+    <tr><td>一台机器 8 张卡</td><td>2 × 7/8 × 16 = 28 GB</td><td>NVLink 450 GB/s</td><td class="nw">≈ 62 ms</td></tr>
+    <tr><td>4 台机器 32 张卡，每一跳都按 IB 算</td><td>2 × 31/32 × 16 = 31 GB</td><td>IB 50 GB/s</td><td class="nw">≈ 620 ms</td></tr>
+    <tr><td>4 台机器 32 张卡，分层做</td><td>机内 14 GB → 跨机 3 GB → 机内 14 GB</td><td>NVLink → IB → NVLink</td><td class="nw">≈ 31 + 60 + 31 ≈ 120 ms</td></tr>
+  </tbody>
+</table>
+<p>第二行只是粗算，偏悲观。真实的通信库会按拓扑分层。先在机内 reduce-scatter，每张卡只剩 1/8，也就是 2 GB。跨机只对这 2 GB 做 all-reduce（2 × 3/4 × 2 = 3 GB），8 张网卡同时跑。最后在机内 all-gather。所以跨机确实更慢，但往往没有 10 倍那么多，准确的数要用 nccl-tests 实测。不管哪种，这笔时间都要想办法藏到 backward 后面，这是第 4 课的内容。</p>
+
+<h2>NCCL：真正干这些活的库</h2>
+<p><b>NCCL</b>（NVIDIA Collective Communications Library，读作 “nickel”）是 NVIDIA 的 GPU 通信库，上面所有 collective 都由它实现。PyTorch 里写 <code>dist.init_process_group(backend="nccl")</code>，DDP、FSDP、DeepSpeed、Megatron 底下都是它。它会自己探测拓扑：机内走 NVLink，跨机走 IB。再按数据大小和卡数选 ring 或 tree。</p>
+
+<h2>RDMA 和 GPUDirect：货车直接开到仓库门口</h2>
+<p>普通网络（TCP）跨机传数据是这样的：GPU 的数据先拷到 CPU 的内存（host memory），再由操作系统 kernel 打包交给网卡；对面收到后，kernel 拆包、拷进 host memory，再拷回 GPU。好比货要先从厨房搬到楼下收发室，登记、重新装箱才能上车，对面再来一遍。两边 CPU 全程在忙，还多了好几次拷贝。</p>
+<ul>
+  <li><b>RDMA</b>（Remote Direct Memory Access）：网卡直接读写内存，不经过 kernel（kernel bypass），没有中间拷贝（zero copy），对面的 CPU 也不用参与</li>
+  <li><b>GPUDirect RDMA</b>：再进一步，网卡直接读写 GPU memory，连 host memory 都不经过。货车直接开到厨房的仓库门口装卸。NCCL 跨机用的就是它加 IB</li>
+  <li><b>InfiniBand 和 RoCE</b>：IB 是专为 RDMA 设计的网络；RoCE 把同一套 RDMA 跑在以太网上</li>
+</ul>
+<p>写 RDMA 程序用的接口叫 <b>verbs</b>。工作流程记四步就够：</p>
+<ol>
+  <li><b>register memory</b>：把要传的 buffer 登记给网卡。这块内存被锁住（pin，不许 OS 挪走），拿到两把钥匙 lkey、rkey；对面要有 rkey 才能读写它</li>
+  <li><b>建连接</b>：创建 queue pair（QP，一个发送队列加一个接收队列）和 completion queue（CQ），和对面交换 QP 编号、内存地址和 rkey</li>
+  <li><b>下单</b>：往 QP 里 post 一个 work request，可以是 send / recv，也可以直接 RDMA write / read 对面的内存</li>
+  <li><b>等完成</b>：网卡做完往 CQ 里放一条完成记录，程序 poll CQ 看到它，就知道传完了</li>
+</ol>
+
+<p class="you"><b>去查一下</b>你在 TikTok 的 32 卡 job 跨了 4 台机器，DeepSpeed 底下就是 NCCL。可以查清楚：集群是 InfiniBand 还是 RoCE？每台机器几张网卡？如果日志开过 <code>NCCL_DEBUG=INFO</code>，启动时会打印走的是 <code>NET/IB</code> 还是 <code>NET/Socket</code>，有没有 <code>GDRDMA</code> 字样（说明用上了 GPUDirect RDMA）。面试官问“跨机走什么网络”时，你能说出具体硬件。</p>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>Once the model or the data is split, GPUs exchange data through collectives. All-reduce sums a tensor and leaves the result on every GPU; DDP uses it for gradients. Reduce-scatter leaves each GPU one summed shard, all-gather reassembles the shards, and together they equal an all-reduce, which ZeRO and FSDP exploit. MoE routes tokens with all-to-all, and pipeline stages use send and recv. Ring all-reduce does a reduce-scatter then an all-gather, N minus 1 steps each, so every GPU sends 2(N−1)/N times the data: bandwidth-optimal, but latency grows with N, so NCCL uses trees for small messages. Across nodes, GPUDirect RDMA lets the NIC read GPU memory directly.</p></div>
+
+<h2>自测</h2>
+<details><summary>4 张卡，数据切成 4 份，每卡 x，ring all-reduce 每卡要发多少？（阿里淘天原题）</summary><p>reduce-scatter 3 步加 all-gather 3 步，每步发 x/4，共 1.5x，也就是 \(2(N-1)/N \cdot x\)。如果全发给一张卡再广播，那张卡要收 3x、再发 3x，成了瓶颈。</p></details>
+<details><summary>RDMA 的工作流程是什么？（NVIDIA Research System AI 实习 2024）</summary><p>register memory（pin 住，拿到 lkey、rkey）→ 建 QP 和 CQ，和对面交换 QP 编号、地址、rkey → post work request（send / recv 或 RDMA write / read）→ poll CQ 等完成。好处是 kernel bypass、zero copy、对面 CPU 不参与。GPUDirect RDMA 让网卡直接读写 GPU memory，不经过 host memory。</p></details>
+<details><summary>ring 每卡的通信量几乎和卡数无关，那卡多了为什么还会慢？</summary><p>两个原因。一是步数 \(2(N-1)\) 随卡数线性增长，每步都有固定 latency，数据小的时候它说了算，所以要换 tree。二是一圈的速度取决于最慢的那条边，跨机的 IB 比 NVLink 慢 9 倍。</p></details>
+<details><summary>MoE 为什么用 all-to-all，不用 all-reduce？</summary><p>每个 token 要去的 expert 不一样，要做的是把不同的数据送到不同的卡，不需要求和。all-reduce 会把所有卡的数据加在一起，意思完全不对。</p></details>
+<details><summary>ZeRO、FSDP 为什么用 reduce-scatter 同步 gradient，不用 all-reduce？</summary><p>每张卡只负责更新 1/N 的 parameter，只需要这 1/N 的 gradient 总和。reduce-scatter 正好给出这一份，发的量只有 all-reduce 的一半。下一课细讲。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="allreduce.html">6.12 all-reduce，ring vs tree</a>（ring 的 NumPy 模拟、busbw、α–β 模型）· <a href="rdma-gpudirect.html">6.13 RDMA 和 GPUDirect</a>（verbs 细节、怎么确认 GDR 生效）· <a href="moe-expert-parallel.html">6.8 MoE 与 Expert Parallel</a>（all-to-all 怎么用）</p>
+
+<div class="next"><b>下一课</b>有了这几个 collective，就能搭出 v2：DDP，32 张卡各放一份完整模型，backward 后 all-reduce gradient。可每张卡还是要放下 128 GB，下一课用 reduce-scatter 和 all-gather 把它切开，这就是 ZeRO / FSDP。</div>
+
+</main>
+</body>
+</html>

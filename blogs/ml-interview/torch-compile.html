@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>torch.compile 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · GPU Kernel</p>
+<h1>torch.compile 做了什么？<br>和 eager mode 有什么区别？</h1>
+<p class="meta"><b>英文问法</b><q>What does torch.compile do under the hood?</q> · <q>What's the difference between eager mode and compiled mode?</q> · <q>When does it recompile, and what can't it fuse?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：百度 Summer Camp 大模型平台策略推理优化实习一面，2026-04-02「eager 模式与 compiler 模式的区别？」（<a href="https://zhuanlan.zhihu.com/p/2023015325172507141">知乎</a>）· 滴滴 AI Infra 算法岗二面，2026-09-30「Torch Compile、Dynamo、Inductor 底层原理是什么？」「CUDA Graph 与 Torch 编译优化的关系？」（<a href="https://www.nowcoder.com/feed/main/detail/8b715101d4e64dec8bb2ea742861fdbf">牛客</a>）· Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> Case 2 的 baseline 是 "AOT-compiled with PyTorch AOTInductor, FP16 quantized"；一个已关闭的旧版 Offline 岗在要求里列了 "Torch Compilation"（<a href="https://hitmarker.net/jobs/unity-staff-senior-machine-learning-engineer-ml-infrastructure-offline-1954884">hitmarker</a>）· 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Eager mode</dt>
+  <dd>PyTorch 默认的跑法。Python 执行到一个 op 就 launch 一个 kernel，结果写回 HBM，再执行下一个 op。<span class="eg">y = relu(x * w + b) 是 3 个 op，也就是 3 个 kernel。</span></dd>
+  <dt>TorchDynamo</dt>
+  <dd>负责捕获 graph。它在 Python 执行函数之前把函数拦下来，把里面的 tensor op 记成一张 FX graph。</dd>
+  <dt>AOTAutograd</dt>
+  <dd>负责 backward。它提前把 backward 的 graph 也 trace 出来，forward 和 backward 就都能交给 compiler 优化。</dd>
+  <dt>TorchInductor</dt>
+  <dd>默认的 backend compiler。它对 graph 里的 op 做 fusion，在 GPU 上生成 Triton kernel（见 <a href="triton-vs-cuda.html">Triton 和 CUDA</a>）。</dd>
+  <dt>Guard</dt>
+  <dd>编译结果能复用的前提条件，像一张写着“只限这种输入”的通行证。每次调用先查 guard。<span class="eg">tensor 的 guard 会查 dtype、device 和 shape，shape 变了就失败。</span></dd>
+</dl>
+
+<h2 id="figs">看图：编译的三步，和之后每次调用</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 268" role="img" aria-label="torch.compile 的流水线：第一次调用时 Python 函数依次经过 TorchDynamo、AOTAutograd、TorchInductor，生成 Triton kernel。之后每次调用先查 guard，通过就复用，失败就 recompile，recompile 到上限后回到 eager">
+  <text class="hd" x="10" y="18">第一次调用，先编译</text>
+  <rect class="box" x="10" y="28" width="90" height="32" rx="4"/>
+  <text x="55" y="49" text-anchor="middle">Python 函数</text>
+  <path class="ln" d="M100,44 H116"/>
+  <polygon class="ah" points="116,40 116,48 124,44"/>
+  <rect class="box" x="124" y="28" width="116" height="32" rx="4"/>
+  <text x="182" y="49" text-anchor="middle">① TorchDynamo</text>
+  <path class="ln" d="M240,44 H256"/>
+  <polygon class="ah" points="256,40 256,48 264,44"/>
+  <rect class="box" x="264" y="28" width="116" height="32" rx="4"/>
+  <text x="322" y="49" text-anchor="middle">② AOTAutograd</text>
+  <path class="ln" d="M380,44 H396"/>
+  <polygon class="ah" points="396,40 396,48 404,44"/>
+  <rect class="f1" x="404" y="28" width="146" height="32" rx="4"/>
+  <text x="477" y="49" text-anchor="middle">③ TorchInductor</text>
+  <text class="m" x="182" y="78" text-anchor="middle">捕获成 FX graph</text>
+  <text class="m" x="182" y="94" text-anchor="middle">同时生成 guard</text>
+  <text class="m" x="322" y="78" text-anchor="middle">forward 和 backward</text>
+  <text class="m" x="322" y="94" text-anchor="middle">的 graph 一起拿到</text>
+  <text class="m" x="477" y="78" text-anchor="middle">op 之间做 fusion</text>
+  <text class="m" x="477" y="94" text-anchor="middle">生成 Triton kernel</text>
+  <text class="m" x="10" y="120">① 遇到不支持的 Python 代码会 graph break，这一段回 Python 跑</text>
+  <text class="hd" x="10" y="150">之后每次调用，先查 guard</text>
+  <rect class="hot" x="10" y="194" width="90" height="32" rx="4"/>
+  <text class="acc" x="55" y="215" text-anchor="middle">查 guard</text>
+  <text class="m" x="10" y="246">比如输入的 shape</text>
+  <path class="ln" d="M100,210 H242 M170,210 V176 H242 M170,210 V244 H242"/>
+  <polygon class="ah" points="242,172 242,180 250,176"/>
+  <polygon class="ah" points="242,206 242,214 250,210"/>
+  <polygon class="ah" points="242,240 242,248 250,244"/>
+  <rect class="f1" x="250" y="162" width="300" height="28" rx="4"/>
+  <text x="400" y="181" text-anchor="middle">通过，复用编译好的 kernel</text>
+  <rect class="box" x="250" y="196" width="300" height="28" rx="4"/>
+  <text x="400" y="215" text-anchor="middle">失败，recompile（三步再走一遍）</text>
+  <rect class="stale" x="250" y="230" width="300" height="28" rx="4"/>
+  <text x="400" y="249" text-anchor="middle">recompile 到上限（默认 8），回到 eager</text>
+</svg>
+<figcaption>图 1：上面一行是第一次调用时的编译，三步依次走。下面是之后的每次调用。guard 通过就复用编译好的 kernel，失败就 recompile。recompile 的次数到上限后，这个函数不再编译，回到 eager。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>In eager mode, Python runs one op at a time: each op launches its own kernel and writes its result back to GPU memory. torch.compile does three things. TorchDynamo captures the Python function into a graph. AOTAutograd traces the backward pass ahead of time, so both directions can be optimized. TorchInductor then fuses ops and generates Triton kernels on GPU, which means fewer launches and less memory traffic. The compiled code is protected by guards, for example on input shapes; when a guard fails, it recompiles. And the compiler can only fuse ops it can see into. The reduce-overhead mode also adds CUDA Graphs.</p></div>
+
+<h2 id="steps">三步：捕获 graph，拿到 backward，生成 kernel</h2>
+<table>
+  <thead><tr><th>步骤</th><th>组件</th><th>做什么</th><th>要记住的一点</th></tr></thead>
+  <tbody>
+    <tr><td>①</td><td class="nw">TorchDynamo</td><td>把 Python 函数捕获成 FX graph，同时生成 guard</td><td>遇到不支持的代码会 graph break。已捕获的部分先编译，这一段回 Python 跑，后面另起一张 graph</td></tr>
+    <tr><td>②</td><td class="nw">AOTAutograd</td><td>提前 trace 出 backward 的 graph</td><td>forward 和 backward 都能被加速，所以训练也能用</td></tr>
+    <tr><td>③</td><td class="nw">TorchInductor</td><td>做 fusion，GPU 上用 Triton 当 building block 生成 kernel</td><td>收益来自 launch 更少、访存更少，计算量不变（见 <a href="kernel-fusion.html">kernel fusion</a>）</td></tr>
+  </tbody>
+</table>
+
+<h2 id="eager">和 eager 的区别，以及 recompile</h2>
+<table>
+  <thead><tr><th></th><th>Eager</th><th>torch.compile</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">执行单位</td><td>一个 op 一个 kernel，Python 逐个调度</td><td>一张 graph 编译一次，fusion 后 kernel 更少</td></tr>
+    <tr><td class="nw">中间结果</td><td>每个 op 的输出都写回 HBM</td><td>融进同一个 kernel 的中间结果不写回 HBM</td></tr>
+    <tr><td class="nw">第一次调用</td><td>直接跑</td><td>要先编译，前几次调用更慢</td></tr>
+    <tr><td class="nw">输入的 shape 变了</td><td>没有影响</td><td>guard 失败，recompile</td></tr>
+  </tbody>
+</table>
+<p>已有的编译结果 guard 全都不通过时，torch.compile 才 recompile。参数 <code>dynamic</code> 默认是 None，它发现 shape 变过，recompile 时会生成一个更 dynamic 的 kernel。recompile 的次数到上限（默认 8）后不再编译，这个函数回到 eager。所以 shape 一直在变的输入，可能编译了很多次，最后还是跑 eager。</p>
+
+<h2 id="boundary">Compiler 的边界：FlashVector 的 embedding bag</h2>
+<p>FlashVector Case 2 的 baseline 是用 AOTInductor 编译的模型。AOTInductor 是 TorchInductor 的提前编译版本。它处理 torch.export 导出的模型，产出 shared library，部署时不需要 Python。</p>
+<p>baseline 已经编译过，embedding bag 仍然占 28.1% 的 GPU time。原因是 PyTorch 把它映射成一个 "opaque ATen dispatcher kernel"，compiler 看不到里面，所以融不了。agent 把 masked-mean pooling 拆成基本的 PyTorch op，compiler 才把它们融成一个 Triton kernel。compiler 只能融它看得见的 op，这是它的边界，也是 agent 能补上的地方。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>eager：一个 op 一个 kernel，Python 逐个调度，中间结果写回 HBM</li>
+  <li>三步：TorchDynamo 捕获 graph，AOTAutograd 拿到 backward，TorchInductor 做 fusion 并生成 Triton kernel</li>
+  <li>收益来自 launch 更少、访存更少，计算量不变</li>
+  <li>guard 失败就 recompile；到上限后回到 eager</li>
+  <li>不支持的 Python 代码会 graph break；看不进去的 op 融不了</li>
+  <li>AOTInductor 提前编译，部署不需要 Python，FlashVector 的 baseline 就是它</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary><code>reduce-overhead</code> 和 <code>max-autotune</code> 各做什么？</summary>
+  <p><code>reduce-overhead</code> 用 CUDA Graph 减少 Python 的 overhead，文档说它适合小 batch（见 <a href="cuda-graph.html">CUDA Graph</a>）。<code>max-autotune</code> 会用 Triton 或 template 实现的 matmul。</p>
+</details>
+<details>
+  <summary>CUDA Graph 和 torch.compile 是什么关系？（滴滴二面问过）</summary>
+  <p>它们省的东西不同。torch.compile 靠 fusion 减少 kernel 的数量和访存，CUDA Graph 减少每次 launch 的 overhead。<code>reduce-overhead</code> 把两者叠在一起用。</p>
+</details>
+<details>
+  <summary>torch.compile 和 AOTInductor 有什么区别？</summary>
+  <p>torch.compile 是 JIT，在 Python 进程里第一次调用时编译。AOTInductor 提前把导出的模型编译成 shared library，文档说它面向没有 Python 的 server 端 inference 部署。</p>
+</details>
+<details>
+  <summary>什么时候 torch.compile 反而更慢？</summary>
+  <p>前几次调用要付编译时间，shape 一直变还会反复 recompile。graph break 把 graph 切碎，文档的说法是 "we lose optimization opportunities"。</p>
+</details>
+<details>
+  <summary>benchmark 时为什么要和 torch.compile 比？</summary>
+  <p>eager 太弱，快过它说明不了什么。CUDA Agent 的 reward 把快过 eager 和快过 torch.compile 分成两档（见 <a href="kernel-rl-reward.html">kernel RL 的 reward</a>）。Meta KernelEvolve 的 60% 也是对着 torch.compile 加厂商库量的。</p>
+</details>
+
+<p class="src"><b>来源</b>PyTorch 文档：<a href="https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler.html">torch.compiler</a>（TorchDynamo、AOT Autograd、TorchInductor 的定义）· <a href="https://docs.pytorch.org/docs/main/generated/torch.compile.html">torch.compile API</a>（<code>mode</code>、<code>dynamic</code>）· <a href="https://github.com/pytorch/pytorch/blob/main/docs/source/user_guide/torch_compiler/torch.compiler_troubleshooting.md">torch.compile troubleshooting</a>（graph break、guard、recompile 上限）· <a href="https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_aot_inductor.html">AOTInductor</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> §5.2 · ml-八股 08 第 12 题 · 面经出处见 面试题与 JD 1.4、3.4 节和 NVIDIA 题库笔记 1.9 节</p>
+
+</main>
+</body>
+</html>

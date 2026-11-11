@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 8 课 · 配置与排查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 8 课</p>
+<h1>v7：拼成完整配置、跑快、出问题怎么查</h1>
+<p class="lead">到 v6，五种切法都有了：TP、PP、CP、EP、DP。可面试官给你一个模型和一堆卡，问的是每种开多大。配对了也可能只跑到 20% 的 MFU，或者跑到一半 hang 住。这一课讲三件事：怎么拼配置、怎么跑快、出了问题怎么查。</p>
+<p class="meta"><b>面试会这样问</b><q>Given a model and a cluster, how do you choose TP, PP and DP sizes?</q> · <q>Design a distributed training system for a trillion-parameter language model.</q> · <q>If GPU utilization is low during training, how would you debug it?</q></p>
+<p class="meta"><b>考过</b>NVIDIA Senior SWE, LLM Applications 2025-09 等（"Design a distributed training system for a trillion-parameter language model."，Aced 用户提交，NVIDIA 问过 3 次）· NVIDIA SWE 2025-12（"If GPU utilization is low during training, how would you debug and benchmark performance?"，Aced 用户提交）· NVIDIA High Performance LLM Training Engineer（Glassdoor RVW105730158）· NVIDIA DL Engineer 慕尼黑 2026（"Can you explain the details of how distributed training works"，Glassdoor RVW104512401）· NVIDIA DL Engineer HM 轮（"parallel training methods"，Glassdoor RVW98332074）· 小红书 NVIDIA 面经 VO 的 ML System Design（DP、PP、checkpoint、fault tolerance，岗位未写，存档）· 快手（"hang都有可能因为什么，分别要如何排查"；"DP、TP-SP的计算通信重叠原理"）· 网易（"FP8格式差异（E4M3高精度窄范围 vs E5M2宽动态范围）"）· Tower（"Debug Oscillating GPU Utilization During Training"）· Meta（"Design a Scalable MoE Pretraining Pipeline"）</p>
+
+<h2>配方：先算 memory，再按通信从重到轻往外套</h2>
+<ol>
+  <li><b>算 memory</b>：16Ψ + activation，除以 80 GB，得出一份模型至少要几张卡</li>
+  <li><b>TP 放机内，≤ 8</b>：每层 4 次同步 all-reduce，必须走 NVLink</li>
+  <li><b>还放不下，跨机加 PP</b>：取放得下的最小 p，micro-batch 数 m ≥ 4p，用 interleaved 1F1B</li>
+  <li><b>按需加</b>：长序列加 CP，MoE 加 EP</li>
+  <li><b>剩下的卡全给 DP</b>，并开 distributed optimizer（≈ ZeRO-1）</li>
+</ol>
+<p>为什么是这个顺序：通信越重、越频繁，就放在越快的链路上。TP 像同桌随时讨论，走楼内的传菜电梯（NVLink）。PP 只在段边界传一次 activation，像隔壁传纸条。DP 每个 step 才同步一次 gradient，还能藏在 backward 后面，像每周开一次全员会，开货车（IB）也来得及。</p>
+<p><b>总卡数 = TP × PP × CP × DP</b>。EP 不额外乘。在 MoE 层里，原本沿 DP（× CP）方向存着相同 expert 的那些卡，改成各存不同的 expert。例如 DP = 8、EP = 8：attention 照样复制 8 份，8 个 expert 则每卡一个（Megatron 叫 MoE Parallel Folding）。</p>
+
+<h2>三个例子</h2>
+<table>
+  <thead><tr><th>配置</th><th>GPU</th><th>TP</th><th>PP</th><th>CP</th><th>DP</th><th>每卡 model state</th><th>MFU</th></tr></thead>
+  <tbody>
+    <tr><td>70B，seq 8K（Megatron 指南）</td><td>64</td><td>4</td><td>4</td><td>2</td><td>2</td><td>70 GB → 约 39 GB</td><td>–</td></tr>
+    <tr><td>Llama 3 405B，seq 8K</td><td>16384</td><td>8</td><td>16</td><td>1</td><td>128</td><td>50.6 GB，再沿 DP 切</td><td>41%</td></tr>
+    <tr><td>Llama 3 405B，seq 128K</td><td>16384</td><td>8</td><td>16</td><td>16</td><td>8</td><td>同上</td><td>38%</td></tr>
+    <tr><td>1T dense（设计题，下一节）</td><td>8192</td><td>8</td><td>16</td><td>1</td><td>64</td><td>125 GB → 约 48 GB</td><td>目标 40%</td></tr>
+  </tbody>
+</table>
+<p><b>例 1：70B 放 64 卡</b>（h = 8192、80 层、seq 8192、micro-batch 1、global batch 512）</p>
+<ul>
+  <li>4 × 4 × 2 × 2 = 64。TP 4 × CP 2 = 8，正好占满一台机器（Megatron 默认按 tp-cp-ep-dp-pp 从内到外排卡），PP 和 DP 跨机</li>
+  <li>model state：70B × 16 = 1120 GB。TP × PP = 16 张卡放一份 weight，每卡 70 GB，太满。CP 的两张卡持有同一份 weight，所以 distributed optimizer 能沿 DP × CP = 4 张卡切。按 Megatron 常用的 bf16 param + fp32 gradient（第 4 课的 \(6\Psi + 12\Psi/N\)）：4.4B × (6 + 12/4) ≈ 39 GB</li>
+  <li>activation（粗估，FlashAttention + SP）：每层 34·s·h ÷（TP 4 × CP 2）≈ 285 MB；1F1B 第一个 stage 存满 80 层的量，约 23 GB。不开 CP 就是 46 GB，加上 39 GB 已经超过 80 GB，所以 8K 也值得开 CP 2</li>
+  <li>bubble：512 条 ÷ DP 2 = 每条 pipeline 256 个 micro-batch，远大于 4p = 16，bubble 3/256 ≈ 1.2%</li>
+</ul>
+<p><b>例 2：Llama 3 405B</b></p>
+<ul>
+  <li>405B × 16 = 6.48 TB；TP 8 × PP 16 = 128 张卡一份，每卡 50.6 GB，再用 FSDP 沿 DP 切 optimizer state（按 ZeRO-1 算约 13 GB）</li>
+  <li>seq 从 8K 涨到 128K：卡数不变，CP 1 → 16，每卡又是 8K token；DP 128 → 8。MFU 从 41% 降到 38%</li>
+  <li>从内到外排成 [TP, CP, PP, DP]，DP 在最外层</li>
+</ul>
+
+<h2>Trillion-parameter 设计题怎么答</h2>
+<p>按配方走，每一步给数字。先问清楚：dense 还是 MoE？多少卡、多少 token、seq 多长？下面设 dense、8192 张 H100、2T tokens、seq 4K。</p>
+<ol>
+  <li><b>memory</b>：1T × 16 bytes = 16 TB，光放 model state 就要 16 TB ÷ 80 GB = 200 张卡</li>
+  <li><b>切法</b>：TP 8 → PP 16 → 128 张卡一份，每卡 125 GB 还是放不下 → 剩下 64 份 DP，开 distributed optimizer：7.8B × (6 + 12/64) ≈ 48 GB，余下约 32 GB 给 activation（SP + recompute）</li>
+  <li><b>bubble</b>：global batch 4096 条（16M tokens）→ 每条 pipeline m = 64 = 4p，bubble 15/64 ≈ 23%；interleaved v = 4 → 约 6%</li>
+  <li><b>时长</b>：6ND = 1.2e25 FLOPs ÷（8192 × 989T × 40%）≈ 43 天，每秒要吃约 54 万 token</li>
+  <li><b>checkpoint</b>：要存 fp32 master weight + m + v，12 bytes × 1T = 12 TB；8192 卡各写自己那片，每卡约 1.5 GB。异步写（先拷到 CPU memory，后台落盘），还要能换 TP/PP 重新切分加载（Megatron 的 <code>dist_checkpointing</code>）</li>
+  <li><b>容错</b>：Llama 3 在 16K 卡上 54 天中断 466 次，平均约 2.8 小时一次。要自动发现坏卡、换节点、从最近的 checkpoint 重启；checkpoint 间隔要远小于故障间隔</li>
+  <li><b>data pipeline</b>：每秒 54 万 token，不能让 GPU 等：提前 tokenize、分片、prefetch；data loader 读到哪也存进 checkpoint，重启后不重复、不跳过</li>
+  <li><b>监控</b>：MFU、loss spike、gradient norm、每个 rank 的 step time（找 straggler）、NCCL timeout</li>
+</ol>
+
+<h2>跑快：overlap、FP8、kernel fusion</h2>
+<p><b>Overlap</b>：通信放在单独的 CUDA stream 上，和不依赖它的计算同时跑，step time 只多出没被盖住的那部分。</p>
+<table>
+  <thead><tr><th>哪一维</th><th>要藏的通信</th><th>和什么 overlap</th><th>Megatron 开关</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">DP（DDP）</td><td>gradient all-reduce</td><td>gradient 装桶（PyTorch 默认 25 MiB），一桶满就发，同时算剩下的 backward</td><td><code>--overlap-grad-reduce</code></td></tr>
+    <tr><td class="nw">FSDP / ZeRO-3</td><td>parameter all-gather</td><td>prefetch：提前取下一层的参数，同时算当前层</td><td><code>--overlap-param-gather</code></td></tr>
+    <tr><td class="nw">TP + SP</td><td>all-gather / reduce-scatter</td><td>把 GEMM 切块，和同一个 GEMM 的其他块流水</td><td><code>--tp-comm-overlap</code></td></tr>
+    <tr><td class="nw">PP</td><td>send / recv</td><td>1F1B 稳态里另一个 micro-batch 的计算</td><td><code>overlap_p2p_comm</code>（需 interleaved）</td></tr>
+  </tbody>
+</table>
+<p>例：1B 参数，bf16 gradient 2 GB，DP = 8 跨机：ring all-reduce 2 × 7/8 × 2 GB ÷ 50 GB/s = 70 ms。forward 100 ms、backward 200 ms，不 overlap 是 370 ms；分桶后只露出最后一桶（约 0.9 ms），约 301 ms，快 1.23 倍。</p>
+<p><b>FP8</b>：H100 的 FP8 Tensor Core 峰值约 1979 TFLOPS，是 BF16 的 2 倍。</p>
+<ul>
+  <li><b>E4M3</b>（4 位 exponent、3 位 mantissa，最大 ±448）精度高、range 窄，给 forward 的 weight 和 activation；<b>E5M2</b>（最大 ±57344）range 宽，给 backward 的 gradient</li>
+  <li>range 太窄，所以每个 tensor 配一个 scale，把它的最大绝对值（amax）对到格式的最大值；delayed scaling 用前几步的 amax 来定</li>
+  <li><b>Transformer Engine</b>（TE）把这些包进 FP8 的 Linear 和 attention；Megatron 用 <code>--fp8-format hybrid</code>，即 forward E4M3、backward E5M2</li>
+  <li>只有 GEMM 换成 FP8，master weight 仍是 FP32，所以端到端提速不到 2 倍</li>
+</ul>
+<p><b>Kernel fusion</b>：第 0 课说过，elementwise 操作是 memory-bound 的。bias → GeLU → dropout 分 3 个 kernel 要来回读写 HBM 3 次，融成 1 个快约 3 倍。Megatron 默认融了 bias + GeLU、bias + dropout + add、masked softmax、RoPE。MoE 的 grouped GEMM 也是同一个思路。</p>
+<p><b>目标 MFU 约 40%</b>：Llama 3 405B 是 38–43%。MFU = tokens/s × 6Ψ ÷（卡数 × 989T）。</p>
+<p class="you"><b>去查一下</b>你 TikTok 任务的 tokens/s，代进去算 MFU。8B 在 32 张 H100 上，40% MFU 对应 32 × 989T × 0.4 ÷（6 × 8B）≈ 26 万 tokens/s（只算 LLM 部分，粗估）。按本课的配方，8B、32 卡用 ZeRO 就放得下，所以 TP = PP = CP = 1，卡全给 DP，也就是课表里 v3 的位置。另外准备一个你遇到过的慢、OOM 或 hang 的例子，第 10 课要用。</p>
+
+<h2>慢了怎么查</h2>
+<ol>
+  <li><b>先量化</b>：step time、tokens/s、MFU。nvidia-smi 的 utilization 只表示“有 kernel 在跑”，一个很小的 kernel 一直跑也显示 100%</li>
+  <li><b>再 profile</b>：用 torch profiler 或 Nsight Systems 录几步 trace，看 GPU timeline 上的空白，以及空白时 CPU 在干什么</li>
+  <li><b>把时间分成四类</b>，对症下药（下表）</li>
+  <li><b>控制变量</b>：单卡 → 单机 → 多机看 scaling；换 synthetic data 排除 data loader；nccl-tests 测网络 bandwidth</li>
+</ol>
+<table>
+  <thead><tr><th>类别</th><th>trace 上看到</th><th>怎么修</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">data loading</td><td>每个 step 开头 GPU 空等</td><td>加 <code>num_workers</code>、开 <code>pin_memory</code>、预处理离线做</td></tr>
+    <tr><td class="nw">comm</td><td>NCCL kernel 很长，旁边没有计算</td><td>开 overlap；TP 留在机内；nccl-tests 查网络</td></tr>
+    <tr><td class="nw">compute</td><td>kernel 之间密集的小空隙（launch-bound）；<code>.item()</code> 后的空隙；kernel 本身 memory-bound</td><td>CUDA Graphs、kernel fusion、加大 micro-batch、别每步同步</td></tr>
+    <tr><td class="nw">straggler</td><td>某个 rank 总是最后进 collective</td><td>比较各 rank 的 step time，换节点、平衡数据长度</td></tr>
+  </tbody>
+</table>
+<p>例：一步 400 ms = 计算 240 + 等数据 120 + 露出的 all-reduce 40。nvidia-smi 显示 70%（NCCL kernel 也算“在跑”），真正在计算的只有 60%。<code>num_workers</code> 从 0 调到 8、开 <code>pin_memory</code> 后等数据消失，一步变成 280 ms，快 1.43 倍。</p>
+
+<h2>hang 了怎么查</h2>
+<p>collective 要求所有 rank 都调用，而且顺序和 shape 一致。像开会必须全员到齐：有一个人走错会议室，其余人就无限期干等。所以排查就是找出“谁没进同一个 collective”。</p>
+<ul>
+  <li><b>三类常见原因</b>：collective 的顺序或次数不一致（rank 相关的 <code>if</code> 里藏了 collective）；PP 的 send 和 recv 没配对；某个 rank 已经 crash 或 OOM 退出，其他 rank 还在等它</li>
+  <li><b>工具</b>：<code>NCCL_DEBUG=INFO</code> 看初始化和网络；设 timeout（NCCL 默认 10 分钟），把无限等待变成报错；flight recorder 在超时时让每个 rank dump 最近的 collective，对比就能找出缺席的 rank；<code>py-spy dump</code> 看每个 rank 的 Python 栈停在哪一行</li>
+</ul>
+<pre><code>export NCCL_DEBUG=INFO
+export TORCH_NCCL_TRACE_BUFFER_SIZE=2000   # 打开 flight recorder
+export TORCH_NCCL_DUMP_ON_TIMEOUT=true     # 超时时 dump
+py-spy dump --pid &lt;PID&gt;                    # 每个 rank 各跑一次</code></pre>
+<p>例：8 卡在 step 1200 卡住。py-spy 显示 rank 1–7 停在 DDP 的 all-reduce，rank 0 停在 <code>save_checkpoint()</code> 里的 <code>all_gather</code>，因为它写在 <code>if rank == 0:</code> 里。修法：让所有 rank 都调用它。</p>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>I size memory first: 16 bytes per parameter plus activations tells me how many GPUs one replica needs. Then I place parallelism by communication cost: tensor parallel inside a node, up to 8; pipeline parallel across nodes with at least four micro-batches per stage; context parallel for long sequences and expert parallel for MoE; the rest goes to data parallel with a distributed optimizer. Then I overlap communication with compute, use FP8 through Transformer Engine, and aim for about 40% MFU. If it's slow, I profile and split time into data loading, exposed communication, compute and stragglers. If it hangs, I find the rank that isn't in the same collective.</p></div>
+
+<h2>自测</h2>
+<details><summary>Design a distributed training system for a trillion-parameter model.（NVIDIA 问过 3 次）</summary><p>先问清 dense 还是 MoE、卡数、token 数、seq 长度。1T × 16 = 16 TB，光 model state 就要 200 张卡。TP 8 在机内 → PP 16 跨机 → DP 64 + distributed optimizer，每卡约 48 GB；8192 张 H100、40% MFU、2T tokens 约 43 天。再讲异步、可重新切分的 distributed checkpoint，自动换坏卡重启（Llama 3 平均 2.8 小时中断一次），每秒约 54 万 token 的 data pipeline，以及监控 MFU、loss spike、straggler。</p></details>
+<details><summary>If GPU utilization is low during training, how would you debug and benchmark performance?（NVIDIA SWE 2025-12 原题）</summary><p>先量化 step time、tokens/s、MFU，nvidia-smi 的 util 不可靠。用 torch profiler 或 Nsight Systems 录 trace，找 GPU 空白并归类：data loading、露出的通信、compute（launch-bound、implicit sync、memory-bound kernel）、straggler。再控制变量：单卡 → 单机 → 多机、synthetic data、nccl-tests。每修一处重新测 MFU。</p></details>
+<details><summary>训练每次都在 step N hang 住，怎么查？</summary><p>每次同一步，多半是代码或数据：第 N 步有周期性操作（checkpoint、eval、logging），里面的 collective 只有部分 rank 调用；或者第 N 个 batch 特别长，某个 rank OOM 退出，或走了不同分支、collective 次数不同。用 py-spy dump 每个 rank，用 flight recorder 对比各 rank 最后一次 collective，找出缺席的 rank 和它停在的那一行。不固定在某一步的 hang 更可能是硬件或网络，看 NCCL_DEBUG 日志、查坏卡。</p></details>
+<details><summary>为什么 DP 放在最外层？</summary><p>DP 通信最轻。每个 step 才同步一次 gradient（FSDP 的 all-gather 也能提前 prefetch），而且能异步藏在计算后面，经得起最慢、跳数最多的网络。TP 每层同步，最重，放最里面走 NVLink。Llama 3 的顺序是 [TP, CP, PP, DP]。Megatron 默认的 tp-cp-ep-dp-pp 把 PP 放最外，因为 PP 只在段边界传 activation，同样很轻。要点是重的在内、轻的在外。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="parallelism-config.html">6.9 怎么选 parallelism 配置</a>（175B 手算、真实配置表）· <a href="overlap.html">6.17 overlap</a>（exposed 通信的公式、什么时候不起作用）· <a href="debug-slow-hang.html">6.18 训练慢、hang 怎么查</a> · <a href="mixed-precision.html">6.15 mixed precision</a>（FP8 部分）· <a href="flops-mfu.html">6.11 FLOPs、6ND、MFU</a></p>
+
+<div class="next"><b>下一课</b>v7 已经是一套完整的训练系统。下一课把每一块对到 <code>megatron/core/</code> 里的具体文件，再接上你在 verl 里的 RL 经历：每轮 rollout 前，训练端的 weight 怎么按推理端的切法同步给 vLLM。</div>
+
+</main>
+</body>
+</html>

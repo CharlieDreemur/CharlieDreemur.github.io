@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 的改动进生产 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Agent 的改动怎么进生产？<br>PR、review、canary 各管什么？</h1>
+<p class="meta"><b>英文问法</b><q>How does a change made by the agent get into production?</q> · <q>Would you let the agent push to production by itself?</q> · <q>What is a shadow-traffic canary, and what happens when it fails?</q></p>
+<p class="meta"><b>考过</b><strong>Unity Vector 自己的论文</strong> <a href="https://arxiv.org/html/2609.17391">FlashVector</a>（§4.2 Triggering、§5.1、§5.4）· 推断会问，没有面经原题 · 中文样本里 CI、PR、灰度（canary）和 rollback 这一类只有 10 帖，多为社招，比如快手全栈二面（2026-09）「做灰度时，agent怎么知道什么是异常？」（<a href="https://www.nowcoder.com/feed/main/detail/3526c4c9bf1c4b80acdfa9ee7bacd548">牛客</a>）和蚂蚁 agent开发二面（2026-09）「agent自动回滚触发条件」（<a href="https://www.nowcoder.com/feed/main/detail/beae35cec366487a918abee5421216f2">牛客</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Pull request（PR）</dt>
+  <dd>agent 不直接改生产，它把改动打包成一个 PR 交出来，等人 review。像实习生的代码要先过 code review。</dd>
+  <dt>Shadow traffic</dt>
+  <dd>把真实请求复制一份发给新版本，新版本的结果不返回给用户。</dd>
+  <dt>Canary</dt>
+  <dd>新版本先在小范围里试跑，指标稳住了才采纳。FlashVector 的 canary 喂的是 shadow traffic。</dd>
+  <dt>写回</dt>
+  <dd>采纳和丢弃两种结果都记进 knowledge base，下一次 run 从这些结论开始（见 <a href="agent-knowledge-base.html">knowledge base 和 memory</a>）。</dd>
+  <dt>Trigger</dt>
+  <dd>启动一次 run 的条件。FlashVector 的 run 是自动触发的。</dd>
+</dl>
+
+<h2 id="figs">看图：从触发到写回</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 330" role="img" aria-label="FlashVector 的进生产路径：自动触发，agent 开 PR，人 review，shadow-traffic canary，采纳或丢弃，两种结果都写回 knowledge base">
+  <defs>
+    <marker id="pr-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+    <marker id="pr-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker>
+  </defs>
+  <text class="m" x="10" y="18">触发，不用人启动</text>
+  <rect class="box" x="10" y="28" width="112" height="42" rx="4"/>
+  <text x="66" y="46" text-anchor="middle">新 release</text>
+  <text x="66" y="62" text-anchor="middle">进 fleet</text>
+  <rect class="box" x="10" y="80" width="112" height="42" rx="4"/>
+  <text x="66" y="98" text-anchor="middle">在线模型</text>
+  <text x="66" y="114" text-anchor="middle">太久没分析</text>
+  <path class="ln" d="M122,101 H136 V49"/>
+  <path class="ln" d="M122,49 H136 V36 H146" marker-end="url(#pr-ah)"/>
+  <rect class="box" x="150" y="20" width="180" height="32" rx="4"/>
+  <text x="240" y="41" text-anchor="middle">agent run：四步循环</text>
+  <path class="ln" d="M240,52 V68" marker-end="url(#pr-ah)"/>
+  <rect class="f1" x="150" y="72" width="180" height="32" rx="4"/>
+  <text x="240" y="93" text-anchor="middle">agent 开 PR</text>
+  <text class="m" x="340" y="86">kernel 改动是否走 PR：论文没写</text>
+  <text class="m" x="340" y="102">PR 里附什么证据：论文没写</text>
+  <path class="ln" d="M240,104 V120" marker-end="url(#pr-ah)"/>
+  <rect class="f2" x="150" y="124" width="180" height="32" rx="4"/>
+  <text x="240" y="145" text-anchor="middle">人 review</text>
+  <text class="m" x="340" y="145">谁 review、先后顺序：论文没写</text>
+  <path class="ln" d="M240,156 V172" marker-end="url(#pr-ah)"/>
+  <rect class="hot" x="150" y="176" width="180" height="32" rx="4"/>
+  <text class="acc" x="240" y="197" text-anchor="middle">shadow-traffic canary</text>
+  <text class="m" x="340" y="197">跑多久、流量比例、阈值：论文没写</text>
+  <path class="ln" d="M192,208 V232" marker-end="url(#pr-ah)"/>
+  <path class="ln" d="M288,208 V232" marker-end="url(#pr-ah)"/>
+  <text class="m" x="142" y="226" text-anchor="end">canary 稳住</text>
+  <text class="m" x="338" y="226">canary 没稳住</text>
+  <rect class="box" x="150" y="236" width="84" height="30" rx="4"/>
+  <text x="192" y="256" text-anchor="middle">采纳</text>
+  <rect class="box" x="246" y="236" width="84" height="30" rx="4"/>
+  <text x="288" y="256" text-anchor="middle">丢弃</text>
+  <path class="ln" d="M192,266 V280" marker-end="url(#pr-ah)"/>
+  <path class="ln" d="M288,266 V280" marker-end="url(#pr-ah)"/>
+  <rect class="box" x="150" y="284" width="180" height="40" rx="4"/>
+  <text x="240" y="301" text-anchor="middle">knowledge base</text>
+  <text class="m" x="240" y="317" text-anchor="middle">两种结果都写回</text>
+  <path class="ln2" d="M330,304 H548 V36 H334" marker-end="url(#pr-ah2)"/>
+  <text class="c2" x="441" y="28" text-anchor="middle">下次 run 从这些结论开始</text>
+</svg>
+<figcaption>图 1：左边是两个触发条件，中间是 FlashVector 的路径。论文里完整写出这条路径的是 config 改动。蓝线表示写回的结论是下一次 run 的起点。灰字是论文没写的地方。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>The agent never pushes to production by itself. In FlashVector it opens a pull request, and a person reviews it. Then the change goes through a shadow-traffic canary: real requests are copied to the new version, and its responses are not returned to users. If the canary holds, the change is adopted; if not, it's discarded. Both outcomes are written back to the knowledge base, so the next run doesn't retry a rejected idea. Runs start automatically when a new release enters the fleet. The paper doesn't say how long the canary runs, what threshold decides it, or who reviews, so I'd ask.</p></div>
+
+<h2 id="path">FlashVector 的路径：论文写了什么，没写什么</h2>
+<table>
+  <thead><tr><th>环节</th><th>论文写了</th><th>论文没写</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">触发</td><td>新 release 进 fleet，或在线模型太久没被分析；不用人启动（§4.2 Triggering）</td><td>多久算太久</td></tr>
+    <tr><td class="nw">开 PR</td><td>config 改动由 agent 开成 PR（§5.4.2）；几个 repo 合成了 mono repo，方便 agent 改（§4.2）</td><td>GPU kernel 和 graph 的改动是否也走 PR；PR 里附什么证据</td></tr>
+    <tr><td class="nw">人 review</td><td>交付的是 "a reviewed pull request"（§5.4.3）；Case 1 是 verify 确认提速之后交给人 review（§5.1）</td><td>谁 review，拒绝率多少，review 在 canary 之前还是之后</td></tr>
+    <tr><td class="nw">Canary</td><td>config 改动走 shadow-traffic canary，固定 latency SLO；canary 稳住就采纳，否则丢弃（§4.2、§5.4.2）</td><td>跑多久、流量比例、判定阈值、怎么 rollback</td></tr>
+    <tr><td class="nw">写回</td><td>两种结果都记进 knowledge base（§5.4.2）</td><td>谁 review 写回的内容</td></tr>
+  </tbody>
+</table>
+<p>shadow-traffic canary 在论文里是 verify 四档中 config 改动的那一档，前三档怎么验见 <a href="kernel-correctness.html">kernel 正确性</a>。图里把 review 画在 canary 前面是题库的排法，论文没写这两步谁先谁后。</p>
+
+<h2 id="peers">别家写了什么</h2>
+<table>
+  <thead><tr><th>系统</th><th>进生产的环节</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">FlashVector</td><td>PR、人 review、shadow-traffic canary，三步都写了</td></tr>
+    <tr><td class="nw">AlphaEvolve</td><td>调度 heuristic 先在 simulator 上用没见过的数据验证，再全量上线；上线后的测量确认了 simulator 的结果</td></tr>
+    <tr><td class="nw">KDA-Pilot</td><td>以带证据包的 PR 进 SGLang 上游，人 review；到 2026-06-27 已合入三个</td></tr>
+    <tr><td class="nw">KernelEvolve、Baseten</td><td>只说 kernel 进了生产，没写 review 和 canary</td></tr>
+  </tbody>
+</table>
+<p>调研笔记对照了 11 个同类系统，写了进生产环节的只有前三家。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>agent 不直接改生产，它开 PR，由人 review</li>
+  <li>shadow traffic 是把真实请求复制一份发给新版本，新版本的结果不返回给用户</li>
+  <li>canary 稳住就采纳，否则丢弃</li>
+  <li>采纳和丢弃都写回 knowledge base</li>
+  <li>触发是自动的，条件是新 release 进 fleet，或模型太久没分析</li>
+  <li>说得出论文没写的：canary 跑多久、流量比例、阈值、谁 review</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么不让 agent 直接合并？</summary>
+  <p>论文自己写了 LLM 会把瓶颈归因错，本层通过的改动和其他层合在一起也可能回退（见 <a href="local-vs-e2e.html">local 和 end-to-end</a>）。人 review 和 canary 是最后两道检查。</p>
+</details>
+<details>
+  <summary>做灰度时，agent 怎么知道什么是异常？</summary>
+  <p>判定不交给 agent。阈值事先写在规则里，由确定性代码判断 canary 稳没稳住。FlashVector 只写了固定的 latency SLO，没写阈值。这一句是快手面经的原题。</p>
+</details>
+<details>
+  <summary>Canary 没稳住，之后怎么办？</summary>
+  <p>丢弃这个改动，把它记进 knowledge base，下次不再重试同一个方案。论文没写怎么 rollback。</p>
+</details>
+<details>
+  <summary>为什么要自动触发？</summary>
+  <p>模型会重训，流量会变，infra 会升级，上次调好的 config 会过期。论文的做法是不等人来启动。</p>
+</details>
+<details>
+  <summary>为什么 config 改动用 shadow traffic 就够了？</summary>
+  <p>config 改动按设计不改变预测结果，只影响 latency 和 throughput。这两样用复制的请求就能量出来，新版本出错也不会伤到用户。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a>（arXiv 2609.17391，§4.2、§5.1、§5.4）· <a href="https://arxiv.org/html/2506.13131">AlphaEvolve</a> · <a href="https://www.lmsys.org/blog/2026-07-02-agent-assisted-sglang-development">LMSYS blog：KDA-Pilot</a> · <a href="https://www.nowcoder.com/feed/main/detail/3526c4c9bf1c4b80acdfa9ee7bacd548">牛客：快手全栈二面</a> · <a href="https://www.nowcoder.com/feed/main/detail/beae35cec366487a918abee5421216f2">牛客：蚂蚁 agent开发二面</a> · 同类系统对照表 · ml-八股 08 第 30 题</p>
+
+</main>
+</body>
+</html>

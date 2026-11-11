@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>训练慢与 hang 排查速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>训练慢、GPU utilization 低怎么查？<br>训练 hang 住怎么查？</h1>
+<p class="meta"><b>英文问法</b><q>If GPU utilization is low during training, how would you debug and benchmark performance?</q> · <q>Your multi-node job hangs. How do you find out why?</q></p>
+<p class="meta"><b>考过</b>面经：NVIDIA SWE 2025-12（"If GPU utilization is low during training, how would you debug and benchmark performance?"，Aced 用户提交）；国内：快手（"hang都有可能因为什么，分别要如何排查"）；其他公司：Tower（"Debug Oscillating GPU Utilization During Training"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>GPU utilization（nvidia-smi）</dt>
+  <dd>采样周期里"有任意 kernel 在跑"的时间比例，不是 SM 用满了多少。一个很小的 kernel 一直跑也算 100%。<span class="eg">例：一步 400 ms 里 kernel 跑了 280 ms → 显示 70%。</span></dd>
+  <dt>Profiler trace 与 GPU gap</dt>
+  <dd>把 CPU 和 GPU 每个 kernel 画在时间线上。GPU 上的空白就是浪费，空白前 CPU 在干什么，瓶颈就在哪。像看监控录像找"工人在等什么"。</dd>
+  <dt>Implicit sync</dt>
+  <dd>CPU 必须等 GPU 算完才能往下走：<code>.item()</code>、<code>print(cuda_tensor)</code>、<code>.cpu()</code>、依赖 GPU 结果的 <code>if</code>。CPU 没法提前排队，GPU 就出现空白。</dd>
+  <dt>Straggler</dt>
+  <dd>某一张卡比别人慢（数据更长、降频、网卡有问题），所有卡在下一次 collective 都得等它。</dd>
+  <dt>Collective hang</dt>
+  <dd>collective 要求所有 rank 都调用、顺序和 shape 一致。像开会必须全员到齐，有一个人走错会议室，其余人就无限期干等。</dd>
+</dl>
+
+<h2 id="figs">看图：排查流程，两个例子长什么样</h2>
+<figure class="fig">
+<svg viewBox="0 0 540 444" role="img" aria-label="排查流程：训练慢时先量化 MFU，再 profile 看 GPU 空白，按空白类型归到 DataLoader、launch-bound、implicit sync、comm exposed、straggler 再修；hang 时用 py-spy 和 flight recorder 找出没进同一个 collective 的 rank"><defs><marker id="dbg-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs><rect x="0" y="4" width="262" height="30" rx="6" class="hot"/><text x="131" y="24" text-anchor="middle" class="acc">训练慢、GPU util 低</text><path d="M131.0,35 V49" class="ln" marker-end="url(#dbg-ah)"/><rect x="0" y="52" width="262" height="44" rx="6" class="box"/><text x="131" y="70" text-anchor="middle">① 量化：step time、tokens/s、MFU</text><text x="131" y="87" text-anchor="middle" class="m">nvidia-smi util 只说明有 kernel 在跑</text><path d="M131.0,97 V111" class="ln" marker-end="url(#dbg-ah)"/><rect x="0" y="114" width="262" height="44" rx="6" class="box"/><text x="131" y="132" text-anchor="middle">② profile 几步，看 timeline</text><text x="131" y="149" text-anchor="middle" class="m">torch.profiler 或 Nsight Systems</text><path d="M131.0,159 V173" class="ln" marker-end="url(#dbg-ah)"/><rect x="0" y="176" width="262" height="30" rx="6" class="hot"/><text x="131" y="196" text-anchor="middle" class="acc">③ GPU 上的空白在哪？</text><rect x="22" y="216" width="240" height="24" rx="4" class="box"/><text x="142" y="233" text-anchor="middle">每步开头 GPU 空等 <tspan class="acc">→ DataLoader</tspan></text><path d="M10,228 H19" class="ln" marker-end="url(#dbg-ah)"/><rect x="22" y="246" width="240" height="24" rx="4" class="box"/><text x="142" y="263" text-anchor="middle">密集小空隙 <tspan class="acc">→ launch-bound</tspan></text><path d="M10,258 H19" class="ln" marker-end="url(#dbg-ah)"/><rect x="22" y="276" width="240" height="24" rx="4" class="box"/><text x="142" y="293" text-anchor="middle">.item() 后的空隙 <tspan class="acc">→ implicit sync</tspan></text><path d="M10,288 H19" class="ln" marker-end="url(#dbg-ah)"/><rect x="22" y="306" width="240" height="24" rx="4" class="box"/><text x="142" y="323" text-anchor="middle">NCCL 旁边没计算 <tspan class="acc">→ comm exposed</tspan></text><path d="M10,318 H19" class="ln" marker-end="url(#dbg-ah)"/><rect x="22" y="336" width="240" height="24" rx="4" class="box"/><text x="142" y="353" text-anchor="middle">某 rank 总最后到 <tspan class="acc">→ straggler</tspan></text><path d="M10,348 H19" class="ln" marker-end="url(#dbg-ah)"/><path d="M10,206 V348" class="ln"/><path d="M131.0,361 V375" class="ln" marker-end="url(#dbg-ah)"/><rect x="0" y="378" width="262" height="44" rx="6" class="box"/><text x="131" y="396" text-anchor="middle">④ 对症修，再量一次</text><text x="131" y="413" text-anchor="middle" class="m">单卡 → 单机 → 多机，synthetic data</text><rect x="278" y="4" width="262" height="30" rx="6" class="hot"/><text x="409" y="24" text-anchor="middle" class="acc">训练中途 hang 住</text><path d="M409.0,35 V49" class="ln" marker-end="url(#dbg-ah)"/><rect x="278" y="52" width="262" height="44" rx="6" class="box"/><text x="409" y="70" text-anchor="middle">① 每个 rank：py-spy dump</text><text x="409" y="87" text-anchor="middle" class="m">加 --native 看 C++ 栈</text><path d="M409.0,97 V111" class="ln" marker-end="url(#dbg-ah)"/><rect x="278" y="114" width="262" height="44" rx="6" class="box"/><text x="409" y="132" text-anchor="middle">② flight recorder</text><text x="409" y="149" text-anchor="middle" class="m">超时自动 dump，fr_trace 找缺席的 rank</text><path d="M409.0,159 V173" class="ln" marker-end="url(#dbg-ah)"/><rect x="278" y="176" width="262" height="44" rx="6" class="hot"/><text x="409" y="194" text-anchor="middle" class="acc">③ 谁没进同一个 collective？</text><text x="409" y="211" text-anchor="middle" class="m">再看它停在代码哪一行</text><path d="M409.0,221 V235" class="ln" marker-end="url(#dbg-ah)"/><rect x="278" y="238" width="262" height="44" rx="6" class="box"/><text x="409" y="256" text-anchor="middle">④ 复现时查 collective 类型、shape</text><text x="409" y="273" text-anchor="middle" class="m">TORCH_DISTRIBUTED_DEBUG=DETAIL</text><path d="M409.0,283 V297" class="ln" marker-end="url(#dbg-ah)"/><rect x="278" y="300" width="262" height="30" rx="6" class="box"/><text x="409" y="320" text-anchor="middle">⑤ 设 timeout，把 hang 变成报错</text><rect x="278" y="362" width="262" height="78" rx="6" class="stale"/><text x="409" y="380" text-anchor="middle" class="hd">另一种：init 时就卡住</text><text x="409" y="398" text-anchor="middle" class="m">NCCL_DEBUG=INFO</text><text x="409" y="414" text-anchor="middle" class="m">NCCL_DEBUG_SUBSYS=</text><text x="409" y="430" text-anchor="middle" class="m">INIT,BOOTSTRAP,NET</text></svg>
+<figcaption>图 1：左边查“慢”，右边查“hang”，都从上往下走；加粗框是起点和最关键的那一步。慢：先用 step time 和 MFU 量出到底多慢，再 profile 看 GPU timeline 上的空白，按空白出现的位置归到 5 类之一（箭头后是原因），修完再量。hang：抓每个 rank 的栈和最近的 collective 记录，找出那个和别人不在同一个 collective 里的 rank；如果连 init 都没过，改看 NCCL 的 init 日志（虚线框）。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 540 354" role="img" aria-label="两个例子：一步 400 ms 里等数据 120、计算 240、露出的 all-reduce 40，nvidia-smi 显示 70% 但真正计算只有 60%，修好 DataLoader 后 280 ms；hang 时 rank 1 到 7 停在 DDP all-reduce，rank 0 停在 if rank == 0 里的 all_gather"><defs></defs><text x="0" y="16" text-anchor="start" class="hd">慢：一步 400 ms 拆开看</text><text x="56" y="58" text-anchor="end" class="m">修之前</text><rect x="64" y="40" width="135.6" height="26" rx="3" class="stale"/><text x="131.8" y="58" text-anchor="middle" class="m">等数据 120</text><rect x="199.6" y="40" width="271.2" height="26" rx="3" class="f1"/><text x="335.2" y="58" text-anchor="middle" class="acc">计算 240</text><rect x="470.8" y="40" width="45.2" height="26" rx="3" class="f2"/><text x="493.4" y="58" text-anchor="middle" class="c2">40</text><text x="516" y="34" text-anchor="end" class="c2">露出的 all-reduce</text><path d="M199.6,69 V74 H516.0 V69" class="ln"/><text x="357.8" y="89" text-anchor="middle" class="m">nvidia-smi 算作“有 kernel 在跑”：280 / 400 = 70%</text><path d="M199.6,105 V110 H470.8 V105" class="ln"/><text x="335.2" y="125" text-anchor="middle" class="acc">真正在计算：240 / 400 = 60%</text><text x="56" y="162" text-anchor="end" class="m">修之后</text><rect x="64" y="144" width="271.2" height="26" rx="3" class="f1"/><text x="199.6" y="162" text-anchor="middle" class="acc">计算 240</text><rect x="335.2" y="144" width="45.2" height="26" rx="3" class="f2"/><text x="357.8" y="162" text-anchor="middle" class="c2">40</text><text x="390.4" y="162" text-anchor="start" class="acc">280 ms，吞吐 ×1.43</text><text x="64" y="190" text-anchor="start" class="m">num_workers 0 → 8、pin_memory=True 后等数据消失；剩下的 40 ms 再查通信</text><path d="M0,206 H540" class="grid"/><text x="0" y="230" text-anchor="start" class="hd">hang：8 卡停在 step 1200，py-spy 看每个 rank</text><rect x="64" y="244" width="52" height="26" rx="4" class="hot"/><text x="90" y="262" text-anchor="middle" class="acc">rank 0</text><rect x="122" y="244" width="52" height="26" rx="4" class="box"/><text x="148" y="262" text-anchor="middle">rank 1</text><rect x="180" y="244" width="52" height="26" rx="4" class="box"/><text x="206" y="262" text-anchor="middle">rank 2</text><rect x="238" y="244" width="52" height="26" rx="4" class="box"/><text x="264" y="262" text-anchor="middle">rank 3</text><rect x="296" y="244" width="52" height="26" rx="4" class="box"/><text x="322" y="262" text-anchor="middle">rank 4</text><rect x="354" y="244" width="52" height="26" rx="4" class="box"/><text x="380" y="262" text-anchor="middle">rank 5</text><rect x="412" y="244" width="52" height="26" rx="4" class="box"/><text x="438" y="262" text-anchor="middle">rank 6</text><rect x="470" y="244" width="52" height="26" rx="4" class="box"/><text x="496" y="262" text-anchor="middle">rank 7</text><path d="M122,275 V280 H522 V275" class="ln"/><text x="322" y="296" text-anchor="middle">停在 loss.backward() 里的 DDP all-reduce</text><path d="M90.0,271 V314 H98.0" class="ln"/><text x="102" y="318" text-anchor="start" class="acc">停在 save_checkpoint() 里的 all_gather（写在 if rank == 0: 里）</text><text x="64" y="344" text-anchor="start" class="m">两边等的不是同一个 collective，谁也等不到谁；修法：所有 rank 都调用，或挪出 if</text></svg>
+<figcaption>图 2：正文两个手算例子画出来。上半是一步训练的 GPU 时间线：虚线段是 GPU 空等数据，橙色是计算，蓝色是没被盖住的 all-reduce；nvidia-smi 把 NCCL kernel 也算“在跑”，所以显示 70%，真正计算只有 60%。下半是 hang：7 个 rank 在等 DDP all-reduce，rank 0 却在等 all_gather，collective 对不上，所有人一起卡住。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>For slow training I first quantify step time, throughput and MFU; nvidia-smi utilization only tells whether any kernel is running. Then I profile a few steps with torch.profiler or Nsight Systems and classify the gaps on the GPU timeline: idle at the start of each step means the data loader; many tiny gaps mean CPU launch overhead; gaps after .item() or .cpu() are implicit syncs; long NCCL kernels with nothing beside them are exposed communication. For a hang, I dump every rank's Python stack with py-spy, turn on NCCL_DEBUG=INFO and the flight recorder, and look for the rank that is not in the same collective as the others.</p></div>
+
+<h2 id="slow">训练慢：一句话 + 步骤</h2>
+<p><strong>先量化，再 profile 找 GPU 空白，再按空白的类型对症</strong>：</p>
+<ol>
+  <li>量化：step time、tokens/s、<a href="flops-mfu.html">MFU</a>；nvidia-smi / DCGM 看 util 和显存</li>
+  <li>profile 几步：<code>torch.profiler</code>（<code>schedule</code> 跳过 warmup）或 Nsight Systems，看 timeline</li>
+  <li>按下表归类；再做控制变量：单卡 → 单机 → 多机看 scaling，换 synthetic data 排除 DataLoader</li>
+</ol>
+<table>
+  <thead><tr><th>trace 上看到</th><th>原因</th><th>怎么修</th></tr></thead>
+  <tbody>
+    <tr><td>每步开头 GPU 空等</td><td class="nw">DataLoader</td><td><code>num_workers</code>、<code>pin_memory</code>、预处理离线</td></tr>
+    <tr><td>kernel 之间密集小空隙</td><td class="nw">launch-bound</td><td>CUDA Graphs、kernel fusion、更大 batch</td></tr>
+    <tr><td><code>.item()</code> / <code>.cpu()</code> 后的空隙</td><td class="nw">implicit sync</td><td>别每步同步，攒几步再取</td></tr>
+    <tr><td>NCCL kernel 很长、旁边没计算</td><td class="nw">comm exposed</td><td>nccl-tests 测 busbw；开 <a href="overlap.html">overlap</a>；TP 留在机内</td></tr>
+    <tr><td>某 rank 总是最后到 collective</td><td class="nw">straggler</td><td>比各 rank 的 step time，换节点、balance 数据</td></tr>
+  </tbody>
+</table>
+
+<h2 id="hang">训练 hang：一句话 + 步骤</h2>
+<p><strong>找出"谁没进同一个 collective"，再看它停在哪一行</strong>：</p>
+<ol>
+  <li>init 就卡住：<code>NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,NET</code> 看 bootstrap 和网卡选择</li>
+  <li>训练中卡住：每个 rank <code>py-spy dump --pid PID</code>（加 <code>--native</code> 看 C++ 栈）</li>
+  <li>flight recorder：<code>TORCH_NCCL_TRACE_BUFFER_SIZE=2000</code> + <code>TORCH_NCCL_DUMP_ON_TIMEOUT=true</code>，超时时每个 rank dump 最近的 collective，用 <code>fr_trace</code> 找缺席的 rank</li>
+  <li>复现时开 <code>TORCH_DISTRIBUTED_DEBUG=DETAIL</code>：检查每次 collective 的类型和 shape 是否一致</li>
+  <li>设 <code>init_process_group(timeout=...)</code>（NCCL 默认 10 分钟），让 hang 变成报错退出</li>
+</ol>
+<p>常见原因：rank 相关的 <code>if</code> 让 collective 顺序或次数不一致。PP send / recv 不配对。某 rank OOM 退出。网络或 PCIe ACS 有问题。</p>
+
+<h2 id="example">手算例子</h2>
+<ul>
+  <li><b>慢</b>：step 400 ms = 计算 240 + 等数据 120 + 露出的 all-reduce 40。nvidia-smi 显示 70%（NCCL kernel 也算"在跑"），真正计算只占 60%。<code>num_workers</code> 0 → 8、<code>pin_memory=True</code> 后等数据消失 → 280 ms，吞吐 ×1.43；剩下 40 ms 交给 nccl-tests 和 overlap 去查。</li>
+  <li><b>hang</b>：8 卡在 step 1200 卡住。py-spy：rank 1–7 停在 <code>loss.backward()</code> 的 DDP all-reduce，rank 0 停在 <code>save_checkpoint()</code> 里的 <code>all_gather</code>，因为它写在 <code>if rank == 0:</code> 里 → collective 不匹配。修法：所有 rank 都调用，或者挪出 <code>if</code>。</li>
+</ul>
+
+<h2>必答点</h2>
+<ul>
+  <li>util 只表示"有 kernel 在跑"，要看 step time、MFU 和 trace</li>
+  <li>profile → 找 GPU 空白 → 分类：data、launch、sync、comm、straggler、kernel 本身</li>
+  <li>控制变量：单卡 / 单机 / 多机，synthetic data，nccl-tests</li>
+  <li>hang：py-spy 每个 rank 的栈 + NCCL_DEBUG + flight recorder → 找没进同一 collective 的 rank</li>
+  <li>设 timeout，把无限等待变成可诊断的报错</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>GPU util 100% 就说明跑满了吗？</summary>
+  <p>不是。它只看有没有 kernel 在跑，所以小 kernel、memory-bound kernel，甚至 hang 住时 NCCL kernel 在等对端，都可能显示很高。要看 MFU 或 Nsight Systems 里的 SM 活动。</p>
+</details>
+<details>
+  <summary>GPU util 周期性忽高忽低（Tower 题）？</summary>
+  <p>把低谷和代码对齐：每 N 步的 checkpoint / eval，DataLoader 的 buffer 取空再填，或 comm 和计算交替暴露。trace 里看低谷时 CPU 在干什么。</p>
+</details>
+<details>
+  <summary>怎么找 straggler？</summary>
+  <p>各 rank 记录 step time；<code>TORCH_NCCL_ENABLE_TIMING=1</code> 记录每个 collective 的耗时。慢的 rank 计算时间长，其他 rank 则在 collective 里等得久。</p>
+</details>
+<details>
+  <summary>timeout 之后会发生什么？</summary>
+  <p>NCCL backend 的 watchdog 会异步 abort 这个 collective 并让进程崩溃，因为失败的异步 NCCL 操作可能让后续 CUDA 计算用到坏数据。<code>TORCH_NCCL_ASYNC_ERROR_HANDLING</code> 控制具体怎么 abort。</p>
+</details>
+<details>
+  <summary>只在多机 init 时卡住，常见什么原因？</summary>
+  <p>NCCL 选错网卡（用 <code>NCCL_SOCKET_IFNAME</code> 指定）、MASTER_ADDR / 端口不通、防火墙。<code>NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,NET</code> 的日志会显示卡在哪一步。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.nvidia.com/deploy/nvidia-smi/index.html">nvidia-smi docs</a>（Utilization）· <a href="https://docs.pytorch.org/docs/stable/profiler.html">torch.profiler</a>（schedule、trace handler）· <a href="https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html">PyTorch Performance Tuning Guide</a>（num_workers、pin_memory、CUDA Graphs、avoid CPU-GPU sync）· <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/logging.html">NCCL Logging</a>（Diagnosing Initialization Hangs）、<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html">NCCL env</a>（NCCL_DEBUG、NCCL_DEBUG_SUBSYS、NCCL_SOCKET_IFNAME）· <a href="https://github.com/NVIDIA/nccl-tests">nccl-tests</a> · <a href="https://github.com/benfred/py-spy">py-spy README</a>（dump、--native）· <a href="https://docs.pytorch.org/docs/stable/distributed.html">torch.distributed</a>（init_process_group timeout、TORCH_DISTRIBUTED_DEBUG）、<a href="https://docs.pytorch.org/docs/stable/torch_nccl_environment_variables.html">PyTorch NCCL env vars</a> · <a href="https://docs.pytorch.org/tutorials/unstable/flight_recorder_tutorial.html">Flight Recorder tutorial</a></p>
+
+</main>
+</body>
+</html>

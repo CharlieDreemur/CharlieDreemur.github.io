@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent knowledge base 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Agent 的 knowledge base 和 memory<br>怎么管？</h1>
+<p class="meta"><b>英文问法</b><q>What goes into the agent's knowledge base, and who writes to it?</q> · <q>How do you keep an agent's memory from growing without bound?</q> · <q>What if the agent writes a wrong conclusion into its memory?</q></p>
+<p class="meta"><b>考过</b>Unity 自己的材料：<a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.1（六类文档）和 §4.2 Refine。per-model card 这个说法只出现在论文的 Figure 2 里，正文没有单独讲 · 会不会这样问是推断，没有 Unity 自己的面经原题 · 别家面经里相近的原题：阿里控股 agent infra 开发工程师一面（校招，面试 2026-08-17）「记忆机制是怎么做到，长期记忆可能有badcase怎么解决？」（<a href="https://www.nowcoder.com/feed/main/detail/0354c1c8f1164c8aaf0e3bb796b535c8">牛客</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Knowledge base</dt>
+  <dd>agent 动手前要查的资料库。FlashVector 的分两部分，一部分是人维护的文档，一部分是 agent 写回的状态。</dd>
+  <dt>Optimization Cookbook</dt>
+  <dd>六类文档里的一类，是人类专家总结的优化规则和 best practice。</dd>
+  <dt>Per-model card</dt>
+  <dd>每个模型一张，记这个模型上次 run 的结论。<span class="eg">Figure 2 的图中文字是 "each run starts from the last run's findings"。</span></dd>
+  <dt>Refine</dt>
+  <dd>四步循环之外的一步。整个 run 结束后执行一次，把这次的结果写回 knowledge base。</dd>
+  <dt>In-place 更新</dt>
+  <dd>改写原有的条目，不在末尾追加。像病历的首页，每次就诊只更新当前诊断，不把每次的对话都贴上去。</dd>
+</dl>
+
+<h2 id="figs">看图：谁写，什么时候取，什么时候写回</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 244" role="img" aria-label="knowledge base 分成人维护的六类文档和 agent 写回的 per-model card，run 开始时取，run 结束后 in-place 写回">
+  <defs><marker id="kbA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+  <rect class="box" x="14" y="14" width="278" height="112" rx="4"/>
+  <text class="hd" x="153" y="36" text-anchor="middle">人维护的文档（六类）</text>
+  <text class="m" x="28" y="62">Business Logic</text>
+  <text class="m" x="28" y="86">Model Server</text>
+  <text class="m" x="28" y="110">Feature Store</text>
+  <text class="m" x="142" y="62">ML Model</text>
+  <text class="m" x="142" y="86">Hardware</text>
+  <text class="m" x="142" y="110">Optimization Cookbook</text>
+  <rect class="hot" x="330" y="14" width="216" height="112" rx="4"/>
+  <text class="acc" x="438" y="36" text-anchor="middle">per-model card</text>
+  <text class="m" x="438" y="54" text-anchor="middle">agent 写回的状态</text>
+  <text class="m" x="438" y="80" text-anchor="middle">接受和拒绝的改动</text>
+  <text class="m" x="438" y="98" text-anchor="middle">verify 接受的容差阈值</text>
+  <text class="m" x="438" y="116" text-anchor="middle">run summary</text>
+  <path class="ln" d="M80,126 V194" marker-end="url(#kbA)"/>
+  <text class="m" x="88" y="150">只取当前这一层的</text>
+  <path class="ln" d="M360,126 V172 H150 V194" marker-end="url(#kbA)"/>
+  <text class="m" x="255" y="166" text-anchor="middle">上次 run 的结论</text>
+  <rect class="f2" x="14" y="196" width="170" height="34" rx="4"/>
+  <text x="99" y="218" text-anchor="middle">run 开始：取文档和 card</text>
+  <path class="ln" d="M184,213 H212" marker-end="url(#kbA)"/>
+  <rect class="box" x="214" y="196" width="132" height="34" rx="4"/>
+  <text x="280" y="218" text-anchor="middle">四步循环，多轮</text>
+  <path class="ln" d="M346,213 H374" marker-end="url(#kbA)"/>
+  <rect class="f2" x="376" y="196" width="170" height="34" rx="4"/>
+  <text x="461" y="218" text-anchor="middle">run 结束：Refine 写回</text>
+  <path class="ln1" d="M461,196 V130"/>
+  <polygon class="ah1c" points="457,134 465,134 461,126"/>
+  <text class="acc" x="470" y="166">in-place</text>
+</svg>
+<figcaption>图 1：左边六类文档由人维护，右边的 per-model card 由 agent 写回。run 开始时取当前这一层的文档和这个模型的 card。run 结束后 Refine 把结果 in-place 写回 card，下一次 run 从这里开始。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I'd split it into docs that humans curate and state that the agent writes back. FlashVector has six doc categories, covering business logic, the model server, the feature store, the model, hardware and an optimization cookbook, plus a per-model card. At the start of a run the agent retrieves only the docs for the layer it is working on. At the end it updates the card in place with what was accepted and what was rejected, so the next run starts from conclusions and the memory stays bounded. The risk is that a wrong conclusion keeps misleading later runs, so write-backs should carry evidence and get reviewed.</p></div>
+
+<h2 id="flow">FlashVector 怎么取，怎么写回</h2>
+<table>
+  <thead><tr><th>环节</th><th>做法</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">人写什么</td><td>六类文档：Business Logic、Model Server、Feature Store、ML Model、Hardware、Optimization Cookbook</td></tr>
+    <tr><td class="nw">怎么取</td><td>run 开始时取 serving layer 对应的文档；Diagnose 只拿被抽中那一层的</td></tr>
+    <tr><td class="nw">写回什么</td><td>接受和拒绝的改动、run summary、verify 接受的容差阈值</td></tr>
+    <tr><td class="nw">什么时候写</td><td>Refine 不在循环里，整个 run 结束后执行一次</td></tr>
+    <tr><td class="nw">怎么写</td><td>in-place 更新，不追加，所以 memory 有上限</td></tr>
+  </tbody>
+</table>
+<p>拒绝的改动也要记，这样下次 run 不会再试同一个失败方案。论文说 in-place 更新能减轻 "catastrophic forgetting and hallucinations"。</p>
+<p>下面五点论文没写，适合留作反问。</p>
+<ul>
+  <li>存在文件、数据库还是向量库</li>
+  <li>检索是按路径读文件，还是做 embedding 检索</li>
+  <li>谁 review agent 写回的内容</li>
+  <li>写回出错怎么回滚</li>
+  <li>几个 run 同时写同一张 card 怎么办</li>
+</ul>
+
+<h2 id="peers">同类系统的做法</h2>
+<table>
+  <thead><tr><th>系统</th><th>Knowledge 和 memory</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">KernelEvolve（Meta）</td><td>按层级组织的文件系统 knowledge base，硬件文档超过 100 篇；成功的策略提炼成 skill 写回</td></tr>
+    <tr><td class="nw">KernelArc</td><td>conclusions-only shared memory，只存通过 verify 的 win 和 trap，保留期可配置</td></tr>
+    <tr><td class="nw">Baseten</td><td>把成功记成可复用的模式，把失败记成 caveat 和 root cause</td></tr>
+  </tbody>
+</table>
+<p>几家的共同点是 memory 只存结论，不存全部历史，而且失败也要记。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>knowledge base 分两部分：人维护的六类文档，agent 写回的 per-model card</li>
+  <li>取：只取当前这一层的文档</li>
+  <li>写回：run 结束后 Refine 做 in-place 更新，不追加，memory 有上限</li>
+  <li>接受的和拒绝的改动都记</li>
+  <li>风险：写错的结论会一直误导后面的 run，要带证据并有人 review</li>
+  <li>存储、检索、review、回滚、并发写，论文都没写</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>agent 把一个错的结论写进了 card，会怎样？</summary>
+  <p>后面每次 run 都从这个结论出发，会一直被误导。所以写回的每一条要带证据并有人 review，论文没写谁来 review。</p>
+</details>
+<details>
+  <summary>为什么 in-place 更新，不直接追加？</summary>
+  <p>追加会让 memory 一直变长，最后 context 装不下。论文原话是 in-place 更新 "bounds the amount of memory the agent maintains"。</p>
+</details>
+<details>
+  <summary>几个 run 同时写同一张 card 怎么办？</summary>
+  <p>论文没写。我会给 card 加版本号，写之前比对版本，变了就重读再合并，和 <a href="mini-coding-agent.html#edit">edit tool 的 hash 检查</a>是同一个思路。</p>
+</details>
+<details>
+  <summary>检索用 embedding 还是按路径读文件？</summary>
+  <p>论文没写，只说文档是按 serving layer 预先整理好的。文档已经按层分好、数量不多时，我会先按路径整份读。</p>
+</details>
+<details>
+  <summary>模型或硬件换了，card 里的旧结论还能用吗？</summary>
+  <p>FlashVector 在新 release 进 fleet 时会自动触发一次 run，但论文没写旧结论怎么失效。我会让每条结论带上当时的 release 和硬件，对不上的就重新 verify。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a> §1、§4.1、§4.2 Refine 和 Triggering、Algorithm 1、Figure 2、Figure 3 · <a href="https://engineering.fb.com/2026/04/02/developer-tools/kernelevolve-how-metas-ranking-engineer-agent-optimizes-ai-infrastructure/">KernelEvolve</a> · <a href="https://arxiv.org/html/2608.17071">KernelArc</a> · <a href="https://www.baseten.co/blog/agentic-kernels-in-production/">Baseten：Agentic kernels in production</a> · ml-八股 08 第 29 题 · 调研笔记 1.4 节和对照表</p>
+
+</main>
+</body>
+</html>

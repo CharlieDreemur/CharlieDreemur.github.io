@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hard constraint 与 preference 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>Hard constraint 和 preference 怎么分开处理？<br>日期、人名为什么不能只靠模型？</h1>
+<p class="meta"><b>英文问法</b><q>How do you make sure results actually satisfy the user's constraints?</q> · <q>How do hard constraints differ from preferences?</q> · <q>Why isn't vector search enough for "last month"?</q></p>
+<p class="meta"><b>考过</b>Walmart Labs MLE onsite 原题 Design an Agentic Search Experience 的提示 "Separate interpretation from enforcement"（<a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub</a>，编辑版）· Apple 官方的 SpotlightSearchTool 同时支持 "semantic search over text" 和 "structured search over metadata, like dates, persons, locations"（<a href="https://developer.apple.com/videos/play/wwdc2026/246/">WWDC26 246</a>）· 这个组是否这样问是推断</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Hard constraint</dt>
+  <dd>必须满足的条件，不满足就是错。<span class="eg">例：“上个月”“Tim 发的”“带附件”。</span></dd>
+  <dt>Preference</dt>
+  <dd>尽量满足的条件，用来排序。<span class="eg">例：“最好是意大利菜”“越新越好”。</span></dd>
+  <dt>Interpretation</dt>
+  <dd>模型把自然语言解析成结构化条件。<span class="eg">例：今天是 2026-11-09，“上个月”解析成 2026-10-01 到 2026-10-31。</span></dd>
+  <dt>Enforcement</dt>
+  <dd>由 index 的 metadata filter 来执行条件，不指望模型“自觉遵守”。</dd>
+  <dt>Semantic 与 structured search</dt>
+  <dd>embedding 只能说两段话意思相近，不能保证日期在某个区间里。硬条件交给 structured filter，语义交给 embedding。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I separate interpretation from enforcement. The model interprets the request into structured constraints, such as a date range, a person ID, and a source. The index enforces them as metadata filters, so we don't rely on the model to remember them. Semantic similarity can't enforce "last month" or "from Tim"; it only says two texts are related. Preferences are different: they become ranking signals, not filters. If the filters return nothing, the system says so and offers to relax a specific constraint, instead of silently returning something close.</p></div>
+
+<h2 id="compare">两者的区别</h2>
+<table>
+  <thead><tr><th></th><th>Hard constraint</th><th>Preference</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">例子</td><td>上个月、Tim 发的</td><td>最好带图、越新越好</td></tr>
+    <tr><td class="nw">谁来执行</td><td>index 的 metadata filter</td><td>reranker 的 feature</td></tr>
+    <tr><td class="nw">不满足时</td><td>结果是错的</td><td>结果排在后面</td></tr>
+    <tr><td class="nw">没有结果时</td><td>明说，并提议放宽哪一条</td><td>忽略这条偏好</td></tr>
+  </tbody>
+</table>
+<p><strong>Pre-filter 还是 post-filter</strong>：pre-filter 先过滤再搜，结果一定满足条件，过滤后剩得很少时直接 scan；post-filter 先做 ANN 再过滤，可能凑不够 k 条，要多取一些。按 filter 的 selectivity 选。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>模型负责 interpretation，index 负责 enforcement</li>
+  <li>embedding 管语义，metadata filter 管硬条件</li>
+  <li>preference 是 ranking signal，不是 filter</li>
+  <li>没结果要明说，并提议放宽具体哪一条</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>模型把“上周五”解析错了怎么办？</summary>
+  <p>把解析结果说给用户听（“在 10 月 30 日的邮件里找”），错了用户能马上纠正。日期计算用代码，不让模型心算。eval 时把 slot accuracy 单独拿出来评。</p>
+</details>
+<details>
+  <summary>“一共几封”“最新的一封”这类问题怎么办？</summary>
+  <p>计数和取最新是 structured query 的事，由 tool 完成，不让模型去数检索回来的片段。Apple 官方的 tool 支持 "a pipeline of search and computation stages"。</p>
+</details>
+<details>
+  <summary>人名怎么变成可以 filter 的 ID？</summary>
+  <p>先做 entity resolution：从 contacts 生成候选，用邮箱、电话、互动频率打分。两个候选分数接近时问用户，因为找错人比多问一句更糟。</p>
+</details>
+<details>
+  <summary>用户中途说“不限上个月了”，怎么办？</summary>
+  <p>维护一份结构化的 constraint state，去掉这一条后重新检索，其他条件保持不变。不要指望模型从对话历史里自己记住哪些条件还有效。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://prachub.com/interview-questions/design-an-agentic-search-experience">PracHub：Design an Agentic Search Experience</a> · <a href="https://developer.apple.com/videos/play/wwdc2026/246/">WWDC26 246：SpotlightSearchTool</a> · <a href="https://arxiv.org/abs/2504.05573">MicroNN（Apple）</a>（on-device vector search，支持 structured attribute filter）</p>
+
+</main>
+</body>
+</html>

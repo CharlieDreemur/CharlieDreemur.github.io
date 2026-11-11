@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grounded response 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>Siri 调完 tool 之后，怎么生成 grounded 的回答？<br>怎么 eval？</h1>
+<p class="meta"><b>英文问法</b><q>Design a Siri response-generation flow for an assistant that calls tools and then speaks a concise answer.</q> · <q>How do you evaluate factuality, usefulness, and length for a voice answer?</q> · <q>Why does hallucination happen, and which guardrails reduce it?</q></p>
+<p class="meta"><b>考过</b>Apple Siri MLE 全职 2026-03 的 case study（"case study on response evaluation and LLM challenges"，<a href="https://www.1point3acres.com/interview/thread/1170553">1p3a 1170553 AI 摘要</a>）· 第一句英文问法是<a href="https://www.1point3acres.com/interview/problems/company/apple/siri-grounded-response-generation">一亩三分地站方题面</a>的原文 · 这是同产品方向最接近的真题，但不是 Agentic Search 组问的</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Grounding</dt>
+  <dd>回答里的每句话都能在 tool result 里找到依据，像写报告时每个数字都有出处。</dd>
+  <dt>Source of truth</dt>
+  <dd>tool result 说了算，模型自己的记忆不算。时间、金额、ID 这类字段直接 copy，不让模型重写。<span class="eg">例：tool 返回 <code>3:00 PM</code>，回答说“4 点”，这就是错。</span></dd>
+  <dt>Claim</dt>
+  <dd>回答里一条可以单独核对的事实。<span class="eg">例：“UA 123 明天 3 点起飞”有两条 claim：航班号、起飞时间。</span></dd>
+  <dt>Abstention</dt>
+  <dd>没查到就说没查到。空结果和调用失败要分开。前者说“没查到”，后者重试或如实说出错了。</dd>
+  <dt>Voice length budget</dt>
+  <dd>语音回答要短，因为听的人不能回看。先说答案，列表只念前几项。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I'd split it into five stages: run the tools, select the evidence, generate the answer, verify it, and format it for speech. The tool result is the source of truth, so critical fields like times and IDs are copied, not generated. I'd evaluate claim-level groundedness, required-field recall, correct abstention, and spoken length, on a golden set plus adversarial cases, then check reformulation and barge-in online.</p></div>
+
+<h2 id="flow">五个 stage</h2>
+<table>
+  <thead><tr><th>Stage</th><th>做什么</th><th>防什么</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Tool execution</td><td>返回 typed result，区分空结果和调用失败</td><td>把失败当成“没有”</td></tr>
+    <tr><td class="nw">Evidence selection</td><td>按问题选字段；按 record 截断，不拦腰切</td><td>context 过长、丢关键字段</td></tr>
+    <tr><td class="nw">Generation</td><td>只依据 evidence；不够就追问或说找不到</td><td>模型用自己的记忆补内容</td></tr>
+    <tr><td class="nw">Verification</td><td>每条 claim 对 evidence 核对；时间、金额、ID 做 exact match</td><td>细节出错</td></tr>
+    <tr><td class="nw">Voice formatting</td><td>先说答案，数字转成口语</td><td>太长、读出来别扭</td></tr>
+  </tbody>
+</table>
+<p><strong>Hallucination 分六类</strong>：contradiction（和 tool 矛盾）、unsupported（tool 没给却说了）、entity confusion（张冠李戴）、temporal（时间解析错或用了旧数据）、omission（为了短漏掉必要信息）、该拒答却答。</p>
+
+<h2 id="metrics">Eval 指标</h2>
+<table>
+  <thead><tr><th>维度</th><th>Metric</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Factuality</td><td>claim precision = 有依据的 claim ÷ 全部 claim；关键字段 exact match</td></tr>
+    <tr><td class="nw">Completeness</td><td>required-field recall = 答到的必要信息 ÷ 全部必要信息</td></tr>
+    <tr><td class="nw">Abstention</td><td>unanswerable 的拒答率和 answerable 的回答率，一起看</td></tr>
+    <tr><td class="nw">Usefulness</td><td>人工或 LLM judge 按 rubric 打分，judge 用人工校准</td></tr>
+    <tr><td class="nw">Voice</td><td>在长度预算内的比例</td></tr>
+    <tr><td class="nw">Online</td><td>reformulation（换个说法再问）、barge-in（打断）、task completion</td></tr>
+  </tbody>
+</table>
+<p><span class="eg">例：回答有 4 条 claim，3 条有依据 → claim precision 0.75。这类问题要求答 3 项信息，答到 2 项 → required-field recall 0.67。</span></p>
+
+<h2>必答点</h2>
+<ul>
+  <li>五个 stage 分开，每个 stage 单独可测</li>
+  <li>tool result 是 source of truth；关键字段 copy，不生成</li>
+  <li>claim-level 的 precision 和 required-field recall 一起看</li>
+  <li>abstention 单独统计；空结果和调用失败分开处理</li>
+  <li>数据：golden set 加 adversarial（空结果、结果矛盾、payload 截断、context 变长）</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>回答变短之后漏信息怎么办？</summary>
+  <p>按 intent 定 required fields，先保 required-field recall，再压长度。两个 metric 一起看，只压长度会把 omission 推高。</p>
+</details>
+<details>
+  <summary>context 变长后质量下降怎么办？</summary>
+  <p>先量：画 context 长度和 claim precision 的曲线。再治：旧 tool result 压成 summary，名字、ID、日期逐字保留。只把和当前问题有关的字段放进 context。</p>
+</details>
+<details>
+  <summary>verifier 也是 LLM，不可靠怎么办？</summary>
+  <p>关键字段用规则校验，其余抽样做人工校准，多堆几个 judge 帮助有限（见<a href="annotation-judge.html">标注与 LLM judge</a>）。</p>
+</details>
+<details>
+  <summary>“没查到”和“tool 失败”怎么区分？</summary>
+  <p>tool 返回里带状态：成功但 0 条、失败（超时、权限）。失败要重试或如实告知；确实 0 条才说找不到，并说明查了哪些 source。</p>
+</details>
+<details>
+  <summary>为什么会 hallucinate？</summary>
+  <p>四个主要原因：模型的 parametric memory 压过 context。context 长、干扰多。payload 被截断，模型补全了缺的部分。训练时偏向“总要给个答案”。更一般的原因和对策见 <a href="hallucination.html">LLM hallucination</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://www.1point3acres.com/interview/problems/company/apple/siri-grounded-response-generation">一亩三分地站方题面：Siri Grounded Response Generation</a>（要求覆盖 grounding、hallucination、voice 长度、长 context 下的 eval）· <a href="https://arxiv.org/abs/2605.29800">Nine Judges（Apple）</a> · 完整证据见 Apple 面经报告</p>
+
+</main>
+</body>
+</html>

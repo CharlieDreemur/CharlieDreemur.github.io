@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 回归评测速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Agent 改了一版：<br>怎么知道变好了、别处没退化？</h1>
+<p class="meta"><b>英文问法</b><q>After you fix one class of bad cases, how do you know nothing else regressed?</q> · <q>How do you tell that a change really made the agent better?</q> · <q>Design a system for evaluating AI agents.</q></p>
+<p class="meta"><b>考过</b>别家面经原题，没有 Unity 自己的面经原题 · 字节 后端开发工程师（AI大模型开发平台）一面（2026-09）「修好一类 bad case 后，如何发现其他场景是否退化？」「评测只看最终答案，还是也检查意图识别、工具选择与调用轨迹？」「如何把线上错例回流到评测集？」（<a href="https://www.nowcoder.com/feed/main/detail/fa50ef5521f84cb788f911cd31e5a98a">牛客</a>）· 字节全栈二面（2026-10）「可用不代表稳定。你们如何评估多次执行结果的稳定性？」（<a href="https://www.nowcoder.com/feed/main/detail/3cac2a5686f5478f849d7e64a5a2e124">牛客</a>）· 蚂蚁一面（2026-09）「gate是啥？有哪些指标？」（<a href="https://www.nowcoder.com/feed/main/detail/754ac010a05e4090a05d7ba4d06c757f">牛客</a>）· 英文侧：Cresta SWE onsite（2026-09）"Design a system for evaluating AI agents."，其余要求是转述，要能比较换 system prompt 或换 model 前后的表现（<a href="https://prachub.com/interview-experiences/cresta-software-engineer-interview-experience-system-design-round-build-an-eval-platform-for-ai-agents">PracHub</a>，站方编辑过的面经页）· 中文样本里这一类有 24 帖</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>回归集（regression suite）</dt>
+  <dd>固定的一批 task，按类别分组，每次改动之后全部重跑。像每年体检查同样的项目，这样才能和去年比。</dd>
+  <dt>成功率</dt>
+  <dd>同一个 task 跑 k 次，成功的比例。agent 是 nondeterministic 的，一次通过不代表稳定。<span class="eg">5 次里过 4 次，成功率 80%。</span></dd>
+  <dt>Gate</dt>
+  <dd>合并之前必须通过的自动检查，不过就不让合并。</dd>
+  <dt>Hidden task</dt>
+  <dd>平时不拿来调 agent 的一部分 task，只用来最后确认。它防的是把 agent 调成只会做回归集。</dd>
+  <dt>回流</dt>
+  <dd>把线上失败的 case 加进回归集，同一个错不犯第二次。</dd>
+</dl>
+
+<h2 id="figs">看图：改动前后按类别比成功率</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 236" role="img" aria-label="回归集按四个类别分组，每类画出改动前后的成功率，model server 一类下降 20 个点，gate 不放行">
+  <rect class="f2" x="150" y="6" width="14" height="10" rx="2"/>
+  <text class="m" x="170" y="16">改动前</text>
+  <rect class="f1" x="226" y="6" width="14" height="10" rx="2"/>
+  <text class="m" x="246" y="16">改动后</text>
+  <text class="m" x="310" y="16">每类 100 个 run 的成功率</text>
+  <text x="14" y="48">GPU kernel</text>
+  <rect class="f2" x="150" y="30" width="196" height="12" rx="2"/>
+  <text class="m" x="352" y="40">70%</text>
+  <rect class="f1" x="150" y="44" width="252" height="12" rx="2"/>
+  <text class="m" x="408" y="55">90%</text>
+  <text class="c2" x="452" y="48">+20，变好</text>
+  <text x="14" y="92">PyTorch graph</text>
+  <rect class="f2" x="150" y="74" width="238" height="12" rx="2"/>
+  <text class="m" x="394" y="84">85%</text>
+  <rect class="f1" x="150" y="88" width="232" height="12" rx="2"/>
+  <text class="m" x="388" y="99">83%</text>
+  <text class="m" x="452" y="92">−2，noise 内</text>
+  <text x="14" y="136">model server</text>
+  <rect class="f2" x="150" y="118" width="224" height="12" rx="2"/>
+  <text class="m" x="380" y="128">80%</text>
+  <rect class="f1" x="150" y="132" width="168" height="12" rx="2"/>
+  <text class="m" x="324" y="143">60%</text>
+  <text class="acc" x="452" y="136">−20，退化</text>
+  <text x="14" y="180">feature processing</text>
+  <rect class="f2" x="150" y="162" width="252" height="12" rx="2"/>
+  <text class="m" x="408" y="172">90%</text>
+  <rect class="f1" x="150" y="176" width="255" height="12" rx="2"/>
+  <text class="m" x="411" y="187">91%</text>
+  <text class="m" x="452" y="180">+1，noise 内</text>
+  <rect class="hot" x="150" y="200" width="290" height="28" rx="4"/>
+  <text class="acc" x="295" y="219" text-anchor="middle">gate：有一类下降超过 noise，不合并</text>
+</svg>
+<figcaption>图 1：类别和数字都是示意，类别按 FlashVector 的四层来分。每类 20 个 task，每个跑 5 次。GPU kernel 是这次修的那一类，变好了。model server 掉了 20 个点，超过 noise，所以 gate 不放行。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I keep a fixed regression suite, grouped by category, and rerun all of it after every change, not just the cases I fixed. Agents are nondeterministic, so each task runs several times, and I compare success rates per category with the model version and environment pinned. The gate is simple: a change merges only if no category drops by more than the noise. I also look at the trajectory, meaning tool choices, step count and tokens, because a run can pass for the wrong reason. Production failures get added back into the suite, and I hold out some hidden tasks so I don't overfit to it.</p></div>
+
+<h2 id="chain">Version chain</h2>
+<table>
+  <thead><tr><th>版本</th><th>做法</th><th>还剩的问题</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">v1 只测修好的</td><td>只重跑这次修的那几个 bad case</td><td>别的类别退化了看不到</td></tr>
+    <tr><td class="nw">v2 回归集</td><td>固定一批 task，按类别分组，每次改动全部重跑</td><td>同一个 task 这次过、下次不过</td></tr>
+    <tr><td class="nw">v3 多跑 + gate</td><td>每个 task 跑 k 次；按类别比成功率；没有类别的下降超过 noise 才合并</td><td>回归集越调越熟，分数虚高</td></tr>
+    <tr><td class="nw">v4 回流 + hidden task</td><td>线上失败的 case 回流；留一部分 hidden task</td><td>回归集变大，重跑一遍变慢</td></tr>
+  </tbody>
+</table>
+<p>比较两版时要固定 model 版本和环境，否则差别可能来自环境。除了最终结果，也要看 tool 选择、步数和 token，因为结果对了也可能是碰巧，成本也可能涨了。回归集由 eval harness 来跑，它和 agent harness 的区别见 <a href="llm-harness.html">LLM harness</a>。回归集变大之后怎么跑得完见 <a href="agent-batch-runs.html">大批量跑 agent</a>。</p>
+
+<h2 id="noise">手算：掉多少才算退化</h2>
+<p>一类有 20 个 task，每个跑 5 次，一共 100 个 run。成功率是 80% 时，它的标准误差是 \(\sqrt{0.8 \times 0.2 / 100} = 0.04\)，也就是 4 个点。两版相减，误差约 \(4 \times \sqrt{2} \approx 5.7\) 个点。所以掉 2 个点在 noise 里，掉 20 个点是真的退化。</p>
+<p>同一个 task 的几次 run 并不独立，实际的 noise 比这个数大。稳妥的做法是把未改动的版本重复跑几遍，直接量出 noise（见 <a href="noise-floor.html">noise floor</a>）。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>回归集固定，按类别分组，每次改动全部重跑，不只测修好的那几个</li>
+  <li>同一个 task 跑 k 次看成功率，一次通过不代表稳定</li>
+  <li>gate 的规则是没有类别的下降超过 noise 才合并</li>
+  <li>比较时固定 model 版本和环境</li>
+  <li>除了最终结果，也看 tool 选择、步数、token</li>
+  <li>线上失败的 case 回流；留 hidden task 防 overfit</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>用 review agent 打分，它自己错了怎么办？</summary>
+  <p>确定性检查优先，比如 test 是否通过、输出是否和 reference 相等。review agent 只做补充，并且抽样人工核对（偏差见 <a href="llm-evaluation.html">LLM evaluation</a>）。</p>
+</details>
+<details>
+  <summary>线上 log 是海量的，怎么变成有限的回归集？</summary>
+  <p>随机抽样会被常见的简单 case 占满。先按失败类型分组和去重，每类留几个代表，写上期望结果再入库。这是字节 AI Agent 评测二面的原题。</p>
+</details>
+<details>
+  <summary>k 取多少？</summary>
+  <p>看要分辨多小的差别。成功率的误差按 \(1/\sqrt{N}\) 缩小，想把 noise 减半就要 4 倍的 run。</p>
+</details>
+<details>
+  <summary>Kernel agent 的回归集长什么样？</summary>
+  <p>task 是一组固定的 kernel 或模型，判定交给固定的 verifier。它先比正确性，再比速度，提升超过 noise floor 才算成功（见 <a href="kernel-correctness.html">kernel 正确性</a>）。</p>
+</details>
+<details>
+  <summary>Hidden task 的分数也掉了，说明什么？</summary>
+  <p>说明这次改动只是让 agent 更会做回归集里的 task。先不合并，再看掉的是哪一类。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://www.nowcoder.com/feed/main/detail/fa50ef5521f84cb788f911cd31e5a98a">牛客：字节 AI大模型开发平台一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/3cac2a5686f5478f849d7e64a5a2e124">牛客：字节全栈二面</a> · <a href="https://www.nowcoder.com/feed/main/detail/754ac010a05e4090a05d7ba4d06c757f">牛客：蚂蚁一面</a> · <a href="https://www.nowcoder.com/feed/main/detail/78a34ad9829244f1989aade4bcf0dfdd">牛客：阿里千问技术部一面</a>（「review agent怎么确保他的评价是正确的？」）· <a href="https://www.nowcoder.com/feed/main/detail/0b047c2d6bee4f6e8d6d48a795593f18">牛客：字节 AI Agent 评测二面</a> · <a href="https://prachub.com/interview-experiences/cresta-software-engineer-interview-experience-system-design-round-build-an-eval-platform-for-ai-agents">PracHub：Cresta eval platform</a> · ml-八股 08 第 33 题</p>
+
+</main>
+</body>
+</html>

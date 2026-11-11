@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoE 的 EP communication 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>EP 的 all-to-all 为什么是瓶颈？<br>NCCL EP、ShortcutMoE、MegaMoE 各做了什么？</h1>
+<p class="meta"><b>英文问法</b><q>Why is the all-to-all the bottleneck in expert parallelism?</q> · <q>How would you hide or shrink expert-parallel communication in MoE training?</q> · <q>What recent MoE work in Megatron Core have you read about?</q></p>
+<p class="meta"><b>考过</b>推断，非面经，没有一条面经问过这页的内容 · 依据是团队自己的材料：<a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（2026-10-29）、<a href="https://github.com/NVIDIA/Megatron-LM/pull/6229">PR #6229</a>（NCCL EP）、<a href="https://github.com/NVIDIA/Megatron-LM/pull/6959">PR #6959</a>（ShortcutMoE）、<a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">issue #8427</a>（MegaMoE 状态页）· 多数功能标着 experimental，下面每条限制都注明版本或 PR</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>EP 的 all-to-all</dt>
+  <dd>每个 MoE 层两次。dispatch 把 token 发到 expert 所在的卡，combine 把结果发回来。基础见 <a href="moe-expert-parallel.html">MoE 与 Expert Parallel</a>。</dd>
+  <dt>Critical path</dt>
+  <dd>expert FFN 要等 dispatch 送来的 token，下一层要等 combine 的结果。通信没完，计算只能等，像流水线上等上一道工序交货。</dd>
+  <dt>Dispatcher backend</dt>
+  <dd>实现 dispatch 和 combine 的那层库。近两个版本的 release notes 里并存三个：NCCL EP、DeepEP v2、HybridEP。</dd>
+  <dt>Receive buffer</dt>
+  <dd>每张卡用来接收 token 的 buffer。收到多少由 router 决定，每步都不一样。</dd>
+  <dt>Megakernel</dt>
+  <dd>把原来分开的几步合进一个 kernel。fusion 和 launch overhead 见 <a href="kernel-fusion.html">kernel fusion</a>、<a href="cuda-graph.html">CUDA Graph</a>。</dd>
+</dl>
+
+<h2 id="figs">看图：all-to-all 期间 GPU 在干什么</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 196" role="img" aria-label="两条时间线。普通 MoE：attention 40 毫秒，dispatch 20 毫秒期间计算 stream 空等，expert FFN 25 毫秒，combine 20 毫秒期间又空等，一层 105 毫秒。ShortcutMoE：attention 放到 side stream，和 dispatch、combine 两次 all-to-all 同时跑，一层 65 毫秒">
+  <text class="hd" x="14" y="16">普通 MoE：一层 105 ms，计算 stream 空等 40 ms</text>
+  <text class="m" x="14" y="45">计算 stream</text>
+  <text class="m" x="14" y="75">通信 stream</text>
+  <rect class="f2" x="96" y="28" width="160" height="24" rx="3"/>
+  <text class="c2" x="176" y="45" text-anchor="middle">attention</text>
+  <rect class="stale" x="256" y="28" width="80" height="24" rx="3"/>
+  <text class="m" x="296" y="45" text-anchor="middle">空等</text>
+  <rect class="f2" x="336" y="28" width="100" height="24" rx="3"/>
+  <text class="c2" x="386" y="45" text-anchor="middle">expert FFN</text>
+  <rect class="stale" x="436" y="28" width="80" height="24" rx="3"/>
+  <text class="m" x="476" y="45" text-anchor="middle">空等</text>
+  <rect class="f1" x="256" y="58" width="80" height="24" rx="3"/>
+  <text class="acc" x="296" y="75" text-anchor="middle">dispatch</text>
+  <rect class="f1" x="436" y="58" width="80" height="24" rx="3"/>
+  <text class="acc" x="476" y="75" text-anchor="middle">combine</text>
+  <text class="hd" x="14" y="118">ShortcutMoE：attention 挪到 side stream，一层 65 ms</text>
+  <text class="m" x="14" y="147">主 stream</text>
+  <text class="m" x="14" y="177">side stream</text>
+  <rect class="f1" x="96" y="130" width="80" height="24" rx="3"/>
+  <text class="acc" x="136" y="147" text-anchor="middle">dispatch</text>
+  <rect class="f2" x="176" y="130" width="100" height="24" rx="3"/>
+  <text class="c2" x="226" y="147" text-anchor="middle">expert FFN</text>
+  <rect class="f1" x="276" y="130" width="80" height="24" rx="3"/>
+  <text class="acc" x="316" y="147" text-anchor="middle">combine</text>
+  <rect class="f2" x="96" y="160" width="80" height="24" rx="3"/>
+  <text class="c2" x="136" y="177" text-anchor="middle">attention</text>
+  <rect class="f2" x="276" y="160" width="80" height="24" rx="3"/>
+  <text class="c2" x="316" y="177" text-anchor="middle">attention</text>
+  <text class="m" x="370" y="177">attention 分成两段是示意</text>
+</svg>
+<figcaption>图 1：时间从左到右，时长都是示意。橙色是 all-to-all，蓝色是计算。上面 all-to-all 期间没有别的计算可做。下面 attention 和 all-to-all 同时跑，全部盖住时一层从 105 ms 降到 65 ms，这是上限。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>In expert parallelism every MoE layer runs two all-to-alls: dispatch sends tokens to their experts' GPUs, and combine brings the results back. Both sit on the critical path, so the GPU idles while they run. From the 0.20 release notes and PRs, Megatron attacks this three ways. First, a new backend, NCCL EP: its eager mode sizes the receive buffer every step, and its static mode keeps a fixed budget so it stays CUDA-graph capturable. Second, ShortcutMoE runs attention on a side stream so it overlaps the all-to-all. Third, MegaMoE fuses dispatch, expert compute and combine into one kernel. Most of this is experimental, and HybridEP and DeepEP still coexist.</p></div>
+
+<h2 id="three">三个方向各做了什么</h2>
+<table>
+  <thead><tr><th>方向</th><th>做了什么</th><th>限制（出处）</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">换 backend<br>NCCL EP</td><td>dispatch 和 combine 做进 NCCL，有 eager 和 static 两种 mode</td><td>0.19.0 首次加入；MXFP8 communication 标 experimental（0.20.0）</td></tr>
+    <tr><td class="nw">Overlap<br>ShortcutMoE</td><td>attention 放到 side stream，和 all-to-all 同时跑</td><td>训练不支持 CUDA Graph（0.20.0）；要改模型结构</td></tr>
+    <tr><td class="nw">融合 kernel<br>MegaMoE</td><td>dispatch、expert 计算、combine 合成一个 megakernel，少停顿，少 launch</td><td>MoK 实现要求 EP group 在一个 NVLink domain 内，TP1/ETP1，EP ∈ {1, 4, 8, 16, 32, 64}（状态页，10-22）</td></tr>
+  </tbody>
+</table>
+<p>三个 backend 并存。0.20.0 新加了 experimental 的 DeepEP v2。Megatron-Bridge 0.7.0 把 GB300 的 MoE perf recipe 默认换成 NCCL EP，同一条写着 HybridEP 的 "deprecation and full migration are deferred"。NeMo-RL 0.8.0 的 MoE perf recipe 则是换成了 HybridEP。面试里不要说 HybridEP 已被弃用。</p>
+
+<h2 id="nccl">NCCL EP 的 eager 和 static</h2>
+<table>
+  <thead><tr><th>Mode</th><th>怎么选中</th><th>Receive buffer</th><th>CUDA Graph</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">eager</td><td>不设 <code>moe_expert_rank_capacity_factor</code></td><td>每步按实际收到的 token 数来定</td><td>PR 没说能 capture</td></tr>
+    <tr><td class="nw">static</td><td>设了它</td><td>固定 budget</td><td>能 capture</td></tr>
+  </tbody>
+</table>
+<p>static mode 打开 NCCL EP 的 drop-on-overflow 策略，并在 GPU 上累计超出量和 peak，不溢出就不用 sync。溢出之后把 budget 扩到这个 peak，重建一次 EP context，再重放这一步。release notes 把这两种叫 eager mode 和 full-iteration graph mode，PR 叫 eager 和 static。两处说的是同一对，这个对应是按 PR 描述推断的。</p>
+
+<h2 id="shortcut">ShortcutMoE 的数字怎么读</h2>
+<p>普通 MoE 里 expert 的输入要等本层 attention 算完，dispatch 只能排在 attention 后面。ScMoE 论文让 routed expert 经 shortcut 处理前一层的 representation，dispatch 就不用等本层 attention。Megatron 的 PR 把 attention 放到 side stream 上和 all-to-all 重叠，overlap 的一般做法见 <a href="overlap.html">overlap</a>。</p>
+<p>PR 自报 overlap efficiency 82%–95%，四个模型是 Nano 94%、Super 93%、Ultra 95%、Nemotron 4 candidate 82%。同一张表里 throughput 的 speedup 是 4.7%–12.1%，比图 1 的上限小得多。PR 没有给 overlap efficiency 的定义，也没写硬件。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>all-to-all 在 critical path 上，一层两次，期间 GPU 空等</li>
+  <li>三个方向：换 backend、overlap、融合 kernel</li>
+  <li>NCCL EP：eager 每步定 receive buffer；static 固定 budget，能被 CUDA Graph capture，溢出就扩 budget 重放</li>
+  <li>ShortcutMoE：attention 在 side stream 上和 all-to-all 重叠；82%–95% 是 PR 自报</li>
+  <li>MegaMoE：一个 megakernel；MoK 要求 EP group 在一个 NVLink domain 内</li>
+  <li>三个 backend 并存，引用时说版本</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>Quantile balancing router 是什么？</summary>
+  <p>0.19.0 加的 load balancing 方式（PR #5349）。每个 expert 一个 routing bias，每个 global batch 按 quantile estimate 更新一次，不加 aux loss，也不产生 gradient。用它时要把 aux loss 的系数设成 0，aux loss 本身见 <a href="moe-expert-parallel.html#aux">load balancing loss</a>。</p>
+</details>
+<details>
+  <summary>eager mode 为什么不适合 CUDA Graph？</summary>
+  <p>它的 receive buffer 每步随数据变，CUDA Graph 要求 shape 和内存地址固定（见 <a href="cuda-graph.html#limits">CUDA Graph 的限制</a>）。这一句是推断，PR 只写了 static 能 capture。接着看 <a href="low-precision-cuda-graph.html">full-iteration CUDA Graph</a>。</p>
+</details>
+<details>
+  <summary>MegaMoE 有哪几个实现？</summary>
+  <p>状态页列了两个。MoK（Mixture-of-Kittens）是 Cursor 开源的 CUDA C++ 实现，已集成进 MCore，支持 full-iteration CUDA Graph。NVIDIA 的 CuTeDSL 版经 cuDNN Frontend 和 Transformer Engine 接入，MCore 一侧的 PR 还是 draft。</p>
+</details>
+<details>
+  <summary>MegaMoE 快了多少？</summary>
+  <p>状态页的 DeepSeek V4 Pro 表（256×GB300、MXFP8、THD 4K）是 786.86 → 849.81 TFLOPS/GPU，+8.00%。这一行同时去掉了一部分 recompute 和 offload，CUDA Graph 的范围也改了，所以不全是 kernel 融合带来的。</p>
+</details>
+<details>
+  <summary>NCCL EP、DeepEP v2、HybridEP 怎么选？</summary>
+  <p>没有官方结论。DeepEP v2 的 PR #5153 贴了三者的延迟对比图，但说明结果只供参考。Q4 roadmap 还列着在 AWS 上对比 NCCL EP 和 DeepEP v2 的 benchmark。能说的是 Bridge 的 recipe 在往 NCCL EP 换。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（NCCL EP 两种 mode、ShortcutMoE、DeepEP v2）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.0">core 0.19.0 release notes</a>（NCCL EP 首次加入、Quantile Balancing）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/6229">PR #6229</a>（eager 和 static、溢出处理）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/6959">PR #6959</a>（overlap efficiency 表）· <a href="https://arxiv.org/abs/2404.05019">ScMoE 论文</a>（shortcut 接到哪）· <a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">MegaMoE 状态页 #8427</a> · <a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge/releases/tag/v0.7.0">Megatron-Bridge 0.7.0</a>（HybridEP 的 deprecation 推迟）· <a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">NeMo-RL 0.8.0</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/5349">PR #5349</a>、<a href="https://github.com/NVIDIA/Megatron-LM/pull/5153">PR #5153</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap #9232</a> · <a href="https://pytorch.org/blog/open-research-tooling-optimization-at-pytorch-conference-north-america-2026/">PyTorch Conference 2026 session 简介</a>（NCCL-EP 把 dispatch 和 combine 做进 NCCL）· ml-八股 06 第零节 · 全部原话见 更新笔记 3.2 节</p>
+
+</main>
+</body>
+</html>

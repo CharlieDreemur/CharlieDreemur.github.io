@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context compaction 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>长任务的 context compaction：<br>什么时候压，压什么，对 cache 有什么影响？</h1>
+<p class="meta"><b>英文问法</b><q>How would you handle context limit exceeded in an LLM application?</q> · <q>When do you trigger compaction, and what do you keep?</q> · <q>Does summarizing the history hurt prompt cache hits?</q></p>
+<p class="meta"><b>考过</b>别家面经原题：科大讯飞 AI 应用一面（校招，面试 2026-09-15）「什么时候检测并触发压缩，大 Tool Result 的阈值是什么？」「摘要会影响 KV / Prefix Cache 命中吗，怎样降低影响？」（<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">牛客</a>）、蚂蚁 AI 应用方向技术面（校招，发帖 2026-11-08）「如果压缩把“不能修改生产配置”变成了“修改生产配置”，并写入长期记忆，怎么发现和避免？」（<a href="https://www.nowcoder.com/feed/main/detail/d9d6a1ea1adc41b4a44ca47b535e9994">牛客</a>）、字节 Agent 开发日常实习一面（发帖 2026-10-20，作者按回忆转述）「如果旧信息已经被摘要掉了，后面还要用怎么办」（<a href="https://www.nowcoder.com/feed/main/detail/0ee160a2d38f4b5daaf1965cf975a8f0">牛客</a>） · 英文侧：Mercor SWE 电面 2026-09 的快问快答 "How would you handle context limit exceeded in an LLM application?"（<a href="https://prachub.com/interview-experiences/mercor-software-engineer-interview-experience-applied-ai-tech-screen-with-an-async-refund-debugging-question-and-rapid-fire-llm-questions">PracHub</a>，站方编辑过的面经页） · 中文面经样本里有 24 帖问 context 和 memory 管理 · 没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Context window</dt>
+  <dd>model 一次能看的 token 上限。长任务里 messages 越积越多，早晚会满。</dd>
+  <dt>Context compaction</dt>
+  <dd>把旧的历史换成一段摘要，腾出空间。像交接班时只留一页交接单，不把整本值班日志交给下一班。</dd>
+  <dt>大 tool result 落盘</dt>
+  <dd>很长的 tool result 写进文件，context 里只留路径和开头几行。<span class="eg">例：一次查出几万行日志，context 里只放文件路径和前 20 行。</span></dd>
+  <dt>Prefix cache</dt>
+  <dd>两次请求的前缀完全相同时，这段前缀算过的结果可以复用。前缀里改了一处，它后面的部分都要重算。</dd>
+  <dt>规则文件</dt>
+  <dd>不参与 compaction 的固定内容，每次原样放进 context。硬约束写在这里。</dd>
+</dl>
+
+<h2 id="figs">看图：compaction 前后的 context</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 192" role="img" aria-label="compaction 前后的 context 布局：固定前缀不动，旧的历史换成摘要，大 tool result 落到文件，最近几轮保留">
+  <defs><marker id="ccA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+  <text x="10" y="54">压之前</text>
+  <rect class="f2" x="70" y="34" width="80" height="30" rx="3"/>
+  <text x="110" y="54" text-anchor="middle">固定前缀</text>
+  <rect class="box" x="150" y="34" width="230" height="30" rx="3"/>
+  <text x="265" y="54" text-anchor="middle">旧的历史（含大 tool result）</text>
+  <rect class="box" x="380" y="34" width="80" height="30" rx="3"/>
+  <text x="420" y="54" text-anchor="middle">最近几轮</text>
+  <rect class="stale" x="460" y="34" width="80" height="30" rx="3"/>
+  <text class="m" x="500" y="54" text-anchor="middle">空余</text>
+  <path class="ln1" d="M446,22 V34"/>
+  <text class="acc" x="446" y="16" text-anchor="middle">阈值，比如 80%</text>
+  <path class="ln" d="M225,64 L182,130" marker-end="url(#ccA)"/>
+  <text class="m" x="192" y="102" text-anchor="end">换成摘要</text>
+  <path class="ln" d="M320,64 L366,84" marker-end="url(#ccA)"/>
+  <rect class="f2" x="340" y="86" width="204" height="28" rx="3"/>
+  <text x="442" y="105" text-anchor="middle">文件：大 tool result 的全文</text>
+  <text x="10" y="152">压之后</text>
+  <rect class="f2" x="70" y="132" width="80" height="30" rx="3"/>
+  <text x="110" y="152" text-anchor="middle">固定前缀</text>
+  <rect class="hot" x="150" y="132" width="50" height="30" rx="3"/>
+  <text x="175" y="152" text-anchor="middle">摘要</text>
+  <rect class="box" x="200" y="132" width="80" height="30" rx="3"/>
+  <text x="240" y="152" text-anchor="middle">最近几轮</text>
+  <rect class="stale" x="280" y="132" width="260" height="30" rx="3"/>
+  <text class="m" x="410" y="152" text-anchor="middle">空余</text>
+  <text class="c2" x="110" y="180" text-anchor="middle">cache 命中</text>
+  <text class="acc" x="215" y="180" text-anchor="middle">重算一次</text>
+</svg>
+<figcaption>图 1：横条的总长是 context window，各段的长度只作示意。用量过了阈值，旧的历史换成一段摘要，大 tool result 的全文留在文件里。固定前缀是 system prompt 和 tool 定义，compaction 不动它，所以它的 cache 还能命中。摘要和它后面的部分要重算一次。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>The harness, not the model, watches token usage and compacts when it crosses a threshold, say eighty percent of the window. Large tool results never stay inline: they go to files, and the context keeps a path and a short preview. The summary keeps the goal, the constraints, the decisions made and the open steps. The raw history stays on disk, so anything the summary dropped can be fetched back. Compaction rewrites the prefix, so the prompt cache misses once afterwards. That's why I compact rarely and keep the system prompt and tool definitions fixed at the front. Hard constraints live in a rules file that is never summarized.</p></div>
+
+<h2 id="what">什么时候压，压什么</h2>
+<table>
+  <thead><tr><th>问题</th><th>做法</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">谁触发</td><td>harness 每轮数 token，过了阈值就压，比如到 window 的 80%（数字是举例）。不靠 model 自己想起来</td></tr>
+    <tr><td class="nw">大 tool result</td><td>写进文件，context 里只留路径和开头几行</td></tr>
+    <tr><td class="nw">摘要里留什么</td><td>目标、约束、已做的决定、未完成的步骤</td></tr>
+    <tr><td class="nw">摘要丢了细节</td><td>原始记录留在磁盘，摘要里带路径，要用时按路径取回</td></tr>
+    <tr><td class="nw">不能丢的约束</td><td>放进规则文件，逐字保留</td></tr>
+  </tbody>
+</table>
+<p>单个文件本身就放不进 context 的情况是另一道题，见 <a href="long-document.html">文件放不进 context</a>。</p>
+
+<h2 id="cache">对 prefix cache 的影响</h2>
+<p>Prefix cache 的原理见 <a href="kv-cache.html">KV cache</a> 和 <a href="inference-cost.html">inference cost</a>。Compaction 改写了历史，所以从摘要开始往后的部分会 miss 一次。对策有两条。第一条是少压，一次压到位，不要每轮都改一点。第二条是把 system prompt 和 tool 定义放在最前面，compaction 不动它们。</p>
+<p>手算一遍，数字都是举例。window 是 200K，阈值 80% 就是 160K。压之前有固定前缀 10K、旧的历史 135K、最近几轮 20K，合计 165K，过了阈值。把旧的历史压成 5K 的摘要，合计变成 35K。压完后的第一次请求里，10K 的固定前缀命中 cache，后面的 25K 重算。再往后每轮又只需要算新增的部分。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>由 harness 按 token 用量触发，不靠 model 自觉</li>
+  <li>大 tool result 落盘，context 里只留路径和开头几行</li>
+  <li>摘要保留目标、约束、已做的决定、未完成的步骤</li>
+  <li>原始记录留在磁盘，丢了的细节按路径取回</li>
+  <li>Compaction 让 prefix cache miss 一次，所以少压，固定前缀不动</li>
+  <li>硬约束放规则文件，不参与 compaction</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>摘要把“不能修改生产配置”写成了“修改生产配置”，怎么办？（蚂蚁原题）</summary>
+  <p>约束不交给摘要，它放在不参与 compaction 的规则文件里，每次逐字放进 context。写进长期 memory 之前，再拿规则文件核对一遍。</p>
+</details>
+<details>
+  <summary>旧信息已经被摘要掉了，后面还要用怎么办？（字节，作者转述）</summary>
+  <p>原始记录没有删，还在磁盘上。摘要里留着路径，model 用 read tool 把那一段取回来。</p>
+</details>
+<details>
+  <summary>compaction 的触发点是 model 主动，还是 harness 实现？</summary>
+  <p>harness 实现。它每轮都能拿到确切的 token 用量，触发条件写成代码最稳，不依赖 model 记得去做。</p>
+</details>
+<details>
+  <summary>被问到 Claude Code 或 Codex 的 compaction 是怎么实现的，怎么答？</summary>
+  <p>中文面经里有几帖这样问。没读过实现就直说，然后讲自己会怎么设计，也就是上面那张表的五行。</p>
+</details>
+<details>
+  <summary>FlashVector 怎么控制 context 的大小？</summary>
+  <p>它的 Refine 在 run 结束后 in-place 更新 knowledge base，不往后追加，所以 agent 要带的 memory 有上限（见 <a href="agent-knowledge-base.html">knowledge base 和 memory</a>）。</p>
+</details>
+
+<p class="src"><b>来源</b>面经原帖：<a href="https://www.nowcoder.com/feed/main/detail/aece93373f9c47ea95c831aef6471886">科大讯飞 AI 应用一面</a>、<a href="https://www.nowcoder.com/feed/main/detail/d9d6a1ea1adc41b4a44ca47b535e9994">蚂蚁 AI 应用方向</a>、<a href="https://www.nowcoder.com/feed/main/detail/0ee160a2d38f4b5daaf1965cf975a8f0">字节 Agent 开发日常实习一面</a>、<a href="https://www.nowcoder.com/feed/main/detail/0fabdc17ea3e43e881d516745c148327">上海某中厂 Agent 开发一面</a>（触发点是 model 主动还是 harness 实现） · <a href="https://prachub.com/interview-experiences/mercor-software-engineer-interview-experience-applied-ai-tech-screen-with-an-async-refund-debugging-question-and-rapid-fire-llm-questions">PracHub：Mercor SWE 电面</a> · <a href="https://arxiv.org/html/2609.17391">FlashVector</a> §4.2 Refine · ml-八股 08 第 34 题 · 中文平台调研笔记 1.4 节</p>
+
+</main>
+</body>
+</html>

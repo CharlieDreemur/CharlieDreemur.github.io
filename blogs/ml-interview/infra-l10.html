@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 10 课 · 手写与项目</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 10 课</p>
+<h1>手写题和项目故事</h1>
+<p class="lead">到第 9 课，v0 到 v7 的每一版你都能讲清楚，也能在 Megatron 的代码里找到。但 NVIDIA 的面试还要现场交付两样东西：限时手写代码；被问到自己的项目时，用数字讲清你做了什么。这一课先练五道手写题，按 NVIDIA 面经里出现的次数排；再把你的 TikTok SFT 整理成一个 infra 故事。</p>
+<p class="meta"><b>面试会这样问</b><q>Implement a decoder KV cache.</q> · <q>Implement MoE and show the dimensions.</q> · <q>What were your exact contributions?</q></p>
+<p class="meta"><b>考过</b>NVIDIA MLE 电面 2026（ML coding 实现 KV cache，<a href="https://www.1point3acres.com/bbs/thread-1184818-1-1.html">1p3a 1184818</a>）· NVIDIA 一亩三分地题库 OJ "Implement a Decoder KV Cache" · NVIDIA SWE（"Implement MoE and show the dimensions"，Glassdoor RVW105422785，年份未核实）· NVIDIA 框架岗 2023（电话面写 Column / Row Parallel Linear 的 pseudocode；take-home 和 onsite 从零实现 gradient，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· NVIDIA 一亩三分地题库 hot 题（"FP32 Tensor to Int8 Quantization"，<a href="https://www.1point3acres.com/bbs/thread-1190285-1-1.html">汇总帖 1190285</a>）</p>
+
+<h2>手写题的节奏</h2>
+<ol>
+  <li>先复述题目，问清输入输出的 shape 和 dtype</li>
+  <li>写最短的能跑的版本，边写边说</li>
+  <li>用一个能手算的小例子，或者一个笨办法的参考实现对一遍</li>
+  <li>再答追问</li>
+</ol>
+<p>下面的代码都是 NumPy，每段 20 行左右。完整练习放进 ml-coding 里写。</p>
+
+<h2>手写 1 · causal MHA + KV cache</h2>
+<p><b>原题</b>：NVIDIA MLE 电面 2026 的 ML coding 考 KV cache 的实现；题库 OJ 有 “Implement a Decoder KV Cache”。写完要能证明：逐 token decode 的输出和整段重算完全一样。</p>
+<p><b>关键步骤</b>：只为新 token 算 q、k、v → 把 k、v 接到 cache 后面 → 新的 q 对 cache 里全部的 K、V 做 attention → causal mask 只在一次进多个 token（prefill）时起作用。</p>
+<pre><code>def attn(q, K, V, mask=None):              # q (h,n,dk)  K,V (h,t,dk)
+    s = q @ K.transpose(0, 2, 1) / np.sqrt(q.shape[-1])
+    if mask is not None:
+        s = np.where(mask, -1e9, s)        # -1e9 比 -inf 安全
+    p = np.exp(s - s.max(-1, keepdims=True))
+    return (p / p.sum(-1, keepdims=True)) @ V
+
+class CachedMHA:
+    def __init__(self, Wq, Wk, Wv, Wo, h):
+        self.W, self.h, self.K, self.V = (Wq, Wk, Wv, Wo), h, None, None
+    def split(self, X):                    # (n, d) -&gt; (h, n, dk)
+        n, d = X.shape
+        return X.reshape(n, self.h, d // self.h).transpose(1, 0, 2)
+    def __call__(self, X):                 # X (n, d)：整段 prompt 或 1 个新 token
+        Wq, Wk, Wv, Wo = self.W
+        q, k, v = (self.split(X @ W) for W in (Wq, Wk, Wv))
+        self.K = k if self.K is None else np.concatenate([self.K, k], 1)
+        self.V = v if self.V is None else np.concatenate([self.V, v], 1)
+        n, t = X.shape[0], self.K.shape[1]
+        mask = np.triu(np.ones((n, t), bool), k=t - n + 1)  # 不看未来
+        o = attn(q, self.K, self.V, mask)  # (h, n, dk)
+        return o.transpose(1, 0, 2).reshape(n, -1) @ Wo</code></pre>
+<p><b>怎么验证</b>：同一组 weight，一次喂整段，和先 prefill 再一个个 decode，两种输出用 <code>np.allclose</code> 比。</p>
+<ul>
+  <li><b>为什么不缓存 Q？</b>新 token 的输出只要它自己的 q，旧 token 的 q 早就用完了</li>
+  <li><b>每个 token 占多少？</b>2 × L × n_kv × d_head × 2 bytes。Qwen3-8B：2 × 36 × 8 × 128 × 2 = 144 KiB，8K tokens 约 1.1 GiB</li>
+  <li><b>GQA 怎么改？</b>K、V 只投影 8 个 head，算之前用 <code>np.repeat(K, 4, axis=0)</code> 扩成 32 个；cache 只存 8 个，小 4 倍</li>
+  <li><b><code>np.concatenate</code> 的问题？</b>每步拷贝整个 cache，O(t)。实际做法是预分配 max_len，或者像 vLLM 按 block 分页</li>
+  <li><b>prefill 和 decode 各慢在哪？</b>prefill 是大 matmul，compute-bound；decode 每步读全部 weight 和 cache，memory-bound</li>
+  <li><b>用 RoPE 时存什么？</b>存转过的 k，以后不用再转</li>
+</ul>
+
+<h2>手写 2 · MoE forward，写出每一步的 shape</h2>
+<p><b>原题</b>：NVIDIA SWE “Implement MoE and show the dimensions”。Glassdoor 的另一条摘要里，同一场还问了 CUDA kernel optimization，追问 kernel fusion 和 launch overhead。</p>
+<p><b>关键步骤</b>（例：T = 4096 个 token，h = 4096，E = 8，k = 2，expert 中间维 f = 12288，和第 7 课一样，cf = 1.25）：x [4096, 4096] → router logits [4096, 8] → top-2 的下标和 gate [4096, 2] → 每个 expert 最多收 C = 1.25 × 2 × 4096 ÷ 8 = 1280 个 token：[≤1280, 4096] → [≤1280, 12288] → [≤1280, 4096] → 按 gate 加权加回 y [4096, 4096]。</p>
+<pre><code>def softmax(z):
+    e = np.exp(z - z.max(-1, keepdims=True)); return e / e.sum(-1, keepdims=True)
+
+def moe(x, Wr, W1, W2, k=2, cf=1.25):
+    # x [T,h]  Wr [h,E]  W1 [E,h,f]  W2 [E,f,h]
+    T, E = x.shape[0], Wr.shape[1]
+    p = softmax(x @ Wr)                          # router probs  [T,E]
+    idx = np.argsort(-p, axis=1)[:, :k]          # top-k experts [T,k]
+    w = np.take_along_axis(p, idx, axis=1)       # gate values   [T,k]
+    w = w / w.sum(1, keepdims=True)
+    C = int(cf * k * T / E)                      # capacity per expert
+    y = np.zeros_like(x)                         # output        [T,h]
+    for e in range(E):
+        t, j = np.nonzero(idx == e)              # tokens sent to e
+        t, j = t[:C], j[:C]                      # overflow dropped
+        hid = np.maximum(x[t] @ W1[e], 0)        # [n,h] -&gt; [n,f]
+        y[t] += w[t, j, None] * (hid @ W2[e])    # [n,f] -&gt; [n,h], combine
+    f = np.bincount(idx[:, 0], minlength=E) / T  # top-1 fraction [E]
+    aux = E * np.sum(f * p.mean(0))              # Switch aux loss
+    return y, aux</code></pre>
+<p><b>怎么验证</b>：写一个逐 token 循环的笨版本（每个 token 选 top-k，按 token 顺序占 capacity），两者输出对比。</p>
+<ul>
+  <li><b>capacity 满了的 token？</b>这一层不算，靠 residual 直接传到下一层</li>
+  <li><b>为什么要 aux loss？</b>不加的话 router 越来越偏向少数 expert（expert collapse）。上面的 aux 在均匀分配时等于 1，全挤到一个 expert 时等于 E，实际再乘一个系数 α</li>
+  <li><b>kernel 太碎、launch overhead 大？</b>（NVIDIA 原追问）按 expert 循环要发 E 个小 GEMM。先按 expert 排序 token（permute），用一个 grouped GEMM 算完，再排回去（unpermute）；Megatron 的 <code>--moe-grouped-gemm</code>、<code>--moe-permute-fusion</code></li>
+  <li><b>EP 时变什么？</b>dispatch 和 combine 变成两次 all-to-all，Megatron 里是 <code>MoEAlltoAllTokenDispatcher</code></li>
+  <li><b>router 为什么用 fp32？</b>softmax 里的 exp 对 bf16 的舍入很敏感，Switch 全用 bf16 会发散</li>
+</ul>
+
+<h2>手写 3 · Column / Row Parallel Linear</h2>
+<p><b>原题</b>：NVIDIA 框架岗 2023 电话面，“Column Parallel和Row Parallel Linear Layer的实现和pros &amp; cons”，写少量 pseudocode。</p>
+<p><b>关键步骤</b>：MLP \(Z = \mathrm{ReLU}(XA)\,B\)。A 按列切（column），B 按行切（row）。forward 只在最后 all-reduce 一次（g），backward 只有 dX 要 all-reduce 一次（f），dA、dB 都在本卡算完。</p>
+<pre><code># NumPy 模拟 t = 2；dZ 是从后面传回来的 gradient
+A1, A2 = np.split(A, 2, axis=1)          # column：每卡 [h, 4h/2]
+B1, B2 = np.split(B, 2, axis=0)          # row：   每卡 [4h/2, h]
+Y = [relu(X @ Ai) for Ai in (A1, A2)]    # 每卡本地算，不通信
+Z = Y[0] @ B1 + Y[1] @ B2                # g：forward all-reduce
+dY = [dZ @ Bi.T * (Yi &gt; 0) for Bi, Yi in zip((B1, B2), Y)]
+dB = [Yi.T @ dZ for Yi in Y]             # 本地，不通信
+dA = [X.T @ dYi for dYi in dY]           # 本地，不通信
+dX = dY[0] @ A1.T + dY[1] @ A2.T         # f：backward all-reduce
+
+# PyTorch 伪代码（省略 @staticmethod），对应 Megatron 的 mappings.py
+class f(torch.autograd.Function):        # _CopyToModelParallelRegion
+    def forward(ctx, x):  return x
+    def backward(ctx, g): return all_reduce(g)
+class g(torch.autograd.Function):        # _ReduceFromModelParallelRegion
+    def forward(ctx, x):  return all_reduce(x)
+    def backward(ctx, g): return g
+# 每个 rank：Z = g.apply(relu(f.apply(X) @ A_i) @ B_i)</code></pre>
+<p><b>怎么验证</b>：Z、dX 和单卡结果一样；两卡的 dA 按列拼、dB 按行拼，也和单卡一样。</p>
+<ul>
+  <li><b>pros 和 cons？</b>pros：weight、optimizer state、activation 都变成 1/t；cons：all-reduce 在 critical path 上，只能放在 NVLink 内，t 大了 GEMM 变小、效率下降</li>
+  <li><b>为什么先 column 后 row？</b>中间的 activation 逐元素，可以在本卡算，零通信；反过来 activation 之前就得 all-reduce</li>
+  <li><b>bias 怎么办？</b>column 的 bias 跟着列切；row 的 bias 不切，all-reduce 之后只加一次</li>
+  <li><b>attention 怎么切？</b><code>linear_qkv</code> 按 head 做 column，<code>linear_proj</code> 做 row，head 数要能被 t 整除</li>
+  <li><b>怎么证明你写对了？</b>固定 seed，和单卡 <code>nn.Linear</code> 比 output 和 gradient；t = 1、2、4，有无 bias 都测；没有多卡就用 gloo 在 CPU 上起多个进程</li>
+</ul>
+
+<h2>手写 4 · FP32 → INT8 quantization</h2>
+<p><b>原题</b>：题库 hot 题。实现 <code>quantize_fp32_to_int8(x, scale)</code>：任意 shape 的 FP32 tensor，每个值除以 scale、round、限制到 [−128, 127]，返回同 shape 的 int8 tensor。之后有 5 个 follow-up。</p>
+<p><b>关键步骤</b>：\(q = \mathrm{clamp}(\mathrm{round}(x/s) + z,\ -128,\ 127)\)，还原 \(\hat x = s\,(q - z)\)。先 clamp 再 cast。全 0 的 tensor 要防除以 0。注意 <code>np.round</code> 是 round half to even（<code>np.round(2.5)</code> 是 2），题目要“四舍五入”时先问清楚。</p>
+<pre><code>def quantize_fp32_to_int8(x, scale, zero_point=0, qmin=-128, qmax=127):
+    q = np.round(x / scale) + zero_point           # 任意 shape，逐元素
+    return np.clip(q, qmin, qmax).astype(np.int8)  # 先 clamp 再 cast
+
+def dequantize(q, scale, zero_point=0):
+    return scale * (q.astype(np.float32) - zero_point)
+
+def qparams(x, symmetric=True):
+    if symmetric:                                  # z = 0，配 qmin=-127
+        return max(np.abs(x).max(), 1e-8) / 127, 0
+    lo, hi = min(x.min(), 0.0), max(x.max(), 0.0)  # 区间要包含 0
+    scale = max(hi - lo, 1e-8) / 255
+    return scale, int(np.round(-lo / scale)) - 128</code></pre>
+<p><b>自检</b>：<code>quantize_fp32_to_int8(np.array([-1., 0., 1.]), 0.1)</code> → [−10, 0, 10]。x = [−1, 0, 0.5, 3] 用 asymmetric：s = 4/255 ≈ 0.0157，z = −64，q = [−128, −64, −32, 127]。</p>
+<ol>
+  <li><b>加 zero_point 做 asymmetric</b>：s = (max − min)/255，z = round(−min/s) − 128；quantize 时加 z，dequantize 时减 z</li>
+  <li><b>symmetric 什么时候不够</b>：分布偏向一边时（ReLU 之后、softmax 输出），一半格子用不上。上面的 x 用 symmetric 最大误差 0.0079，asymmetric 是 0.0039</li>
+  <li><b>scale 和 zero_point 怎么配合</b>：x = s(q − z)。s 定一格多宽，z 定实数 0 落在哪个整数；z 是整数，所以 0 能被精确表示</li>
+  <li><b>超出 [−128, 127]</b>：clamp 到边界（saturation）。scale = 0.1 时 20 → 127 → 还原成 12.7。直接 cast 会 wraparound，200 变成 −56</li>
+  <li><b>skewed 或有 outlier</b>：max 被 outlier 撑大，小值全变 0：[0.1, 0.2, 0.3, 100] → [0, 0, 0, 127]。办法：per-channel scale、percentile calibration、outlier 单独留在 FP16 算（LLM.int8()），或者挪到 weight 上（SmoothQuant）</li>
+</ol>
+
+<h2>手写 5 · mini autograd</h2>
+<p><b>原题</b>：NVIDIA 框架岗 2023 的 take-home，在一个能 trace graph 的框架里从零实现 gradient（weight、bias、activation、softmax）；onsite 又在 colab 写 backprop，追问 gradient accumulation。</p>
+<p><b>关键步骤</b>：每个节点存 data、grad、parents 和一个 backward closure → backward 时先用 DFS 排出 topological order → loss 的 grad 设为 1 → 逆序调用每个 closure → gradient 一律用 +=。</p>
+<pre><code>class Value:
+    def __init__(self, data, parents=()):
+        self.data, self.grad, self.parents = data, 0.0, parents
+        self._backward = lambda: None      # 把 out.grad 传给 parents
+    def __add__(self, o):
+        out = Value(self.data + o.data, (self, o))
+        def bw(): self.grad += out.grad; o.grad += out.grad
+        out._backward = bw; return out
+    def __mul__(self, o):
+        out = Value(self.data * o.data, (self, o))
+        def bw(): self.grad += o.data * out.grad; o.grad += self.data * out.grad
+        out._backward = bw; return out
+    def backward(self):
+        topo, seen = [], set()
+        def build(v):                      # DFS 后序 = topological order
+            if v not in seen:
+                seen.add(v)
+                for p in v.parents: build(p)
+                topo.append(v)
+        build(self)
+        self.grad = 1.0                    # dL/dL = 1
+        for v in reversed(topo): v._backward()   # 从 loss 往输入走</code></pre>
+<p><b>自检</b>：L = xy + x，x = 2、y = 3 → x.grad = 4，y.grad = 2；再用 central difference 对一遍。</p>
+<ul>
+  <li><b>为什么用 +=？</b>一个变量用了几次，gradient 就是几条路径之和。<code>c * c</code>（c = 3）用 += 得 6，写成 = 只剩 3</li>
+  <li><b>为什么要 topological order？</b>保证一个节点收齐所有下游的 gradient 才往上传，每个 closure 只跑一次</li>
+  <li><b>扩展到 tensor？</b>matmul \(C = AB\)：\(\bar A = \bar C B^\top\)，\(\bar B = A^\top \bar C\)；被 broadcast 的维度要 sum 回原 shape；softmax 和 cross-entropy 合成一个 op，gradient 是 \(p - \text{onehot}(y)\)</li>
+  <li><b>gradient accumulation？</b>（onsite 原追问）k 个 micro-batch 之间不清零，loss 除以 k，step 之后再 zero_grad</li>
+  <li><b>图太深？</b>递归 DFS 会超过 Python 的 recursion limit，改用显式 stack</li>
+</ul>
+
+<h2>项目故事：TikTok 的 32 卡 SFT</h2>
+<p>NVIDIA 会问 “What were your exact contributions?”，然后顺着数字往下追。你手里已有的事实：Qwen3-VL 2B / 4B / 8B 全参 SFT，32 张 H100，DeepSpeed；account-level 的 SFT 数据，74K 个 account、1.33M 条视频；53 个 checkpoint 上做 cross-domain evaluation 和 threshold calibration；最终 4B 模型在约 70% recall 下，false positive 比 8B baseline 少 42.8%（318 → 182，136 ÷ 318）。</p>
+<p><b>填空模板</b>（英文，面试时直接说）：</p>
+<ol>
+  <li><b>Context</b>：At TikTok I fine-tuned Qwen3-VL at 2B, 4B and 8B for ____, on an account-level dataset of 74K accounts and 1.33M videos.</li>
+  <li><b>Setup</b>：Full-parameter SFT on 32 H100s, 4 nodes × 8, with DeepSpeed ZeRO-__, bf16 ____, gradient checkpointing ____, ____ frames or ____ tokens per sample.</li>
+  <li><b>Batch and speed</b>：micro-batch __ × accumulation __ × 32 GPUs = global batch __; a step took __ s, about __ tokens/s per GPU, peak memory __ GB, so MFU was roughly __%.</li>
+  <li><b>Problem</b>：The hardest issue was ____. I found it by ____, fixed it with ____, and it went from __ to __.</li>
+  <li><b>My part</b>：I owned ____; the team owned ____.</li>
+  <li><b>Result</b>：I evaluated 53 checkpoints across domains and calibrated thresholds; the final 4B model cut false positives by 42.8%, from 318 to 182, versus the 8B baseline at about 70% recall.</li>
+</ol>
+
+<h2>先去查的数</h2>
+<table>
+  <thead><tr><th>查什么</th><th>在哪找</th><th>面试官借它判断什么</th></tr></thead>
+  <tbody>
+    <tr><td>ZeRO stage、有没有 offload</td><td>ds_config 的 <code>zero_optimization.stage</code>、<code>offload_optimizer</code>、<code>offload_param</code></td><td>你知不知道为什么选这一级</td></tr>
+    <tr><td>bf16</td><td><code>bf16.enabled</code></td><td>mixed precision 懂不懂</td></tr>
+    <tr><td>gradient checkpointing</td><td>HF 的 <code>gradient_checkpointing</code> 参数或 <code>gradient_checkpointing_enable()</code></td><td>会不会拿 compute 换 activation</td></tr>
+    <tr><td>每条样本的帧数、sequence length</td><td>数据和 processor 的配置（帧数、分辨率决定vision token 数）</td><td>activation 有多大</td></tr>
+    <tr><td>micro-batch × accumulation × 32 = global batch</td><td><code>train_micro_batch_size_per_gpu</code>、<code>gradient_accumulation_steps</code>、<code>train_batch_size</code>（DeepSpeed 要求三者满足这个等式）</td><td>DP 的规模</td></tr>
+    <tr><td>step time 或 tokens/s</td><td>训练 log、wandb</td><td>能不能算出 MFU</td></tr>
+    <tr><td>每卡 memory 峰值</td><td><code>torch.cuda.max_memory_allocated()</code>、nvidia-smi</td><td>和下面的估算对不对得上</td></tr>
+  </tbody>
+</table>
+
+<h2>提前算好三笔账</h2>
+<ul>
+  <li><b>为什么非用 ZeRO 不可</b>：8B × 16 bytes = 128 GB，比 80 GB 大，DDP 每卡放一整份放不下</li>
+  <li><b>你那一级每卡多少</b>（N = 32，只算 model state）：</li>
+</ul>
+<table>
+  <thead><tr><th></th><th>DDP</th><th>ZeRO-1：\(4\Psi + 12\Psi/N\)</th><th>ZeRO-2：\(2\Psi + 14\Psi/N\)</th><th>ZeRO-3：\(16\Psi/N\)</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">8B</td><td>128 GB</td><td>35 GB</td><td>19.5 GB</td><td>4 GB</td></tr>
+    <tr><td class="nw">4B</td><td>64 GB</td><td>17.5 GB</td><td>9.75 GB</td><td>2 GB</td></tr>
+  </tbody>
+</table>
+<p>实测峰值减去这个数，剩下的主要是 activation 和临时 buffer。视频样本 token 多。按第 1 课的估算，一条 8K tokens 的样本（假设的数）开 FlashAttention、不开 checkpointing 约 41 GB，比 ZeRO-2 的 19.5 GB 还大，这就是 gradient checkpointing 的理由。</p>
+<ul>
+  <li><b>估一个 MFU</b>：</li>
+</ul>
+\[ \text{MFU} = \frac{\text{每卡 tokens/s} \times 6\Psi}{989\ \text{TFLOPS}} \]
+<p>参照点：Ψ = 8B 时，MFU 40% 等于每卡约 8,200 tokens/s（每个 token 6Ψ = 48B FLOPs，0.4 × 989T ÷ 48B ≈ 8,240）。例（假设的数）：每卡 3,000 tokens/s → 3,000 × 48B ÷ 989T ≈ 15%。粗估只算 LLM 部分，token 数用进入 LLM 的文本加vision token；s = 8192 时 attention 还要再加约 s/(6h) ≈ 33%，6ND 没算它。</p>
+<p class="you"><b>去查一下</b>模板里的空和“先去查的数”那张表，全都要从你当时的 ds_config、训练 log 和 wandb 里查出来，不要凭印象说。查完把模板填满，用英文讲两遍，控制在 2 分钟内。</p>
+
+<h2>准备一个问题和解决过程</h2>
+<p>结构：症状（带数字）→ 怎么定位（用了什么工具、看到什么）→ 根因 → 改了什么 → 改完的数字。四类里选一个你真遇到过的：</p>
+<ul>
+  <li><b>OOM</b>：常见根因是长视频样本的 activation。办法：gradient checkpointing、减帧数或分辨率、按长度分桶、升到 ZeRO-3 或 offload</li>
+  <li><b>慢</b>：MFU 低。看 profiler：视频解码拖住 dataloader（多开 worker、预先抽帧）、ZeRO-3 每层 all-gather 走跨机 IB、padding 太多</li>
+  <li><b>NaN</b>：loss 变成 NaN 或突然 spike。查 learning rate 和 warmup、gradient clipping、坏样本</li>
+  <li><b>hang</b>：多半是各 rank 的 collective 次数对不上。常见的一种：某些 rank 的 batch 里没有图像，跳过了 vision encoder，ZeRO-3 的 parameter all-gather 就对不齐。查法：开 <code>NCCL_DEBUG=INFO</code>、设 timeout、用 py-spy 看每个 rank 卡在哪一行</li>
+</ul>
+
+<h2>可能的追问</h2>
+<ul>
+  <li><b>“Why not Megatron?”</b>：8B 用 ZeRO 就放得下（ZeRO-2 每卡 19.5 GB），DP 的通信大多能藏在计算后面；Qwen3-VL 的模型代码和 DeepSpeed 都直接接 HF，不用转 checkpoint。TP、PP 要到 70B 以上、超长序列，或者卡多到 global batch 不够分时才划算。规模再大，可以用 Megatron Bridge 把 HF checkpoint 转过去</li>
+  <li><b>“What limited throughput?”</b>：先报实测的 MFU，再说时间花在哪：数据（视频解码）、通信（跨 4 台机器的 IB；ZeRO-3 时每层 all-gather）、recompute（多约 1/3 的 compute）、padding。没测过就说怎么测：用 torch profiler 或 Nsight Systems 抓一个 step 的 trace</li>
+  <li><b>“How would you scale to 70B?”</b>：先算账，70B × 16 = 1,120 GB。ZeRO-3 切到 32 卡每卡 35 GB，放得下，但每层都要跨机 all-gather，activation 也不切。所以换 Megatron：TP 8 放机内 → PP 跨机，TP8 × PP4 正好 32 卡，每卡 35 GB → 视频长序列加 SP、CP → 卡更多时再加 DP 和 distributed optimizer。Megatron 文档的 70B / 64 卡配置是 TP4、PP4、CP2、DP2</li>
+</ul>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>At TikTok I ran distributed full-parameter SFT of Qwen3-VL at 2B, 4B and 8B on 32 H100s with DeepSpeed. For the 8B model, bf16 weights and gradients plus fp32 Adam states take about 128 GB, more than one GPU's 80 GB, so plain data parallel can't work; ZeRO shards those states across the 32 GPUs, stage __ in my config. The data was 74K accounts and 1.33M videos. I evaluated 53 checkpoints across domains and calibrated thresholds, and the final 4B model cut false positives by 42.8%, from 318 to 182, versus the 8B baseline at about 70% recall. Tensor and pipeline parallelism would pay off at around 70B.</p></div>
+
+<h2>自测</h2>
+<details><summary>KV cache 逐 token decode 的输出为什么和整段重算一样？</summary><p>causal 下前面 token 的 k、v 不受后面 token 影响；新 token 的 q 对全部 k、v 做的计算，和整段计算时它那一行完全相同。</p></details>
+<details><summary>MoE：T = 4096、h = 4096、E = 8、k = 2、cf = 1.25，写出每步 shape。</summary><p>logits [4096, 8] → gate 和下标 [4096, 2] → C = 1280 → 每个 expert [≤1280, 4096] → [≤1280, f] → [≤1280, 4096] → y [4096, 4096]。</p></details>
+<details><summary>Column parallel 的 backward 为什么要 all-reduce？</summary><p>每卡只有 A 的几列，\(dX = \sum_i dY_i A_i^\top\) 是各卡部分和，要加起来每卡才拿到完整的 dX。</p></details>
+<details><summary>quantize 时为什么先 clamp 再 cast？</summary><p>直接 cast 成 int8 会 wraparound，200 变成 −56，符号都反了；clamp 之后是 127，误差只是超出的那部分。</p></details>
+<details><summary>如果你当时用的是 ZeRO-2，8B 每卡 model state 多少？为什么不能用 DDP？</summary><p>2Ψ + 14Ψ/32 = 16 + 3.5 = 19.5 GB。DDP 每卡一整份 128 GB，超过 80 GB。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="kv-cache.html">3.11 KV cache</a> · <a href="multi-head-attention.html">3.3 MHA</a> · <a href="moe-expert-parallel.html">6.8 MoE 与 Expert Parallel</a> · <a href="tp-linear.html">6.1 TP Linear</a> · <a href="quantization-int8.html">6.16 Quantization</a> · <a href="autograd.html">6.19 autograd</a> · <a href="gradient-accumulation.html">6.20 gradient accumulation</a> · <a href="dp-zero-fsdp.html">6.6 DP、ZeRO、FSDP</a> · <a href="flops-mfu.html">6.11 FLOPs、6ND、MFU</a> · <a href="debug-slow-hang.html">6.18 训练慢、hang 怎么查</a></p>
+
+<div class="next"><b>下一步</b>课到这里讲完了，剩下的是记牢。按 06 的 NVIDIA 复习顺序刷题，前 10 题必会：第一遍看答案，第二遍合上页面用英文说出来。</div>
+
+</main>
+</body>
+</html>

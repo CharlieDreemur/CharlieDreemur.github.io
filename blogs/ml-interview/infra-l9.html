@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 9 课 · 代码地图</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">Training Infra 速成课 · 第 9 课</p>
+<h1>Megatron Core 代码地图与 RL 训推</h1>
+<p class="lead">第 8 课把 TP、PP、CP、EP、DP 拼成了 v7，概念已经齐了。还剩两个缺口：面试官会追问“这在 Megatron 里是怎么写的”；团队现在的一大块工作是 RL post-training，同一份 weight 要在训练和生成两种切法之间来回搬。这一课把前面每一版对到 <code>megatron/core/</code> 的文件上，带读一层 Transformer，再讲 RL 里训练端和 inference 端怎么同步 weight。</p>
+<p class="meta"><b>面试会这样问</b><q>How does Megatron Core set up its process groups?</q> · <q>Walk me through a transformer layer's forward pass under tensor parallelism.</q> · <q>In RL post-training, how do the trainer's weights get to the inference engine?</q></p>
+<p class="meta"><b>考过</b>NVIDIA 框架岗 2023 电话面（"Column Parallel和Row Parallel Linear Layer的实现和pros &amp; cons"，写少量 pseudocode，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· NVIDIA DL Engineer 慕尼黑 2026（"Can you explain the details of how distributed training works"，Glassdoor RVW104512401）· RL 训推部分还没有面经，依据是团队的招聘帖（见最后一节）</p>
+
+<h2>一个仓库，两样东西</h2>
+<ul>
+  <li><b>Megatron Core</b>（<code>megatron/core/</code>）：一个库，提供能自由组合的并行积木：attention、MLP 等 transformer 模块，TP、PP、DP、EP、CP，FP16、BF16、FP8、FP4。可以用 <code>pip install megatron-core</code> 单独安装</li>
+  <li><b>Megatron-LM</b>：搭在 Core 上的参考训练脚本（根目录的 <code>pretrain_gpt.py</code>、<code>megatron/training/</code>），拿来就能跑</li>
+  <li>打个比方：Core 是一套标准厨具加传菜规则，Megatron-LM 是用这套厨具写好的一本菜谱，别的团队也能用同一套厨具写自己的菜谱</li>
+  <li><b>谁在用 Core</b>：<a href="https://github.com/NVIDIA/Megatron-LM">README</a> 点名的是 Megatron Bridge（Hugging Face 和 Megatron 的 checkpoint 双向转换，加训练 recipe）；<a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/get-started/overview.md">官方文档</a>的 “Libraries using Megatron Core” 还列了 NeMo RL、NeMo Framework 和 Model Optimizer。仓库之外，verl 的训练端也能选 Megatron</li>
+</ul>
+
+<h2>parallel_state：给每张卡发一组坐标</h2>
+<p><b>Process group</b> 是一组要一起做 collective 的 rank，像微信群：all-reduce 只在群里发，不会发给全公司。每张卡同时在一个 TP 群、一个 DP 群和一个 PP 群里。</p>
+<p>例子：16 张卡（2 台机器 × 8），TP = 2、PP = 2，DP 由代码算出来：16 ÷ (2 × 2) = 4。<code>initialize_model_parallel</code> 的默认 <code>order="tp-cp-ep-dp-pp"</code>，越靠左变化越快。CP、EP 都是 1 时，就等于按 tp、dp、pp 的顺序编号：</p>
+\[ \text{rank} = \text{tp} + 2\cdot\text{dp} + 8\cdot\text{pp} \]
+<p>例：rank 5 = 1 + 2 × 2 + 8 × 0，坐标是 (tp 1, dp 2, pp 0)。它的 TP 搭档是 4，DP 群是 [1, 3, 5, 7]，PP 下一段是 13。</p>
+<table>
+  <thead><tr><th>群</th><th>个数 × 每群卡数</th><th>成员</th><th>在哪</th></tr></thead>
+  <tbody>
+    <tr><td>TP</td><td class="nw">8 × 2</td><td>[0, 1] [2, 3] … [14, 15]</td><td>相邻 rank，同一台机器，走 NVLink</td></tr>
+    <tr><td>DP</td><td class="nw">4 × 4</td><td>[0, 2, 4, 6] [1, 3, 5, 7] [8, 10, 12, 14] [9, 11, 13, 15]</td><td>这个例子里也在机内</td></tr>
+    <tr><td>PP</td><td class="nw">8 × 2</td><td>[0, 8] [1, 9] … [7, 15]</td><td>跨机器，走 InfiniBand</td></tr>
+  </tbody>
+</table>
+<p>为什么这样排：TP 通信最重，放在变化最快的位置，保证同一个 TP 群在一台机器里；PP 只传段边界的 activation，放在最后，跨机也不怕。这就是第 8 课“TP 机内、PP 跨机”的规则，docstring 里也提醒调用方让相邻 rank 落在同一台机器上。算成员的是 <code>RankGenerator</code> 类；其他代码用 <code>get_tensor_model_parallel_group()</code>、<code>get_data_parallel_group()</code>、<code>get_pipeline_model_parallel_group()</code> 拿到群，再在群里调 NCCL。</p>
+
+<h2>文件地图</h2>
+<p>都在 <a href="https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core">megatron/core/</a> 下：</p>
+<table>
+  <thead><tr><th>对应</th><th>文件</th><th>先看这几个名字</th></tr></thead>
+  <tbody>
+    <tr><td>process group</td><td><code>parallel_state.py</code></td><td><code>initialize_model_parallel</code>、<code>RankGenerator</code></td></tr>
+    <tr><td>第 5 课 TP</td><td><code>tensor_parallel/layers.py</code></td><td><code>ColumnParallelLinear</code>、<code>RowParallelLinear</code>、<code>VocabParallelEmbedding</code></td></tr>
+    <tr><td>第 5 课 f / g</td><td><code>tensor_parallel/mappings.py</code></td><td><code>copy_to_tensor_model_parallel_region</code>（f）、<code>reduce_from_tensor_model_parallel_region</code>（g）</td></tr>
+    <tr><td>vocab-parallel loss</td><td><code>tensor_parallel/cross_entropy.py</code></td><td><code>vocab_parallel_cross_entropy</code></td></tr>
+    <tr><td>一层 Transformer</td><td><code>transformer/transformer_layer.py</code>、<code>attention.py</code>、<code>mlp.py</code></td><td><code>TransformerLayer</code>、<code>SelfAttention</code>、<code>MLP</code></td></tr>
+    <tr><td>第 6 课 PP</td><td><code>pipeline_parallel/schedules.py</code></td><td><code>get_forward_backward_func</code>，1F1B 和 interleaved 两个 <code>forward_backward_pipelining_*</code></td></tr>
+    <tr><td>第 4 课 DDP</td><td><code>distributed/distributed_data_parallel.py</code></td><td><code>DistributedDataParallel</code>（bucket、overlap）</td></tr>
+    <tr><td>第 4 课 ZeRO-1</td><td><code>optimizer/distrib_optimizer.py</code></td><td><code>DistributedOptimizer</code></td></tr>
+    <tr><td>第 7 课 MoE</td><td><code>transformer/moe/router.py</code>、<code>token_dispatcher.py</code></td><td><code>TopKRouter</code>、<code>MoEAlltoAllTokenDispatcher</code></td></tr>
+    <tr><td>checkpoint</td><td><code>dist_checkpointing/</code></td><td>按 shard 存，加载时可以换并行配置</td></tr>
+    <tr><td>本课 RL</td><td><code>resharding/</code></td><td><code>swap_model_weights</code></td></tr>
+  </tbody>
+</table>
+
+<h2>怎么读：一个文件 15 分钟</h2>
+<ol>
+  <li>搜 <code>class</code>，读每个类的 docstring，用一句话说出它解决第几课的什么问题</li>
+  <li>看 <code>__init__</code> 的参数。例：<code>ColumnParallelLinear</code> 的 <code>gather_output</code> 决定要不要把切开的输出拼回来；<code>RowParallelLinear</code> 的 <code>input_is_parallel</code> 表示输入已经切好了</li>
+  <li>看 <code>forward</code> 调了哪个通信函数，对上前面课里数过的通信次数</li>
+  <li>fusion、FP8、CUDA graph 的分支先跳过，不逐行读</li>
+</ol>
+<p>先读最核心的四个，约一小时：<code>parallel_state.py</code> → <code>layers.py</code> → <code>mappings.py</code> → <code>attention.py</code> 和 <code>mlp.py</code>。一个坑：默认的 Transformer Engine spec 把 LayerNorm 融进了 <code>linear_qkv</code>（<code>TELayerNormColumnParallelLinear</code>），<code>pre_mlp_layernorm</code> 也变成了 <code>IdentityOp</code>。第一次读看 <code>models/gpt/gpt_layer_specs.py</code> 里的 <code>get_gpt_layer_local_spec</code> 更清楚。</p>
+
+<h2>带读：一层 TransformerLayer 的 forward</h2>
+<p>用 Qwen3-8B 的维度、TP = 2。Megatron 的 activation 按 [s, b, h] 排，sequence 在前。</p>
+<ol>
+  <li><code>input_layernorm</code>：每卡对完整的 [s, b, 4096] 算一遍（没开 SP 时每卡一整份）</li>
+  <li><code>self_attention</code>（<code>SelfAttention</code>）
+    <ul>
+      <li><code>linear_qkv</code>：ColumnParallelLinear，<code>gather_output=False</code>。输出宽度 = Q 4096 + K 1024 + V 1024 = 6144，每卡 3072，正好是 16 个 Q head 和 4 个 KV head。f 的工作（backward 时 all-reduce input 的 gradient）在它内部完成，默认和 weight gradient 的计算 overlap（参数名 <code>allreduce_dgrad</code>）</li>
+      <li><code>core_attention</code>：<code>DotProductAttention</code>，用 Transformer Engine 时是 <code>TEDotProductAttention</code>（fused 的 FlashAttention 类 kernel）。每卡只算自己的 head，不通信</li>
+      <li><code>linear_proj</code>：RowParallelLinear，<code>input_is_parallel=True</code>。每卡用 [2048, 4096] 的 weight 算出部分和，再调 g（<code>reduce_from_tensor_model_parallel_region</code>）做 all-reduce，这是 forward 第 1 次；开了 SP 换成 reduce-scatter</li>
+    </ul>
+  </li>
+  <li><code>self_attn_bda</code>：bias-dropout-add，加 bias、做 dropout、加 residual</li>
+  <li><code>pre_mlp_layernorm</code></li>
+  <li><code>mlp</code>（<code>MLP</code>）
+    <ul>
+      <li><code>linear_fc1</code>：ColumnParallelLinear。SwiGLU 的 gate 和 up 两个矩阵合成一个，宽度翻倍：2 × 12288 = 24576，每卡 12288</li>
+      <li><code>activation_func</code>：SwiGLU，逐元素，在本卡算</li>
+      <li><code>linear_fc2</code>：RowParallelLinear，每卡 [6144, 4096]，g 做 all-reduce（forward 第 2 次）</li>
+    </ul>
+  </li>
+  <li><code>mlp_bda</code>：再加一次 residual</li>
+</ol>
+<p>数一下：forward 2 次 all-reduce（<code>linear_proj</code>、<code>linear_fc2</code> 之后），backward 2 次（<code>linear_qkv</code>、<code>linear_fc1</code> 的 input gradient），和第 5 课一致。每层约 193M 个 parameter（attention 42M + MLP 151M），TP = 2 时每卡约 96M。</p>
+
+<h2>RL post-training：一个训练引擎，一个 inference engine</h2>
+<p>GRPO、PPO 的每一轮做两件事：<b>rollout</b> 用当前 policy 生成一批回答（agent 还要和环境多轮交互），主要是 decode，memory-bound（第 0 课）；<b>training</b> 算 reward 和 advantage，再做 gradient update，就是第 1–8 课的内容。两件事各有最合适的引擎，所以框架把两个引擎拼在一起：</p>
+<ul>
+  <li><b>verl</b>：训练端 FSDP、FSDP2 或 Megatron-LM；rollout 用 vLLM、SGLang 或 HF</li>
+  <li><b>NVIDIA NeMo RL</b>：训练端 Automodel（PyTorch 原生的 FSDP2、TP 等）或 Megatron（通过 Megatron Bridge）；生成端 vLLM、SGLang 或 Megatron 自带的 inference</li>
+</ul>
+<p><b>为什么每轮都要重切 weight</b>：每次 update 之后，inference engine 手里还是旧 weight，不同步的话 rollout 用的就是旧 policy。而两边切法不同。例：8 张卡，训练用 TP4 × PP2，每卡放一半的层、每层 1/4 的矩阵；vLLM 用 TP8，每卡放全部的层、每层 1/8 的矩阵。所以每个 parameter 都要先拼起来，再按新切法切开，发到对的卡上。存储格式也不同。Megatron 的 <code>linear_qkv</code> 按 query group 交错存（代码注释写作 q1 q2 k1 v1 | q3 q4 k2 v2 | …），HF 和 vLLM 的 Q、K、V 是分开的，所以还要重排、改名。NeMo RL 把这一步叫 <b>refit</b>；Megatron Core 有专门的 <a href="https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core/resharding"><code>resharding/</code></a>，README 说它主要用在 RL loop 里。</p>
+<p><b>要搬多少</b>：8B 的 bf16 weight 是 16 GB，平摊到 8 张卡每卡 2 GB，走 NVLink 约 2 ÷ 450 ≈ 4.4 ms，走 IB 约 2 ÷ 50 = 40 ms。70B 就是 140 GB，而且每轮都要搬。</p>
+<table>
+  <thead><tr><th></th><th>colocated（同一批卡）</th><th>separate（分开的卡）</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">怎么跑</td><td>训练和 rollout 轮流用同一批卡，memory 来回腾：训练时 inference 端释放 KV cache</td><td>一批卡只训练，另一批只生成</td></tr>
+    <tr><td class="nw">weight 怎么传</td><td>不出机器：NeMo RL 用 CUDA IPC 直接共享 GPU memory</td><td>跨网络：NeMo RL 默认用 NCCL broadcast</td></tr>
+    <tr><td class="nw">好处</td><td>没有卡闲着，传得快</td><td>两边能同时跑，各自选最合适的并行配置</td></tr>
+    <tr><td class="nw">代价</td><td>同一时刻只有一边在干活</td><td>一边等另一边时卡会空转；想同时跑，就要用落后几步的 policy 生成（off-policy）</td></tr>
+    <tr><td class="nw">例子</td><td>verl 的 hybrid engine（<code>hybrid_engine: true</code>，默认）；NeMo RL <code>colocated.enabled: true</code></td><td>NeMo RL <code>colocated.enabled: false</code></td></tr>
+  </tbody>
+</table>
+<p class="you"><b>去查一下</b>OpenManus-RL 基于 verl。打开你跑过的启动脚本或 config：<code>actor_rollout_ref.actor.strategy</code> 是 fsdp 还是 megatron？<code>actor_rollout_ref.rollout.name</code> 是 vllm 还是 sglang，rollout 的 <code>tensor_model_parallel_size</code> 是几？<code>hybrid_engine</code> 是不是 true？查清楚以后，你就能说出“训练端用什么、rollout 用 vLLM TP 几、两边是否 colocated、每轮怎么同步 weight”，这正是团队在做的事。NVIDIA 2025-10-31 那条 “Deep Learning Framework Interns” LinkedIn 招聘帖把 Megatron-Core、Megatron-Bridge、NeMo-RL 列在一起，工作主题之一就是用 NeMo-RL 做 RL post-training。2026 年夏天一位 NeMo 和 Megatron 组的实习生，简历上写的是给 NeMo-RL 加 delta-compressed weight 和 GPUDirect RDMA 的 refit。</p>
+
+<h2>30 秒英文回答</h2>
+<div class="answer"><p>Megatron Core is NVIDIA's library of composable parallel building blocks; Megatron-LM adds reference training scripts on top, and Megatron Bridge and NeMo RL also build on it. parallel_state gives every rank TP, DP and PP coordinates. TP varies fastest, so TP groups are adjacent ranks on NVLink, and PP groups cross nodes. In a layer, linear_qkv and linear_fc1 are column-parallel, linear_proj and linear_fc2 are row-parallel: two all-reduces forward, two backward. In RL, a trainer like Megatron or FSDP alternates with an inference engine like vLLM. Their layouts differ, say TP4 × PP2 versus TP8, so after every update the weights are resharded and synced.</p></div>
+
+<h2>自测</h2>
+<details><summary>parallel_state.py 做什么？</summary><p>按 TP、PP、DP、CP、EP 的大小和 order 给每个 rank 算坐标，建好各个 process group（<code>initialize_model_parallel</code>），之后其他模块用 <code>get_*_group()</code> 取群。默认 tp 变化最快，所以 TP 群是相邻 rank，落在机内。</p></details>
+<details><summary>16 卡，TP = 2、PP = 2、DP = 4，rank 13 在哪几个群？</summary><p>13 = 1 + 2 × 2 + 8 × 1，坐标 (tp 1, dp 2, pp 1)。TP 群 [12, 13]，DP 群 [9, 11, 13, 15]，PP 群 [5, 13]。</p></details>
+<details><summary>ColumnParallelLinear 在哪个文件？一层里哪些 linear 用它？</summary><p><code>megatron/core/tensor_parallel/layers.py</code>。<code>linear_qkv</code> 和 <code>linear_fc1</code> 用它；<code>linear_proj</code> 和 <code>linear_fc2</code> 用同一个文件里的 <code>RowParallelLinear</code>。f、g 在 <code>mappings.py</code>。</p></details>
+<details><summary>RL 为什么要 reshard weight？</summary><p>每次 update 后 inference 端的 weight 就过期了，而训练端和 inference 端的切法、格式都不同（TP4 × PP2 vs TP8，QKV 交错存 vs 分开存）。所以要把新 weight 拼起来、按 inference 端的切法重切、发过去，否则 rollout 用的还是旧 policy。</p></details>
+<details><summary>Megatron Core 给了什么，是只用 PyTorch FSDP 得不到的？</summary><p>FSDP 只在 DP 方向切 model state（约等于 ZeRO-3）。activation 不切，每层都要 all-gather parameter，规模大了要跨机。Megatron Core 另外提供 TP + SP（切每层的矩阵和 activation）、PP schedule（1F1B、interleaved）、CP、带 token dispatcher 的 EP、distributed optimizer、Transformer Engine 的 FP8 kernel，以及能换并行配置加载的 distributed checkpoint。70B 以上、长序列、MoE 时，缺的正是这些。</p></details>
+
+<p class="links"><b>想看细一点</b> <a href="tp-linear.html">6.1 TP Linear</a> · <a href="tp-communication.html">6.2 TP communication</a> · <a href="pipeline-parallel.html">6.5 Pipeline Parallel</a> · <a href="dp-zero-fsdp.html">6.6 DP、ZeRO、FSDP</a> · <a href="moe-expert-parallel.html">6.8 MoE 与 Expert Parallel</a> · <a href="parallelism-config.html">6.9 怎么选 parallelism 配置</a> · <a href="rlhf-dpo-grpo.html">3.15 RLHF、DPO、GRPO</a></p>
+
+<div class="next"><b>下一课</b>概念和代码都对上了，但面试现场还要动手写，还要讲你自己的项目。下一课练 NVIDIA 考过的五道手写题，再把 TikTok 的 32 卡 SFT 整理成一个带数字的 infra 故事。</div>
+
+</main>
+</body>
+</html>

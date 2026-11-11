@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocab Parallel 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>Vocab parallelism：embedding 和 LM head 怎么切？<br>cross-entropy 怎么算才不用 gather logits？</h1>
+<p class="meta"><b>英文问法</b><q>How do you shard a huge embedding table and the LM head?</q> · <q>Why split along the vocabulary, and where does communication happen?</q> · <q>How do you compute cross-entropy without gathering the full logits?</q></p>
+<p class="meta"><b>考过</b>Microsoft MAI infra onsite 2026（整轮围绕大 embedding 和 LM head 的 distributed 切分，一直追问"为什么这么切、通信在哪里发生"，Pass，<a href="https://www.1point3acres.com/bbs/thread-1189843-1-1.html">1p3a 1189843</a>）· 快手（"这个列划分并行是什么？这里没用到all-gather啊？"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Embedding table</dt>
+  <dd>一张 [\(V\), \(h\)] 的表，lookup 就是按 token id 取一行。<span class="eg">例：token 5 → 取第 5 行，一个 \(h\) 维向量。</span></dd>
+  <dt>Vocab-parallel embedding</dt>
+  <dd>表按行（vocab）切，每卡管一段连续的 id。像 \(t\) 个图书管理员各管一段书号：借书单发给所有人，只有管那段的人递出书，其他人递空手，合起来正好一本。<span class="eg">例：\(V = 8\)、\(t = 2\)，token 5 → rank 0 输出 0，rank 1 输出 \(E[5]\)，all-reduce 求和 = \(E[5]\)。</span></dd>
+  <dt>LM head</dt>
+  <dd>[\(h\), \(V\)] 的矩阵，把 hidden 投成 \(V\) 个 logits。按 vocab 切就是 column parallel，每卡算 [\(b, s, V/t\)] 的 logits。和 embedding 共享 weight（weight tying）时用同一种切法。</dd>
+  <dt>Vocab-parallel cross-entropy</dt>
+  <dd>loss 只需要每个 token 的三个标量：logits 的 max、\(\sum e^{z}\)、目标 logit。每卡在自己的 \(V/t\) 列上算局部值，再 all-reduce 这三个标量，不用把 \(V\) 个 logits 拼回来。</dd>
+</dl>
+
+<h2 id="figs">看图：embedding 怎么查，cross-entropy 怎么算</h2>
+<figure class="fig">
+<svg viewBox="0 0 520 346" role="img" aria-label="V 等于 8 的 embedding 表按行切到两张卡：查 token 5 时只有管 4 到 7 的 GPU1 输出 E[5]，GPU0 输出 0，all-reduce 求和后两卡都得到 E[5]"><defs><marker id="vp1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="vp1-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="vp1-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><rect x="16" y="4" width="488" height="32" rx="6" class="box"/><text x="260" y="24.5" text-anchor="middle">token id = 5：两张卡都收到</text><path d="M131.0,36 V54" class="ln" marker-end="url(#vp1-a)"/><path d="M389.0,36 V54" class="ln" marker-end="url(#vp1-a)"/><rect x="16" y="56" width="230" height="180" rx="6" class="box"/><text x="131" y="76" text-anchor="middle" class="hd">GPU0：E 的第 0–3 行</text><text x="42" y="103" text-anchor="middle" class="m">0</text><rect x="60" y="88" width="166" height="20" rx="6" class="box"/><text x="143" y="102" text-anchor="middle" class="m">E[0]</text><text x="42" y="127" text-anchor="middle" class="m">1</text><rect x="60" y="112" width="166" height="20" rx="6" class="box"/><text x="143" y="126" text-anchor="middle" class="m">E[1]</text><text x="42" y="151" text-anchor="middle" class="m">2</text><rect x="60" y="136" width="166" height="20" rx="6" class="box"/><text x="143" y="150" text-anchor="middle" class="m">E[2]</text><text x="42" y="175" text-anchor="middle" class="m">3</text><rect x="60" y="160" width="166" height="20" rx="6" class="box"/><text x="143" y="174" text-anchor="middle" class="m">E[3]</text><text x="131" y="202" text-anchor="middle" class="m">[V/t, h] = [4, h]</text><text x="131" y="224" text-anchor="middle" class="m">5 不在本卡：查 0 号行后置 0</text><rect x="274" y="56" width="230" height="180" rx="6" class="box"/><text x="389" y="76" text-anchor="middle" class="hd">GPU1：E 的第 4–7 行</text><text x="300" y="103" text-anchor="middle" class="m">4</text><rect x="318" y="88" width="166" height="20" rx="6" class="box"/><text x="401" y="102" text-anchor="middle" class="m">E[4]</text><text x="300" y="127" text-anchor="middle" class="m">5</text><rect x="318" y="112" width="166" height="20" rx="6" class="f2"/><text x="401" y="126" text-anchor="middle" class="c2">E[5]</text><text x="300" y="151" text-anchor="middle" class="m">6</text><rect x="318" y="136" width="166" height="20" rx="6" class="box"/><text x="401" y="150" text-anchor="middle" class="m">E[6]</text><text x="300" y="175" text-anchor="middle" class="m">7</text><rect x="318" y="160" width="166" height="20" rx="6" class="box"/><text x="401" y="174" text-anchor="middle" class="m">E[7]</text><text x="389" y="202" text-anchor="middle" class="m">[V/t, h] = [4, h]</text><text x="389" y="224" text-anchor="middle" class="m">5 在本卡：本地第 5 − 4 = 1 行</text><path d="M131.0,236 V252" class="ln" marker-end="url(#vp1-a)"/><path d="M389.0,236 V252" class="ln" marker-end="url(#vp1-a)"/><rect x="16" y="254" width="230" height="32" rx="6" class="stale"/><text x="131" y="274" text-anchor="middle" class="m">输出：0 向量（h 维）</text><rect x="274" y="254" width="230" height="32" rx="6" class="f2"/><text x="389" y="274.5" text-anchor="middle" class="c2">输出：E[5]（h 维）</text><path d="M131.0,286 V304" class="ln" marker-end="url(#vp1-a)"/><path d="M389.0,286 V304" class="ln" marker-end="url(#vp1-a)"/><rect x="16" y="306" width="488" height="32" rx="6" class="hot"/><text x="260" y="326.5" text-anchor="middle" class="acc">all-reduce 求和：0 + E[5] = E[5]，两张卡都拿到</text></svg>
+<figcaption>图 1：沿用上面的例子，\(V = 8\)、\(t = 2\)，每卡存 [\(V/t\), \(h\)] 的一段行。token 5 发给所有卡，只有管 4–7 的 GPU1 真的查到了 \(E[5]\)（蓝色）；GPU0 先拿 0 号行去查、查完把输出置 0。每个 token 只有一张卡的输出不为 0，所以橙色的 all-reduce 求和后正好是 \(E[5]\)。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 520 390" role="img" aria-label="vocab-parallel cross-entropy：每卡只有 V/t 列 logits，依次 all-reduce 局部 max、exp 之和、目标 logit 三个标量，就能算出 loss，不用拼回完整 logits"><defs><marker id="vp2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="vp2-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="vp2-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="130" y="18" text-anchor="middle" class="hd">rank 0</text><text x="390" y="18" text-anchor="middle" class="hd">rank 1</text><rect x="10" y="30" width="240" height="32" rx="6" class="box"/><text x="130" y="50.5" text-anchor="middle">logits：id 0–3 的列 [b, s, V/t]</text><rect x="270" y="30" width="240" height="32" rx="6" class="box"/><text x="390" y="50.5" text-anchor="middle">logits：id 4–7 的列 [b, s, V/t]</text><path d="M130.0,62 V74" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,62 V74" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="76" width="240" height="32" rx="6" class="box"/><text x="130" y="96.5" text-anchor="middle">局部 max：m<tspan dy="3" font-size="12">0</tspan></text><rect x="270" y="76" width="240" height="32" rx="6" class="box"/><text x="390" y="96.5" text-anchor="middle">局部 max：m<tspan dy="3" font-size="12">1</tspan></text><path d="M130.0,108 V120" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,108 V120" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="122" width="500" height="32" rx="6" class="hot"/><text x="260" y="142.5" text-anchor="middle" class="acc">① all-reduce MAX：m = max(m<tspan dy="3" font-size="12">0</tspan><tspan dy="-3">, m</tspan><tspan dy="3" font-size="12">1</tspan><tspan dy="-3">)</tspan></text><path d="M130.0,154 V166" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,154 V166" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="168" width="240" height="32" rx="6" class="box"/><text x="130" y="188.5" text-anchor="middle">S<tspan dy="3" font-size="12">0</tspan><tspan dy="-3"> = Σ exp(z − m)，本卡的列</tspan></text><rect x="270" y="168" width="240" height="32" rx="6" class="box"/><text x="390" y="188.5" text-anchor="middle">S<tspan dy="3" font-size="12">1</tspan><tspan dy="-3"> = Σ exp(z − m)，本卡的列</tspan></text><path d="M130.0,200 V212" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,200 V212" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="214" width="500" height="32" rx="6" class="hot"/><text x="260" y="234.5" text-anchor="middle" class="acc">② all-reduce SUM：S = S<tspan dy="3" font-size="12">0</tspan><tspan dy="-3"> + S</tspan><tspan dy="3" font-size="12">1</tspan></text><path d="M130.0,246 V258" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,246 V258" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="260" width="240" height="32" rx="6" class="stale"/><text x="130" y="280" text-anchor="middle" class="m">目标 y 不在本卡：填 0</text><rect x="270" y="260" width="240" height="32" rx="6" class="f2"/><text x="390" y="280.5" text-anchor="middle" class="c2">目标 y 在本卡：取 z<tspan dy="3" font-size="12">y</tspan></text><path d="M130.0,292 V304" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,292 V304" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="306" width="500" height="32" rx="6" class="hot"/><text x="260" y="326.5" text-anchor="middle" class="acc">③ all-reduce SUM：z<tspan dy="3" font-size="12">y</tspan><tspan dy="-3"> = 0 + z</tspan><tspan dy="3" font-size="12">y</tspan></text><path d="M130.0,338 V350" class="ln" marker-end="url(#vp2-a)"/><path d="M390.0,338 V350" class="ln" marker-end="url(#vp2-a)"/><rect x="10" y="352" width="500" height="32" rx="6" class="box"/><text x="260" y="372.5" text-anchor="middle">loss = log S − (z<tspan dy="3" font-size="12">y</tspan><tspan dy="-3"> − m)：每张卡都能算</tspan></text></svg>
+<figcaption>图 2：接着 LM head 的输出，rank 0 有 id 0–3 的 logits，rank 1 有 id 4–7 的，目标 \(y\) 落在 rank 1（蓝色）。橙色是三次 all-reduce：先求全局 max \(m\)，再求 \(\sum e^{z-m}\)，最后把只有 rank 1 才有的目标 logit 加起来。每次只传每个 token 一个数，共 [\(b, s\)] 个，不用把 [\(b, s, V\)] 的 logits 拼回来。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Megatron splits both along the vocabulary. The embedding is split by rows: each rank owns a range of token ids, looks up those it owns, outputs zeros for the rest, and an all-reduce sums the results, since exactly one rank contributes each token. The LM head is column-parallel over the same split, so each rank gets logits for its V/t slice. Instead of all-gathering b·s·V logits, cross-entropy runs in place: all-reduce MAX of the local max, all-reduce SUM of the local sum of exps, and all-reduce SUM of the target logit, which only one rank has. That's three b·s tensors instead of b·s·V, and logits memory drops by t.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <h3 id="embedding">Embedding</h3>
+  <p>非本卡的 id 先映射到 0 号行去查，查完把输出置 0，再 all-reduce（开 SP 时换成 reduce-scatter）。</p>
+  <h3 id="ce">Cross-entropy：减 max 的 log-sum-exp 拆到各卡</h3>
+  \[ \ell = \log\sum_j e^{z_j - m} - (z_y - m) \]
+  \[ m = \max_r m_r \quad \text{all-reduce MAX} \]
+  \[ \textstyle\sum_j e^{z_j - m} = \sum_r S_r \quad \text{all-reduce SUM} \]
+  \[ z_y = \sum_r z_y^{(r)} \quad \text{all-reduce SUM，非本卡填 0} \]
+  <p>backward 全在本地：\(\partial\ell/\partial z_j = \mathrm{softmax}_j - \mathbb{1}[j = y]\)，只有拥有 \(y\) 的那张卡减 1。LM head 的 dX 再按 column parallel 的规矩 all-reduce。</p>
+</div>
+
+<h2 id="code">代码（NumPy 模拟 t = 4）</h2>
+<pre><code>rng = np.random.default_rng(0)
+n, V, t = 6, 16, 4                    # n = b·s 个 token
+z = rng.standard_normal((n, V)) * 5   # logits
+y = rng.integers(0, V, n)             # target id
+i = np.arange(n)
+zs = z - z.max(1, keepdims=True)      # 单卡 reference
+ref = np.log(np.exp(zs).sum(1)) - zs[i, y]
+
+shards = np.split(z, t, axis=1)       # rank r 管 V/t 个词
+m = np.max([zr.max(1) for zr in shards], 0)     # all-reduce MAX
+S = sum(np.exp(zr - m[:, None]).sum(1)          # all-reduce SUM
+        for zr in shards)
+zy = 0
+for r, zr in enumerate(shards):
+    lo = r * V // t
+    own = (y &gt;= lo) &amp; (y &lt; lo + V // t)       # target 在本卡吗
+    loc = np.where(own, y - lo, 0)            # 不在：index 置 0
+    zy = zy + np.where(own, zr[i, loc], 0)    # all-reduce SUM
+print(np.allclose(np.log(S) - (zy - m), ref))  # True</code></pre>
+
+<h2 id="example">手算例子：省多少</h2>
+<p>\(b = 1\)、\(s = 4096\)、\(h = 8192\)、\(V = 131072\)（128K）、\(t = 8\)：</p>
+<table>
+  <thead><tr><th>每卡</th><th>不切</th><th>按 vocab 切</th></tr></thead>
+  <tbody>
+    <tr><td>embedding weight + Adam state（16 B/param，见 <a href="optimizer.html">optimizer</a>）</td><td class="nw">16 GiB</td><td class="nw">2 GiB</td></tr>
+    <tr><td>fp32 logits [\(b, s, V\)]</td><td class="nw">2 GiB</td><td class="nw">0.25 GiB</td></tr>
+  </tbody>
+</table>
+<p>通信：gather logits 要搬 \(bsV\) ≈ 5.4 亿个元素；vocab-parallel CE 只 all-reduce \(3 \times bs\) 个 fp32，48 KiB。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>Embedding 按 vocab（行）切：非本卡 token 输出 0 → all-reduce</li>
+  <li>LM head 按 vocab 切 = column parallel，每卡 \(V/t\) 的 logits；weight tying 时同一种切法</li>
+  <li>CE 不 gather logits：all-reduce MAX、SUM(exp)、SUM(目标 logit)，通信 \(bs\) 而不是 \(bsV\)</li>
+  <li>CE 的 backward 本地算 softmax − one-hot，不通信</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么不按 hidden 切？</summary>
+  <p>Embedding 按 hidden 切，每卡只拿到部分维度，后面的层要完整 \(h\)，得 all-gather；LM head 按 hidden 切就是 row parallel，每卡是 [\(b, s, V\)] 的部分和，要 all-reduce \(bsV\) 个元素，太大。</p>
+</details>
+<details>
+  <summary>还有别的切法吗？</summary>
+  <p>按 token id 把查询路由到拥有那段的卡，查完再 all-to-all 发回。只搬真正用到的行，但高频 token 集中的卡会 load imbalance。</p>
+</details>
+<details>
+  <summary>推理时不 gather logits 怎么 sampling？</summary>
+  <p>每卡在自己的 \(V/t\) 里取 top-k，把 \(t \cdot k\) 个候选 gather 到一起再选全局 top-k。greedy 就是 \(k = 1\)。</p>
+</details>
+<details>
+  <summary>weight tying 碰上 pipeline parallel 怎么办？</summary>
+  <p>embedding 在第一个 stage、LM head 在最后一个 stage，各存一份。初始化时 all-reduce 让两份相同，每步再 all-reduce 两份的 gradient。</p>
+</details>
+<details>
+  <summary>为什么 vocab 要 padding？</summary>
+  <p>让每卡的 \(V/t\) 是 128 的倍数，logits GEMM 更高效。Megatron-LM 把 GPT-2 的 50257 补到 51200（\(128 \times 8\) 的倍数），多出来的 id 不会出现在数据里。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1909.08053">Shoeybi et al. 2019</a> §3（pp.4–5：embedding 按 vocab 切 + all-reduce；output GEMM 和 CE 融合，通信从 \(b \times s \times v\) 降到 \(b \times s\)）、§5.1（p.6，padding 到 51200）· <a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022</a> §4.3（p.8，logits 用 fp32，\(4sbv/t\)）· Megatron Core <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/tensor_parallel/cross_entropy.py"><code>cross_entropy.py</code></a>（MAX / SUM 三次 all-reduce）、<a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/tensor_parallel/layers.py"><code>layers.py</code></a>（<code>VocabParallelEmbedding</code>）、<a href="https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/models/common/language_module/language_module.py"><code>language_module.py</code></a>（PP 下 tied embedding）</p>
+
+</main>
+</body>
+</html>

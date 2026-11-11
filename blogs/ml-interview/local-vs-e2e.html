@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel 提速与端到端 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Kernel 快了 2 倍，<br>端到端为什么不一定快？</h1>
+<p class="meta"><b>英文问法</b><q>You made a kernel 2x faster. Why didn't end-to-end latency improve?</q> · <q>How do you check that a kernel-level win translates to an end-to-end gain?</q> · <q>What does "optimize locally, verify globally" mean?</q></p>
+<p class="meta"><b>考过</b><strong>Unity Vector 自己的论文</strong>（<a href="https://arxiv.org/html/2609.17391">FlashVector</a> §1 "Optimize locally, verify globally"）· 别家 JD：CoreWeave GPU Kernel Authoring &amp; Optimization（2026-10）"validate that kernel-level wins translate to end-to-end latency/throughput gains"（<a href="https://coreweave.com/careers/job?4697100006&amp;board=coreweave&amp;gh_jid=4697100006">JD</a>）· 推断会问，没有 Unity 自己的面经原题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>时间占比</dt>
+  <dd>一次请求的总时间里，这个 kernel 占多少。它决定了 kernel 变快之后总时间最多能少多少。<span class="eg">占 10% 的 kernel 就算不花时间，总时间也只少 10%。</span></dd>
+  <dt>瓶颈转移</dt>
+  <dd>最慢的一段被修好，第二慢的一段就成了新的瓶颈，像排队时前一个窗口变快，队伍堵到了下一个窗口。<span class="eg">GPU 快了，CPU 上的 feature processing 成了瓶颈。</span></dd>
+  <dt>Microbenchmark</dt>
+  <dd>把一个 kernel 或一个函数单独拿出来计时。它便宜，但量不到这个 kernel 在整条链路里的影响。</dd>
+  <dt>Full-stack load test</dt>
+  <dd>把整条 serving stack 跑起来，replay 录下来的真实生产请求，在固定的 latency SLO 下看能撑住多少 throughput。</dd>
+  <dt>Noise floor</dt>
+  <dd>baseline 不改动重复跑时指标自己的波动，FlashVector 端到端是 ±6%（见 <a href="noise-floor.html">noise floor</a>）。</dd>
+</dl>
+
+<h2 id="figs">看图：kernel 占 10%，快 2 倍</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 196" role="img" aria-label="一次请求的时间分解：kernel 占 10%，快 2 倍后总时间从 100 降到 95，落在正负 6% 的 noise floor 里">
+  <text class="acc" x="70" y="42">kernel 占 10%</text>
+  <text class="acc" x="554" y="36" text-anchor="end">noise floor ±6%</text>
+  <text x="10" y="72">优化前</text>
+  <rect class="f1" x="70" y="52" width="44" height="30" rx="3"/>
+  <rect class="box" x="114" y="52" width="396" height="30" rx="3"/>
+  <text x="300" y="72" text-anchor="middle">其余 90%（别的层和别的 kernel）</text>
+  <text x="10" y="124">优化后</text>
+  <rect class="f1" x="70" y="104" width="22" height="30" rx="3"/>
+  <rect class="box" x="92" y="104" width="396" height="30" rx="3"/>
+  <text x="280" y="124" text-anchor="middle">其余 90%，没变</text>
+  <rect class="bwd" x="483.6" y="44" width="52.8" height="98" rx="3"/>
+  <text class="acc" x="70" y="154">kernel 快 2 倍，剩 5%</text>
+  <text class="hd" x="70" y="184">总时间 100 → 95，只少 5%，终点还在 ±6% 的虚线框里</text>
+</svg>
+<figcaption>图 1：把优化前一次请求的总时间记成 100，10% 的占比是示意。虚线框是优化前终点两侧 ±6% 的 noise floor。kernel 快了 2 倍，优化后的终点还在框里，一次 full-stack load test 看不出差别。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>A kernel win only counts in proportion to that kernel's share of the request. If it's ten percent of the time and I make it twice as fast, the request gets five percent faster, which is inside a six percent noise floor. Two more things go wrong. The bottleneck moves, so a faster GPU just waits on CPU feature processing. And changes that pass alone can regress once combined. So FlashVector optimizes locally and verifies globally: after a change passes its own layer's checks, it reruns a full-stack load test on replayed production traffic at a fixed latency SLO, and keeps the change only if the end-to-end gain beats the noise.</p></div>
+
+<h2 id="why">三个原因</h2>
+<table>
+  <thead><tr><th>原因</th><th>发生了什么</th><th>怎么发现</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">占比小</td><td>kernel 只占请求的一小段，它再快，总时间也动不了多少</td><td>先 profile 看占比。FlashVector 的 Diagnose 按“时间占比 × 预期收益”给假设排序</td></tr>
+    <tr><td class="nw">瓶颈转移</td><td>GPU 快了，CPU 上的 feature processing 成了最慢的一段</td><td>改完重新 profile。FlashVector 的 Case 3 跑了两轮，第二轮 profile 出来的是新的瓶颈</td></tr>
+    <tr><td class="nw">组合后回退</td><td>各层单独通过，合在一起可能变慢</td><td>full-stack load test</td></tr>
+  </tbody>
+</table>
+
+<h2 id="example">手算，再看 FlashVector 怎么验</h2>
+<p>优化前总时间记成 100，kernel 占 10。kernel 快 2 倍后剩 5，总时间是 95，只少了 5%。端到端的 noise floor 是 ±6%，5% 落在里面，一次 full-stack load test 分不出它和噪声。按 FlashVector 的规则，它要加样本重测才可能留下。公式和更多算例见 <a href="amdahl.html">Amdahl's law</a>。</p>
+<ol>
+  <li><strong>本层 verify</strong>：正确性按改动类型分档（见 <a href="kernel-correctness.html">kernel 正确性</a>）</li>
+  <li><strong>Full-stack load test</strong>：replay 真实的生产请求，在固定 latency SLO 下记 sustained throughput</li>
+  <li><strong>判定</strong>：端到端提升超过 noise floor 才留，否则 revert</li>
+</ol>
+
+<h2>必答点</h2>
+<ul>
+  <li>收益和时间占比成正比，占 10%、快 2 倍时总时间只少 5%</li>
+  <li>5% 低于 ±6% 的 noise floor，一次 full-stack load test 分不出来</li>
+  <li>瓶颈会转移，改完要重新 profile</li>
+  <li>各层单独通过，组合后可能回退</li>
+  <li>Optimize locally, verify globally：本层通过后再过 full-stack load test</li>
+  <li>full-stack load test 用 replay 的生产流量，固定 latency SLO</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>FlashVector 自己的数字里有这种差距吗？</summary>
+  <p>有。Case 2 里 attention 快了约 3.6 倍（996.5 µs → 279.8 µs），加上 embedding bag 的改动，整个 forward latency 降了 30.1%。Case 1 的函数级 microbenchmark 是 30×，结果表里 retrieval model 的 latency speedup 是 1.67×。</p>
+</details>
+<details>
+  <summary>load test 有什么坑？</summary>
+  <p>client 自己成了瓶颈，就看不出 server 的改进。一位论文作者的公开 fork 里，loadgen 预先把 payload 序列化好来避开这一点。</p>
+</details>
+<details>
+  <summary>那 microbenchmark 还有用吗？</summary>
+  <p>有用。它便宜，适合在一层里筛候选和定位瓶颈。它不能当最终证据，收益要回到真实路径复验。</p>
+</details>
+<details>
+  <summary>别的团队也这样验吗？</summary>
+  <p>Baseten 分 microbenchmark、ablation test、端到端 latency 三层。KDA-Pilot 回到真实的 SGLang 路径复验。KernelBot 每晚对前 10 名的提交跑 application validation。</p>
+</details>
+<details>
+  <summary>怎么先挑出值得做的 kernel？</summary>
+  <p>按“时间占比 × 预期收益”排序，预期收益低于 noise floor 的直接跳过。用 profiler 看时间花在哪见 <a href="debug-slow-hang.html">训练慢怎么查</a>。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/html/2609.17391">FlashVector</a> §1、§4.2、§5.2、§5.3.3、§5.4.2（原话 "a locally verified change could still regress the system once combined with the rest of the stack"）· <a href="https://coreweave.com/careers/job?4697100006&amp;board=coreweave&amp;gh_jid=4697100006">CoreWeave JD</a> · ml-八股 08 第 28 题 · 调研笔记 Unity 的证据和同类对照 第 0 节第 4 点、4.2 节</p>
+
+</main>
+</body>
+</html>

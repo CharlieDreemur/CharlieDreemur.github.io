@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Evaluation 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Transformer &amp; LLM</p>
+<h1>LLM 怎么评估？perplexity、benchmark、<br>LLM-as-a-judge、human eval 各管什么？</h1>
+<p class="meta"><b>英文问法</b><q>How do you evaluate an LLM?</q> · <q>What is perplexity?</q> · <q>What are the biases of LLM-as-a-judge?</q> · <q>How does Chatbot Arena rank models?</q> · <q>What is benchmark contamination?</q></p>
+<p class="meta"><b>考过</b>面经：微软 Teams AS IC2（"LLM evaluation metrics (BLEU, ROUGE, human evals, LLM-as-a-judge, etc.)"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Perplexity</dt>
+  <dd>模型在每个真实 token 上，平均相当于"在几个选项里犹豫"。越小越好，全猜对是 1；在 \(V\) 个词里瞎猜就是 \(V\)。<span class="eg">例：4 个 token 拿到的概率是 0.5、0.25、0.5、0.125 → PPL ≈ 3.36，像每步在 3.4 个词里均匀地猜。</span></dd>
+  <dt>BLEU / ROUGE</dt>
+  <dd>拿 reference 答案逐个 n-gram 对照批改：BLEU 看 precision（翻译），ROUGE 看 recall（摘要）。意思对但换了说法也会扣分，所以不适合开放式回答。</dd>
+  <dt>LLM-as-a-judge</dt>
+  <dd>请一个强模型当阅卷老师：两份回答比谁好（pairwise），或给一份打 1–10 分。便宜、快、还能写理由，但它自己有偏见。</dd>
+  <dt>Pairwise human eval 与 Elo</dt>
+  <dd>像棋手排名：用户同时看两个匿名模型的回答，投票谁更好，再把所有胜负折算成一个分数。<span class="eg">例：Elo 高 100 分 → 预期胜率 64%；高 400 分 → 91%。</span></dd>
+  <dt>Contamination</dt>
+  <dd>benchmark 的题混进了 pretraining data，像考前背过原题，分数虚高。题目公开越久，越容易被爬进 pretraining data。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>It depends on what we measure. For a base model I'd report perplexity, the exponential of the average per-token negative log-likelihood on held-out text, comparable only under the same tokenizer. For capabilities with ground truth I'd use benchmarks: accuracy or exact match on tasks like MMLU and GSM8K, and pass@k with unit tests for code. Open-ended answers have no single reference, so BLEU and ROUGE work poorly; there I'd use pairwise human preference, aggregated with Elo or Bradley-Terry as in Chatbot Arena, or an LLM judge calibrated against human labels, with answer order swapped to cancel position bias. I'd check contamination with n-gram overlap, and confirm with an online A/B test.</p></div>
+
+<h2 id="which">评什么用什么</h2>
+<table>
+  <thead><tr><th>评什么</th><th>用什么</th><th>坑</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">base model</td><td>held-out perplexity</td><td>只能同 tokenizer 比；PPL 低 ≠ 会做任务</td></tr>
+    <tr><td class="nw">有标准答案</td><td>MMLU（accuracy）、GSM8K（exact match）、HumanEval（pass@k）</td><td>contamination、分数饱和</td></tr>
+    <tr><td class="nw">翻译、摘要</td><td>BLEU、ROUGE</td><td>只看字面重合</td></tr>
+    <tr><td class="nw">开放式回答</td><td>LLM-as-a-judge（MT-Bench）</td><td>position、verbosity、self-enhancement bias</td></tr>
+    <tr><td class="nw">真实偏好</td><td>human pairwise（Chatbot Arena）</td><td>贵、慢、众包有噪声</td></tr>
+    <tr><td class="nw">上线效果</td><td>A/B test：点赞率、acceptance rate</td><td>要流量</td></tr>
+  </tbody>
+</table>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <h3 id="ppl">Perplexity</h3>
+  \[ \mathrm{PPL} = \exp\Big(-\frac1n\sum_{t=1}^{n}\log p(x_t\mid x_{&lt;t})\Big) \]
+  <p>平均 cross-entropy 取 exp，也就是每个 token 概率倒数的几何平均。上面的例子：</p>
+  \[ \mathrm{PPL} = (2\cdot 4\cdot 2\cdot 8)^{1/4} = 128^{1/4} \approx 3.36 \]
+  <p>四个概率全部减半，PPL 翻倍到 6.73。</p>
+  <h3 id="elo">Elo 与 Bradley-Terry</h3>
+  \[ P(A \succ B) = \frac{1}{1+10^{(R_B-R_A)/400}} \]
+  <p>Elo 每场后在线更新 \(R_A \leftarrow R_A + K(S_A - E_A)\)，结果受对战顺序影响。Arena 后来改用 Bradley-Terry：同样的 logistic 形式，用全部对战做 MLE（就是一个 logistic regression），统计上更稳。</p>
+</div>
+
+<h3 id="judge">LLM judge 的 bias 和对策</h3>
+<ul>
+  <li><strong>position</strong>：偏向某个位置。交换两份回答的顺序，GPT-4 只有 65% 判断不变。→ 两种顺序各判一次，都赢才算赢，否则算 tie。</li>
+  <li><strong>verbosity</strong>：偏向长的。把列表换个说法再重复一遍，Claude-v1 和 GPT-3.5 有 91% 判"变好了"，GPT-4 是 8.7%。</li>
+  <li><strong>self-enhancement</strong>：偏向自己写的。→ 用别家模型当 judge，或多个 judge 投票。</li>
+  <li><strong>数学判不准</strong>：被候选答案带偏。→ 先让 judge 自己解题当 reference，判错率从 70% 降到 15%。</li>
+</ul>
+<p>上线前抽一批人工标注算 agreement。MT-Bench 上 GPT-4 和专家的 agreement 是 85%，专家之间是 81%。</p>
+
+<h3 id="contamination">Contamination 怎么查</h3>
+<p>GPT-3 的做法是，测试题和训练集有 13-gram 重合就标为"脏"，去掉后得到 clean subset，比较 clean subset 和完整测试集上的分数；clean 上明显更低，说明分数被污染抬高了。拿不到训练数据时，用新出的题（live benchmark）或改写题目。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>先问评什么：base model → perplexity；有标准答案 → benchmark；开放式 → human / LLM judge；上线 → A/B test</li>
+  <li>PPL \(= \exp(\)平均 NLL\()\)，只能同 tokenizer 比</li>
+  <li>LLM judge 的 position / verbosity / self-enhancement bias，对策：交换顺序、reference、用人工标注 calibrate</li>
+  <li>Chatbot Arena：匿名 pairwise 投票 → Elo / Bradley-Terry</li>
+  <li>contamination：n-gram overlap 检测，clean subset 重评</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>两个模型的 perplexity 能直接比吗？</summary>
+  <p>tokenizer 不同就不能。PPL 是按 token 平均的，切得粗的模型每个 token 信息多，PPL 天然偏高。要比就换成按字节或字符归一化（bits per byte）。而且 PPL 只反映语言建模，不代表 instruction following。</p>
+</details>
+<details>
+  <summary>pass@k 怎么算？</summary>
+  <p>每题生成 \(n \ge k\) 个样本，\(c\) 个通过 unit test，unbiased 估计 \(1 - \binom{n-c}{k}/\binom{n}{k}\)。例：\(n = 10\)、\(c = 3\)：pass@1 = 0.3，pass@5 ≈ 0.92。直接用 \(1-(1-\hat p)^k\) 是有偏的。</p>
+</details>
+<details>
+  <summary>BLEU 和 ROUGE 具体怎么算？</summary>
+  <p>BLEU：1–4 gram 的 clipped precision 取几何平均，再乘 brevity penalty \(\min(1, e^{1-r/c})\) 惩罚太短的输出（\(r\)、\(c\) 是 reference 和候选的长度）。ROUGE-N：reference 里的 n-gram 有多少出现在候选里，即 n-gram recall。</p>
+</details>
+<details>
+  <summary>pairwise 比较还是单独打分？</summary>
+  <p>pairwise 更稳，换 judge 后结果波动小，但模型多时对数按平方增长；单独打分容易扩展，但分不出细微差别，绝对分数也随 judge 漂移。</p>
+</details>
+<details>
+  <summary>human eval 怎么做才可靠？</summary>
+  <p>写清 rubric，盲评，随机左右顺序。多人标同一批，看 inter-annotator agreement（比如 Cohen's kappa），太低说明 rubric 不清楚。Arena 的众包投票和专家标注 agreement 是 72%–83%。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://d2l.ai/chapter_recurrent-neural-networks/language-model.html">d2l</a> §9.3.2 eq. 9.3.7–9.3.8 · <a href="https://arxiv.org/abs/2306.05685">Zheng et al. 2023, MT-Bench</a> §3.1、§3.3 Table 2–3（pp.4–5）、§3.4 Table 4（pp.5–6）、§4.2（p.7）· <a href="https://arxiv.org/abs/2403.04132">Chiang et al. 2024, Chatbot Arena</a> §4 eq. 2（p.4）、§6.3（p.7）· <a href="https://lmsys.org/blog/2023-05-03-arena/">LMSYS blog 2023</a>（Elo）· <a href="https://arxiv.org/abs/2005.14165">Brown et al. 2020, GPT-3</a> §4（pp.29–31）· <a href="https://arxiv.org/abs/2107.03374">Chen et al. 2021, Codex</a> §2.1 eq. 1（p.3）· <a href="https://aclanthology.org/P02-1040/">Papineni et al. 2002, BLEU</a> §2（pp.312–315）· <a href="https://aclanthology.org/W04-1013/">Lin 2004, ROUGE</a> §2</p>
+
+</main>
+</body>
+</html>

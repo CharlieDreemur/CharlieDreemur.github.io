@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BERT vs GPT 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Transformer &amp; LLM</p>
+<h1>BERT 和 GPT 有什么区别？<br>为什么现在的 LLM 都是 decoder-only？</h1>
+<p class="meta"><b>英文问法</b><q>Compare BERT and GPT.</q> · <q>How is BERT pre-trained?</q> · <q>Why are modern LLMs decoder-only?</q></p>
+<p class="meta"><b>考过</b>面经：MAI Senior L63 第 3 轮（<q>BERT vs GPT architecture and differences</q>）· NVIDIA 框架岗 2023 onsite 第 2 轮：BERT 是什么、怎么训练、怎么做 doc embedding，接着问双塔检索的训练、loss 和 inference（<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Bidirectional vs causal mask</dt>
+  <dd>BERT 像做阅读理解，每个词左右都能看；GPT 像接龙，每个词只能看自己和左边，右边被 causal mask 遮住。<span class="eg">例：「我 爱 吃 苹果」，BERT 的「吃」看 4 个词，GPT 的「吃」只看「我 爱 吃」。</span></dd>
+  <dt>Encoder-only / decoder-only</dt>
+  <dd>两者的 block 几乎一样，差别就在 mask：不遮是 encoder（BERT），遮住右边是 decoder（GPT），后者能一个个往后生成。</dd>
+  <dt>MLM（masked language modeling）</dt>
+  <dd>完形填空：随机挑 15% 的 token 让模型猜。挑中的 80% 换成 [MASK]、10% 换随机词、10% 不变。<span class="eg">例：1000 个 token 只有 150 个算 loss。</span></dd>
+  <dt>Next-token prediction</dt>
+  <dd>看前面所有词猜下一个，每个位置都是一道题。生成时把猜出的词接上再猜（autoregressive）。<span class="eg">例：1000 个 token 约 1000 个都算 loss。</span></dd>
+  <dt>Fine-tuning vs in-context learning</dt>
+  <dd>BERT 要接一个 task head 用标注数据 fine-tune；GPT-3 把几个例子写进 prompt（few-shot），不更新 weight 就能做新任务。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>BERT is an encoder-only Transformer with bidirectional self-attention, pre-trained with masked language modeling: mask 15% of tokens and predict them from both sides. GPT is decoder-only with a causal mask and is trained to predict the next token. So BERT gives strong representations for understanding tasks like classification, NER and retrieval embeddings, usually after fine-tuning, while GPT generates text naturally and, at scale, does few-shot in-context learning. LLMs converged on decoder-only because the objective matches generation, every token gives a training signal instead of 15%, any task can be phrased as text continuation, and the causal mask lets us reuse a KV cache.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <p>BERT 只在被 mask 的位置 \(\mathcal{M}\)（约 15%）算 loss：</p>
+  \[ \mathcal{L}_{\text{MLM}} = -\sum_{i\in\mathcal{M}} \log p(x_i \mid x_{\setminus\mathcal{M}}) \]
+  <p>GPT 每个位置都算：</p>
+  \[ \mathcal{L}_{\text{LM}} = -\sum_{t=1}^{T} \log p(x_t \mid x_{&lt;t}) \]
+  <p>两者只差 attention 里加不加 causal mask：</p>
+  \[ \mathrm{softmax}\Big(\frac{QK^\top}{\sqrt{d_k}} + M\Big),\quad M_{ij} = -\infty \ \text{if}\ j &gt; i \]
+  <p>BERT 为什么不直接用 next-token：双向时每个词能间接"看到自己"，只能先遮掉再猜。</p>
+</div>
+
+<h2 id="compare">对比</h2>
+<table>
+  <thead><tr><th></th><th>BERT</th><th>GPT</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">结构</td><td>encoder-only，bidirectional</td><td>decoder-only，causal mask</td></tr>
+    <tr><td class="nw">objective</td><td>MLM（原版另有 NSP）</td><td>next-token prediction</td></tr>
+    <tr><td class="nw">算 loss 的 token</td><td>约 15%</td><td>全部</td></tr>
+    <tr><td class="nw">用法</td><td>加 head 再 fine-tune</td><td>prompt（zero / few-shot），也可 fine-tune</td></tr>
+    <tr><td class="nw">擅长</td><td>classification、NER、retrieval embedding</td><td>生成、in-context learning</td></tr>
+  </tbody>
+</table>
+
+<h2 id="why-decoder">为什么 LLM 都是 decoder-only</h2>
+<ol>
+  <li><strong>objective 就是生成</strong>：pre-training 和 inference 同一个格式，任何任务都能写成续写（GPT-2 zero-shot，GPT-3 few-shot）。</li>
+  <li><strong>信号密</strong>：每个 token 都是 target；BERT 每批只预测 15%，收敛更慢。</li>
+  <li><strong>推理便宜</strong>：causal 下前面 token 的 K、V 不会被后来的 token 改变，可以 <a href="kv-cache.html">KV cache</a>；双向模型每加一个词，前面全部要重算。</li>
+  <li><strong>实验</strong>：只做无监督 pre-training 时，causal decoder-only 的 zero-shot 最好；但之后还要 fine-tune 的话，双向 + MLM 的模型更强。</li>
+</ol>
+
+<h2>必答点</h2>
+<ul>
+  <li>BERT：encoder-only、bidirectional、MLM（15%，80/10/10）</li>
+  <li>GPT：decoder-only、causal mask、next-token prediction</li>
+  <li>BERT 擅长理解 + fine-tune；GPT 擅长生成 + in-context learning</li>
+  <li>decoder-only 赢在：objective = 生成、每个 token 都有 loss、KV cache、zero / few-shot</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么 80/10/10，不全换成 [MASK]？</summary>
+  <p>fine-tuning 时没有 [MASK]，全换会造成 pre-train / fine-tune mismatch。模型也不知道哪个词被换过，只能给每个 token 都保留好的上下文表示。</p>
+</details>
+<details>
+  <summary>NSP 有用吗？</summary>
+  <p>BERT 原文说对 QA、NLI 有帮助；RoBERTa 发现去掉 NSP 持平或略好，之后的模型基本不用。</p>
+</details>
+<details>
+  <summary>BERT 怎么做 doc embedding 和双塔检索？（NVIDIA 原题）</summary>
+  <p>query、doc 各用一个 BERT 编码，取 [CLS] 向量，相似度是 dot product。用 in-batch negatives 训练，loss 是正例对所有候选的 softmax cross-entropy（DPR）。inference 时 doc 向量离线算好建 FAISS index，线上只编码 query 再做 ANN。没 fine-tune 的 [CLS] 不是好的句向量。流程见 <a href="rag.html">RAG</a>。</p>
+</details>
+<details>
+  <summary>BERT 能生成文本吗？</summary>
+  <p>不自然。MLM 不是从左到右的分解，没法一个个往后接，硬做要反复 mask 再预测，效果和效率都不如 decoder。</p>
+</details>
+<details>
+  <summary>T5 这种 encoder-decoder 呢？</summary>
+  <p>encoder 双向读输入，decoder 带 causal mask 生成并 cross-attend encoder。objective 是 span corruption：连续被遮的一段换成一个 sentinel，decoder 只输出被遮的片段。适合翻译、摘要这类 input → output 任务。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2019（BERT）</a> §3（p.3）、§3.1（p.4）、Appendix A.1（p.12）、C.1（p.16）· <a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">Radford et al. 2019（GPT-2）</a> §1–2（p.2）· <a href="https://arxiv.org/abs/2005.14165">Brown et al. 2020（GPT-3）</a> §1（p.3）、§2.1（p.8）、§5（p.33）· <a href="https://arxiv.org/abs/1907.11692">Liu et al. 2019（RoBERTa）</a> §4.2（pp.4–5）· <a href="https://arxiv.org/abs/2204.05832">Wang et al. 2022</a> Abstract（p.1）· <a href="https://arxiv.org/abs/2004.04906">Karpukhin et al. 2020（DPR）</a> §3（p.3）· <a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2020（T5）</a> §3.1.4（pp.12–13）、§3.2.1（pp.15–16）</p>
+
+</main>
+</body>
+</html>

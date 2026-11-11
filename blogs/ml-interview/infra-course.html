@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Infra 速成课</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/course.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="links">← <a href="index.html">速查目录</a> · 学完按 06 的 NVIDIA 复习顺序刷题</p>
+
+<p class="kicker">速成课 · Training Infra</p>
+<h1>从你的 32 卡 SFT 到 Megatron：<br>Training Infra 速成课</h1>
+<p class="lead">写给 infra 零基础、要面 NVIDIA Megatron Core 实习的你。你会用 PyTorch 训模型，做过 RL post-training，在 TikTok 用 DeepSpeed 在 32 张 H100 上跑过全参 SFT，只是没碰过背后的原理。11 课，每课一页，从单卡一路升级到 Megatron 的完整配置。</p>
+
+<h2>一句话心智模型</h2>
+<div class="answer"><p>一个 training step 只花三样东西：compute（算 FLOPs）、memory（GPU memory 里放什么）、communication（卡之间搬数据）。每个 infra 技术都是拿一样换另一样。</p></div>
+<p>遇到新名词就问三个问题：它省了什么？花了什么？什么时候不划算？面试官的追问几乎都落在第三个上。</p>
+
+<h2>先记五个数（H100 SXM）</h2>
+<ul>
+  <li><b>compute</b>：BF16 dense 约 989 TFLOPS</li>
+  <li><b>memory</b>：80 GB HBM，bandwidth 3.35 TB/s</li>
+  <li><b>机内</b>：一台机器 8 张卡，NVLink 每卡每个方向 450 GB/s</li>
+  <li><b>机间</b>：InfiniBand 每卡每个方向约 50 GB/s（400 Gb/s NIC）</li>
+  <li><b>推论</b>：机内比机间快约 9 倍，所以通信最重的切法（TP）留在机内，跨机只放通信轻的（PP、DP）</li>
+</ul>
+
+<h2>主线：一条 version chain</h2>
+<p>例子用你在 TikTok 做的 Qwen3-VL-8B 全参 SFT。为了好算取 \(\Psi \approx 8\)B。它的 LLM 部分 h = 4096、36 层。从单卡开始，每一版只修上一版的一个问题。v3 大致就是你当时的 setup，v4 以后是 Megatron 为 70B 以上的模型做的事。</p>
+<table>
+  <thead><tr><th>版本</th><th>做了什么</th><th>解决了</th><th>新问题</th><th>课</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">v0</td><td>单卡、fp32</td><td>小模型能跑</td><td>8B 的 model state 要 128 GB，超过 80 GB；就算放得下也跑得慢</td><td><a href="infra-l1.html">1</a></td></tr>
+    <tr><td class="nw">v1</td><td>BF16 + activation checkpointing + FlashAttention</td><td>更快，activation 小一到两个数量级</td><td>128 GB 的 model state 一点没少</td><td><a href="infra-l2.html">2</a></td></tr>
+    <tr><td class="nw">v2</td><td>DDP：32 卡各放一份，切 batch，all-reduce gradient</td><td>快约 32 倍</td><td>每卡还是 128 GB</td><td><a href="infra-l3.html">3</a>、<a href="infra-l4.html">4</a></td></tr>
+    <tr><td class="nw">v3</td><td>ZeRO / FSDP：model state 切到 32 卡</td><td>每卡最少 4 GB</td><td>activation 不切；DP 卡数受 global batch 限制</td><td><a href="infra-l4.html">4</a></td></tr>
+    <tr><td class="nw">v4</td><td>TP（机内）+ SP</td><td>每层的矩阵和 activation 都切成 t 份</td><td>每层都要同步 all-reduce，出不了机器</td><td><a href="infra-l5.html">5</a></td></tr>
+    <tr><td class="nw">v5</td><td>PP（跨机）</td><td>按层切，跨机只传段边界的 activation</td><td>pipeline bubble</td><td><a href="infra-l6.html">6</a></td></tr>
+    <tr><td class="nw">v6</td><td>CP（长序列）、EP（MoE）</td><td>视频长序列、MoE 的 expert 放得下</td><td>KV 传递、all-to-all</td><td><a href="infra-l7.html">7</a></td></tr>
+    <tr><td class="nw">v7</td><td>拼成 TP × PP × CP × EP × DP，再加 overlap、FP8</td><td>万卡规模，MFU 40% 左右</td><td>怎么选配置，出问题怎么查</td><td><a href="infra-l8.html">8</a></td></tr>
+  </tbody>
+</table>
+<p>第 0 课是所有课的地基（算和搬），第 9 课把前面的内容对到 Megatron Core 源码和你的 RL 经历，第 10 课是手写题和项目故事。</p>
+
+<h2>课程</h2>
+<div id="lessons"></div>
+<noscript><p>课程列表由 assets/course.js 生成，需要启用 JavaScript；也可以从 <a href="infra-l0.html">第 0 课</a>开始，每页底部有下一课。</p></noscript>
+
+<h2>课表</h2>
+<ul>
+  <li><b>7 天版</b>（每天约 2 小时）：D1 第 0–1 课 · D2 第 2–3 课 · D3 第 4 课 · D4 第 5 课 · D5 第 6–7 课 · D6 第 8–9 课 · D7 第 10 课</li>
+  <li><b>只有 3 天</b>：第 0、1、4、5、8 课。这几课足够回答 NVIDIA 最常问的 “Explain how distributed training works” 和 TP 原题</li>
+  <li><b>每课的流程</b>：读完那一页，合上，用英文把“30 秒英文回答”和自测题说出来。想看细一点再点页尾的速查页</li>
+</ul>
+
+<h2>学完以后</h2>
+<ul>
+  <li>按 06 的 NVIDIA 复习顺序刷题：一题一页，第一遍看答案，第二遍自己答</li>
+  <li>想系统地看一遍：HuggingFace 的 <a href="https://huggingface.co/spaces/nanotron/ultrascale-playbook">Ultra-Scale Playbook</a> 讲的正是这条 version chain，配了图和实测数字；配套的 <a href="https://github.com/huggingface/picotron_tutorial">picotron_tutorial</a> 能在 CPU 上一步步写出 TP、DP、PP</li>
+</ul>
+
+<p class="src"><b>来源</b>H100 数字来自 NVIDIA H100 产品页 · 6ND 见 Kaplan et al. 2020 · 16Ψ 和 ZeRO 公式见 Rajbhandari et al. 2020 · activation 公式见 Korthikanti et al. 2022 · Qwen3-VL-8B 的维度来自其 HF config.json · Llama 3 配置见 Llama 3 paper §3.3 · 各课和各速查页的“来源”栏</p>
+
+</main>
+</body>
+</html>

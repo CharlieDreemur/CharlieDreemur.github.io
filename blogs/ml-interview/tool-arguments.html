@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tool argument 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>Tool calling 最容易错在哪？<br>为什么 argument 是瓶颈，怎么改？</h1>
+<p class="meta"><b>英文问法</b><q>Where do tool-calling agents fail most?</q> · <q>How do you measure and improve argument accuracy?</q></p>
+<p class="meta"><b>考过</b>推断，非面经。依据：Apple 的 ASTRA-bench 结论 "Argument generation emerging as the primary bottleneck"（<a href="https://arxiv.org/abs/2603.01357">arXiv 2603.01357</a>）· Apple JD 写 "quality, reasoning, and tool-use accuracy of agentic systems"（<a href="https://web.archive.org/web/20260607011824/https://jobs.apple.com/en-us/details/200656115">200656115</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Tool selection 与 argument generation</dt>
+  <dd>选哪个 tool，和参数怎么填，是两件事。<span class="eg">例：选对了 <code>search_messages</code>，但 <code>sender</code> 填的是“我妈”而不是 contact ID。</span></dd>
+  <dt>Personal context</dt>
+  <dd>参数的值常常在用户的数据里，这句话里找不到。“我妈”“上次那家店”都要先查出来，才能填进参数。</dd>
+  <dt>Schema validation</dt>
+  <dd>执行前检查参数的类型、必填项、取值范围。</dd>
+  <dt>Constrained decoding</dt>
+  <dd>解码时只允许生成符合 JSON schema 的 token。它保证格式合法，不保证值正确。</dd>
+  <dt>Argument accuracy</dt>
+  <dd>逐个参数和 gold 比较。<span class="eg">例：3 个参数对了 2 个 → 0.67；整个调用全对才算对的口径下是 0。</span></dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Tool calls fail in two ways: picking the wrong tool, or filling in the wrong arguments. Apple's ASTRA-bench found that argument generation was the main bottleneck when agents work over personal context. That makes sense, because the right value often isn't in the request: "my mom" or "last Friday" has to be resolved from the user's data first. I'd measure selection and arguments separately. To improve: resolve entities and dates with dedicated tools before the main call, validate arguments against the schema, return precise errors so the model can retry, and add examples for the confusing fields.</p></div>
+
+<h2 id="errors">错误类型和对策</h2>
+<table>
+  <thead><tr><th>错误</th><th>例子</th><th>对策</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">格式错</td><td>缺必填项、类型不对</td><td>schema validation、constrained decoding</td></tr>
+    <tr><td class="nw">值没 resolve</td><td><code>sender="我妈"</code></td><td>先调 contact resolver，拿到 ID 再填</td></tr>
+    <tr><td class="nw">时间错</td><td>“上周五”算错日期</td><td>把当前日期放进 context；日期计算用代码</td></tr>
+    <tr><td class="nw">编造值</td><td>填了一个不存在的 ID</td><td>代码校验：只接受前面的 tool 返回过的 ID</td></tr>
+    <tr><td class="nw">依赖没处理</td><td>第二步的参数要用第一步的结果</td><td>按依赖顺序执行，返回结果带稳定的 ID</td></tr>
+  </tbody>
+</table>
+
+<h2>必答点</h2>
+<ul>
+  <li>selection 和 argument 分开量，argument 再按参数拆开</li>
+  <li>ASTRA-bench：personal context 下 argument 是主要瓶颈</li>
+  <li>原因：值藏在用户数据里，要先 resolve</li>
+  <li>对策：先 resolve、再校验、错误信息要具体、可重试</li>
+  <li>constrained decoding 只管格式</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>constrained decoding 能解决 argument 错误吗？</summary>
+  <p>只能解决格式错。日期填错、人填错在格式上都是合法的。值的正确性要靠 resolve 和校验。</p>
+</details>
+<details>
+  <summary>argument accuracy 怎么算才公平？</summary>
+  <p>先做归一化：日期格式统一、ID 统一，等价的写法不能算错。然后分开报三个数：tool selection accuracy、逐参数 accuracy、整个调用全对的比例。</p>
+</details>
+<details>
+  <summary>tool 的描述怎么写，模型才不容易填错？</summary>
+  <p>参数名自解释。写明单位、时区和格式。能枚举的给枚举值。给一两个调用例子。容易混的两个参数写清区别。</p>
+</details>
+<details>
+  <summary>填错了怎么恢复？</summary>
+  <p>返回结构化的错误：哪个参数、为什么不对、合法值是什么。模型据此重试，重试次数设上限，到上限就告诉用户。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2603.01357">ASTRA-bench（Apple）</a>：4 个 protagonist、2,413 个 scenario、time-evolving personal context，高复杂度下模型明显变差 · <a href="https://developer.apple.com/videos/play/wwdc2026/246/">WWDC26 246</a>（开发者 API 里有 ContactResolver）· tool calling 基础见 <a href="agent-mcp.html">Agent、tool calling 和 MCP</a></p>
+
+</main>
+</body>
+</html>

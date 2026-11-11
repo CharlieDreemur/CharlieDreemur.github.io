@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>长文件放不进 context 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>文件放不进 context window：<br>怎么找到一段具体内容，怎么总结整本书？</h1>
+<p class="meta"><b>英文问法</b><q>The file exceeds the context window of your agent. How would you find the croissant recipe in a recipe book and summarize it?</q> · <q>Summarize me this book. How would you implement such a pipeline?</q> · <q>How do you navigate the tree, where do you stop, and what do you show the LLM?</q></p>
+<p class="meta"><b>考过</b><strong>★ 作者本人 Apple ISE Proactive 实习一面（2026-11-09）</strong>，这个组唯一的一手真题 · 你答了 graph 之后，面试官追问 "What's the flow? How do you navigate this? Where do you stop? What do you take? And what do you show the LLM?" 和 "What is the embedding for chapter 3 itself compared to embedding for chapter 3.b?" · 完整记录在 ml-八股 09 第 40 题</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Token budget</dt>
+  <dd>context window 里能留给 evidence 的额度。<span class="eg">面试官给的数字是 32K。扣掉 instruction、问题和回答，剩下的才能放 chunk。</span></dd>
+  <dt>按结构切 chunk</dt>
+  <dd>沿标题和章节切，不是每隔固定长度切一刀。一个 recipe 是一个 chunk，不会被拦腰切开。chunk 和 embedding 的基础见 <a href="rag.html">RAG</a>。</dd>
+  <dt>Tree index</dt>
+  <dd>leaf 是原文 chunk，parent 是 children 的 LLM summary，一层层往上直到 root。书有目录时，标题层级就是现成的 tree。</dd>
+  <dt>Collapsed tree</dt>
+  <dd>不分层，把所有节点摊平成一个列表，一起按 similarity 排序。</dd>
+  <dt>Map-reduce summarization</dt>
+  <dd>每块各自 summarize（map），再把这些 summary 合起来 summarize（reduce）。</dd>
+</dl>
+
+<h2 id="figs">看图：tree 上怎么找，整本书怎么总结</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 244" role="img" aria-label="在 tree index 上检索 croissant recipe">
+  <text class="acc" x="20" y="34">query：croissant recipe</text>
+  <path class="ln" d="M280,44 L110,90 M280,44 L280,90 M450,124 L325,180 M450,124 L517,180"/>
+  <path class="ln1" style="stroke-width:2.4" d="M280,44 L450,90 M450,124 L422,180"/>
+  <rect class="box" x="230" y="14" width="100" height="30" rx="4"/>
+  <text x="280" y="34" text-anchor="middle">book</text>
+  <text class="m" x="336" y="34">0.30</text>
+  <rect class="box" x="60" y="90" width="100" height="34" rx="4"/>
+  <text x="110" y="112" text-anchor="middle">ch 1</text>
+  <text class="m" x="166" y="112">0.21</text>
+  <rect class="box" x="230" y="90" width="100" height="34" rx="4"/>
+  <text x="280" y="112" text-anchor="middle">ch 2</text>
+  <text class="m" x="336" y="112">0.18</text>
+  <rect class="hot" x="400" y="90" width="100" height="34" rx="4"/>
+  <text x="450" y="112" text-anchor="middle">ch 3</text>
+  <text class="acc" x="506" y="112">0.55</text>
+  <text class="m" x="110" y="148" text-anchor="middle">…</text>
+  <text class="m" x="280" y="148" text-anchor="middle">…</text>
+  <rect class="box" x="286" y="180" width="78" height="34" rx="4"/>
+  <text x="325" y="202" text-anchor="middle">3.a</text>
+  <text class="m" x="325" y="232" text-anchor="middle">0.40</text>
+  <rect class="hot" x="372" y="180" width="100" height="34" rx="4"/>
+  <text x="422" y="202" text-anchor="middle">3.b croissant</text>
+  <text class="acc" x="422" y="232" text-anchor="middle">0.83</text>
+  <rect class="box" x="480" y="180" width="74" height="34" rx="4"/>
+  <text x="517" y="202" text-anchor="middle">3.c</text>
+  <text class="m" x="517" y="232" text-anchor="middle">0.35</text>
+  <text class="m" x="20" y="196">ch 3：summary 的 embedding</text>
+  <text class="m" x="20" y="216">3.b：原文的 embedding</text>
+</svg>
+<figcaption>图 1：数字是 query 和节点的 similarity，只作示意。Chapter 3 的 embedding 来自它的 summary，所以比 3.b 泛。Tree traversal 沿粗线一层层往下。Collapsed tree 把 7 个节点一起排序，3.b 排第一。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 560 190" role="img" aria-label="用 map-reduce 总结整本书">
+  <text class="acc" x="14" y="68">map</text>
+  <text class="acc" x="14" y="138">reduce</text>
+  <rect class="box" x="70" y="14" width="80" height="30" rx="4"/>
+  <text x="110" y="34" text-anchor="middle">ch 1</text>
+  <rect class="box" x="180" y="14" width="80" height="30" rx="4"/>
+  <text x="220" y="34" text-anchor="middle">ch 2</text>
+  <rect class="box" x="290" y="14" width="80" height="30" rx="4"/>
+  <text x="330" y="34" text-anchor="middle">ch 3</text>
+  <text class="m" x="410" y="34" text-anchor="middle">…</text>
+  <rect class="box" x="450" y="14" width="80" height="30" rx="4"/>
+  <text x="490" y="34" text-anchor="middle">ch N</text>
+  <path class="ln" d="M110,44 L110,78 M220,44 L220,78 M330,44 L330,78 M490,44 L490,78"/>
+  <polygon class="ah" points="106,76 114,76 110,84"/>
+  <polygon class="ah" points="216,76 224,76 220,84"/>
+  <polygon class="ah" points="326,76 334,76 330,84"/>
+  <polygon class="ah" points="486,76 494,76 490,84"/>
+  <rect class="f2" x="70" y="84" width="80" height="30" rx="4"/>
+  <text x="110" y="104" text-anchor="middle">summary 1</text>
+  <rect class="f2" x="180" y="84" width="80" height="30" rx="4"/>
+  <text x="220" y="104" text-anchor="middle">summary 2</text>
+  <rect class="f2" x="290" y="84" width="80" height="30" rx="4"/>
+  <text x="330" y="104" text-anchor="middle">summary 3</text>
+  <text class="m" x="410" y="104" text-anchor="middle">…</text>
+  <rect class="f2" x="450" y="84" width="80" height="30" rx="4"/>
+  <text x="490" y="104" text-anchor="middle">summary N</text>
+  <path class="ln" d="M110,114 L300,144 M220,114 L300,144 M330,114 L300,144 M490,114 L300,144"/>
+  <polygon class="ah" points="296,143 304,143 300,151"/>
+  <rect class="hot" x="210" y="151" width="180" height="30" rx="4"/>
+  <text x="300" y="171" text-anchor="middle">book summary</text>
+</svg>
+<figcaption>图 2：没有 query 时用 map-reduce。每章各自 summarize，可以并行。再把这些 summary 合起来 summarize 一次。合起来还超 token budget，就先分组，多做一层。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>I'd start with the simplest thing that works. Split the file along its structure, embed each chunk, score every chunk against the query, sort, and fill the token budget with the best ones; the model answers only from those. If recall is poor, I add BM25 for exact names and pull in the whole section around a hit. A summary tree helps broad questions: each parent is an LLM summary of its children, and I rank nodes from all levels together. For a whole-book summary there is no query to rank by, so I summarize each chapter in parallel, then summarize the summaries, adding a level if they still don't fit.</p></div>
+
+<h2 id="specific">Case 1：找 croissant recipe</h2>
+<table>
+  <thead><tr><th>版本</th><th>做法</th><th>还剩的问题</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">v1 Rank + budget</td><td>按标题切 chunk，每块和 query 算 similarity，排序后从高到低装满 token budget。面试官说这是 easiest approach</td><td>一个 recipe 被切成几块；专名靠 embedding 不稳</td></tr>
+    <tr><td class="nw">v2 Hybrid + 取整节</td><td>加 BM25 匹配专名，命中后取所在的整节</td><td>问得宽时，没有哪个 leaf 足够像</td></tr>
+    <tr><td class="nw">v3 Tree</td><td>parent 是 children 的 summary，各层节点都能被检索到</td><td>建 index 要多次调用 LLM；summary 会丢细节</td></tr>
+  </tbody>
+</table>
+
+<h2 id="tree">面试官的追问：tree 上怎么走</h2>
+<table>
+  <thead><tr><th>追问</th><th>回答</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Chapter 3 和 3.b<br>的 embedding</td><td>Chapter 3 的 embedding 来自它的 summary，概括 3.a–3.c。3.b 的来自自己的原文。具体问题和 3.b 更像，宽问题和 chapter 3 更像</td></tr>
+    <tr><td class="nw">Flow</td><td>在 root 层取 similarity 最高的 k 个，只在它们的 children 里再取 top-k，一层层往下</td></tr>
+    <tr><td class="nw">Where to stop</td><td>到 leaf 停，或者 token budget 装满</td></tr>
+    <tr><td class="nw">What to take</td><td>Tree traversal 把每层选中的节点都留下。Collapsed tree 不分层，所有节点一起排序，按 token budget 截断</td></tr>
+    <tr><td class="nw">What to show</td><td>选中节点的文本带上标题路径，按原文顺序排。parent 和它的 child 都选中时只留 child，这一条是设计取舍，RAPTOR 没有这一步</td></tr>
+  </tbody>
+</table>
+<p>RAPTOR 的实验里 collapsed tree 比 tree traversal 好。它是在 QASPER 的 20 篇上比的，主实验把上限定在 2000 token，大约是 top-20 个节点。Collapsed tree 其实就是 v1 的做法用在 tree 的节点上。</p>
+
+<h2 id="summarize">Case 2：总结整本书</h2>
+<ol>
+  <li><strong>切</strong>：按章切，一章还放不下就再按节切</li>
+  <li><strong>Map</strong>：每块各自 summarize，可以并行</li>
+  <li><strong>Reduce</strong>：把这些 summary 合起来再 summarize 一次，合起来还超 token budget 就分组多做一层</li>
+</ol>
+<p>有 tree 时，root 层的 summary 就是答案，建 index 时算好并缓存。另一种做法是 refine，带着当前的 summary 顺序读下一块。它不能并行，结果还受顺序影响。</p>
+<p>手算一遍。书有 200K token，token budget 是 32K。按 8K 一块切成 25 块，每块压成 500 token，合起来 12.5K，一次 reduce 就放得下，一共调用 LLM 26 次。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>先给最简单的：切 chunk → 算 similarity → 排序 → 按 token budget 截断</li>
+  <li>chunk 沿文档结构切，命中后取整节</li>
+  <li>专名靠 BM25，同义改写靠 embedding</li>
+  <li>tree：parent 是 children 的 summary；具体问题命中 leaf，宽问题命中 parent</li>
+  <li>没有 query 的总结用 map-reduce，summary 在建 index 时缓存</li>
+  <li>说了 tree 或 graph，就要答得出 flow、stop、take、show</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>这两种情况怎么 eval？</summary>
+  <p>Case 1 先看答案所在的 chunk 有没有进 context，再看回答的 groundedness（见 <a href="grounded-response.html">grounded 回答</a>）。Case 2 看 summary 覆盖了多少 key point，以及每一句在原文里有没有依据。</p>
+</details>
+<details>
+  <summary>排在最前面的 chunk 也不相关，怎么办？</summary>
+  <p>给 similarity 设一个阈值，都低于它就说书里没找到，不硬答（见 <a href="over-searching.html">abstention</a>）。</p>
+</details>
+<details>
+  <summary>文件没有目录和标题，怎么建 tree？</summary>
+  <p>先按固定长度切 leaf，再按 embedding 做 clustering，每个 cluster 生成一个 summary 当 parent，重复到聚不动为止。RAPTOR 的 leaf 是 100 token，clustering 用 GMM，一个节点可以属于多个 cluster。</p>
+</details>
+<details>
+  <summary>放在手机上跑，要注意什么？</summary>
+  <p>建 tree 要对每个 parent 调用一次 LLM，所以放在文件进 index 的时候做，结果缓存下来。回答问题时只算一次 query 的 embedding，再调用一次 LLM。</p>
+</details>
+<details>
+  <summary>换一个 context 更长的模型，把整本书放进去不行吗？</summary>
+  <p>题目的前提是放不下。就算放得下，context 越长成本越高，中间的内容也更容易被忽略（见 <a href="rag.html">RAG</a> 的 Lost in the Middle）。</p>
+</details>
+
+<p class="src"><b>来源</b>作者本人 2026-11-09 一面的记录（ml-八股 09 第 40 题）· <a href="https://arxiv.org/abs/2401.18059">RAPTOR</a>（tree 的构建、tree traversal 和 collapsed tree、QASPER 上的比较）</p>
+
+</main>
+</body>
+</html>

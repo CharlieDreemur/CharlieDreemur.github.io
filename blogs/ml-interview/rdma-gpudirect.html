@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDMA 和 GPUDirect 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>RDMA 是什么、怎么用？<br>GPUDirect 又省掉了什么？</h1>
+<p class="meta"><b>英文问法</b><q>What is RDMA and why is it faster than TCP?</q> · <q>Walk me through the verbs workflow.</q> · <q>What does GPUDirect RDMA do?</q> · <q>InfiniBand vs RoCE?</q></p>
+<p class="meta"><b>考过</b>面经：<strong>NVIDIA Research System AI 实习 2024 一面</strong>（"先问了一些基础知识，包括分布式训练，RDMA的工作流程和编程，网络的一些知识"，Pass，<a href="https://www.1point3acres.com/bbs/thread-1060932-1-1.html">1p3a 1060932</a>）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>RDMA</dt>
+  <dd>网卡直接读写对端机器的内存，对端 CPU 和 OS 都不参与。TCP 像寄快递，两边都要经过收发室（kernel）拆包、再拷进你的 buffer；RDMA 像两个仓库之间修了直达传送带。通道建好后，app 直接给网卡下单（kernel bypass），数据从 app buffer 直接上线、直接落进对端 buffer（zero copy）。</dd>
+  <dt>Memory registration</dt>
+  <dd>用之前先把 buffer 登记给网卡：pin 住页面（不被 swap，物理地址不变），把虚拟→物理地址表写进网卡，拿到 lkey / rkey。对端只有拿到 rkey 才能远程读写这块内存。</dd>
+  <dt>InfiniBand vs RoCE</dt>
+  <dd>同一套 verbs API。InfiniBand 是专用网络，链路层自带 credit-based flow control 管拥塞；RoCE 把 RDMA 跑在 Ethernet 上，要靠 PFC（Priority Flow Control）做成 lossless。iWARP 走 TCP，比 RoCE 慢。</dd>
+  <dt>GPUDirect 家族</dt>
+  <dd><b>P2P</b>：同机 GPU 之间直接 copy 或 load/store，走 NVLink 或 PCIe。<b>RDMA</b>：网卡直接读写 GPU memory，不经 host memory 中转。<b>Storage</b>：NVMe / NVMe-oF 直接 DMA 进 GPU memory，省掉 CPU 的 bounce buffer。</dd>
+  <dt>带宽量级</dt>
+  <dd>显存 &gt; NVLink &gt; PCIe ≈ 网卡，每级差几倍到十倍。<span class="eg">例：H100 的 NVLink 900 GB/s 约是 PCIe Gen5（128 GB/s）的 7 倍。</span></dd>
+</dl>
+
+<h2 id="figs">看图：三种数据路径，verbs 哪几步绕过 kernel</h2>
+<figure class="fig">
+<svg viewBox="-6 0 546 454" role="img" aria-label="三种数据路径：TCP 两端各经过 host buffer 和 kernel buffer，每端多拷 2 次；RDMA 跳过 kernel，每端只剩 GPU 到 host 的 1 次拷贝；GPUDirect RDMA 让 NIC 直接读写 GPU memory，没有多余拷贝"><defs><marker id="rd-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="rd-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="135" y="16" text-anchor="middle" class="hd">TCP</text><text x="135" y="34" text-anchor="middle" class="m">两端都经过 kernel</text><rect x="71" y="52" width="128" height="24" rx="6" class="box"/><text x="135" y="69" text-anchor="middle">GPU memory</text><rect x="71" y="89" width="128" height="24" rx="6" class="box"/><text x="135" y="106" text-anchor="middle">host buffer</text><rect x="71" y="126" width="128" height="24" rx="6" class="box"/><text x="135" y="143" text-anchor="middle">kernel buffer</text><rect x="71" y="163" width="128" height="24" rx="6" class="box"/><text x="135" y="180" text-anchor="middle">NIC</text><rect x="71" y="200" width="128" height="24" rx="6" class="f2"/><text x="135" y="217" text-anchor="middle">网络</text><rect x="71" y="237" width="128" height="24" rx="6" class="box"/><text x="135" y="254" text-anchor="middle">NIC</text><rect x="71" y="274" width="128" height="24" rx="6" class="box"/><text x="135" y="291" text-anchor="middle">kernel buffer</text><rect x="71" y="311" width="128" height="24" rx="6" class="box"/><text x="135" y="328" text-anchor="middle">host buffer</text><rect x="71" y="348" width="128" height="24" rx="6" class="box"/><text x="135" y="365" text-anchor="middle">GPU memory</text><path d="M135.0,77 V86" class="ln1" marker-end="url(#rd-ah1)"/><path d="M135.0,114 V123" class="ln1" marker-end="url(#rd-ah1)"/><path d="M135.0,151 V160" class="ln2" marker-end="url(#rd-ah2)"/><path d="M135.0,188 V197" class="ln2" marker-end="url(#rd-ah2)"/><path d="M135.0,225 V234" class="ln2" marker-end="url(#rd-ah2)"/><path d="M135.0,262 V271" class="ln2" marker-end="url(#rd-ah2)"/><path d="M135.0,299 V308" class="ln1" marker-end="url(#rd-ah1)"/><path d="M135.0,336 V345" class="ln1" marker-end="url(#rd-ah1)"/><text x="297" y="16" text-anchor="middle" class="hd">RDMA</text><text x="297" y="34" text-anchor="middle" class="m">kernel bypass</text><rect x="233" y="52" width="128" height="24" rx="6" class="box"/><text x="297" y="69" text-anchor="middle">GPU memory</text><rect x="233" y="89" width="128" height="24" rx="6" class="box"/><text x="297" y="106" text-anchor="middle">host buffer</text><rect x="233" y="163" width="128" height="24" rx="6" class="box"/><text x="297" y="180" text-anchor="middle">NIC</text><rect x="233" y="200" width="128" height="24" rx="6" class="f2"/><text x="297" y="217" text-anchor="middle">网络</text><rect x="233" y="237" width="128" height="24" rx="6" class="box"/><text x="297" y="254" text-anchor="middle">NIC</text><rect x="233" y="311" width="128" height="24" rx="6" class="box"/><text x="297" y="328" text-anchor="middle">host buffer</text><rect x="233" y="348" width="128" height="24" rx="6" class="box"/><text x="297" y="365" text-anchor="middle">GPU memory</text><text x="305" y="142" text-anchor="start" class="m">跳过 kernel</text><text x="305" y="290" text-anchor="start" class="m">跳过 kernel</text><path d="M297.0,77 V86" class="ln1" marker-end="url(#rd-ah1)"/><path d="M297.0,114 V160" class="ln2" marker-end="url(#rd-ah2)"/><path d="M297.0,188 V197" class="ln2" marker-end="url(#rd-ah2)"/><path d="M297.0,225 V234" class="ln2" marker-end="url(#rd-ah2)"/><path d="M297.0,262 V308" class="ln2" marker-end="url(#rd-ah2)"/><path d="M297.0,336 V345" class="ln1" marker-end="url(#rd-ah1)"/><text x="459" y="16" text-anchor="middle" class="hd">GPUDirect RDMA</text><text x="459" y="34" text-anchor="middle" class="m">NIC 直接读写 GPU</text><rect x="395" y="52" width="128" height="24" rx="6" class="box"/><text x="459" y="69" text-anchor="middle">GPU memory</text><rect x="395" y="163" width="128" height="24" rx="6" class="box"/><text x="459" y="180" text-anchor="middle">NIC</text><rect x="395" y="200" width="128" height="24" rx="6" class="f2"/><text x="459" y="217" text-anchor="middle">网络</text><rect x="395" y="237" width="128" height="24" rx="6" class="box"/><text x="459" y="254" text-anchor="middle">NIC</text><rect x="395" y="348" width="128" height="24" rx="6" class="box"/><text x="459" y="365" text-anchor="middle">GPU memory</text><text x="467" y="105" text-anchor="start" class="m">不经过 host</text><text x="467" y="142" text-anchor="start" class="m">跳过 kernel</text><text x="467" y="290" text-anchor="start" class="m">跳过 kernel</text><text x="467" y="327" text-anchor="start" class="m">不经过 host</text><path d="M459.0,77 V160" class="ln2" marker-end="url(#rd-ah2)"/><path d="M459.0,188 V197" class="ln2" marker-end="url(#rd-ah2)"/><path d="M459.0,225 V234" class="ln2" marker-end="url(#rd-ah2)"/><path d="M459.0,262 V345" class="ln2" marker-end="url(#rd-ah2)"/><text x="135" y="396" text-anchor="middle" class="acc">每端多拷 2 次</text><text x="297" y="396" text-anchor="middle" class="acc">每端多拷 1 次</text><text x="459" y="396" text-anchor="middle" class="c2">没有多余拷贝</text><path d="M48,52 H43 V187 H48" class="ln"/><text x="38" y="123.5" text-anchor="end" class="m">发送端</text><path d="M48,237 H43 V372 H48" class="ln"/><text x="38" y="308.5" text-anchor="end" class="m">接收端</text><path d="M94,418 H130" class="ln1" marker-end="url(#rd-ah1)"/><text x="136" y="422" text-anchor="start" class="m">多出来的拷贝（cudaMemcpy、CPU copy）</text><path d="M94,438 H130" class="ln2" marker-end="url(#rd-ah2)"/><text x="136" y="442" text-anchor="start" class="m">NIC 的 DMA 和网线传输，不算拷贝</text></svg>
+<figcaption>图 1：把一块 gradient 从一台机器的 GPU 送到另一台机器的 GPU，从上往下走。橙色箭头是多出来的拷贝，蓝色箭头是网卡自己做的 DMA 和网线传输。TCP 每端要拷 2 次（GPU ↔ host buffer、host buffer ↔ kernel buffer），RDMA 跳过 kernel 只剩 GPU ↔ host 这 1 次，GPUDirect RDMA 让 NIC 直接读写 GPU memory，这 1 次也省掉了，也就是正文说的“两端各多一次拷贝”。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="-4 0 554 326" role="img" aria-label="verbs 流程：①打开设备分配 PD、②register memory、③建 CQ 和 QP 这三步一次性准备，要经过 kernel；④post WR 和 ⑤poll CQ 每条消息都做，app 直接和 NIC 打交道，不经过 kernel"><defs><marker id="vb-ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="vb-ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><rect x="260" y="8" width="80" height="282" rx="6" class="box"/><text x="300" y="28" text-anchor="middle" class="hd">app</text><rect x="360" y="8" width="80" height="282" rx="6" class="box"/><text x="400" y="28" text-anchor="middle" class="hd">kernel</text><rect x="460" y="8" width="80" height="282" rx="6" class="box"/><text x="500" y="28" text-anchor="middle" class="hd">NIC</text><text x="56" y="64" text-anchor="start">① 打开设备，分配 PD</text><text x="56" y="81" text-anchor="start" class="m">protection domain</text><path d="M300,70 H394" class="ln1" marker-end="url(#vb-ah1)"/><path d="M405,70 H494" class="ln1" marker-end="url(#vb-ah1)"/><circle cx="400" cy="70" r="4" class="f1"/><circle cx="300" cy="70" r="3" class="f1"/><text x="56" y="112" text-anchor="start">② register memory</text><text x="56" y="129" text-anchor="start" class="m">pin 页面，拿 lkey / rkey</text><path d="M300,118 H394" class="ln1" marker-end="url(#vb-ah1)"/><path d="M405,118 H494" class="ln1" marker-end="url(#vb-ah1)"/><circle cx="400" cy="118" r="4" class="f1"/><circle cx="300" cy="118" r="3" class="f1"/><text x="56" y="160" text-anchor="start">③ 建 CQ 和 QP</text><text x="56" y="177" text-anchor="start" class="m">带外交换 rkey，QP 走到 RTS</text><path d="M300,166 H394" class="ln1" marker-end="url(#vb-ah1)"/><path d="M405,166 H494" class="ln1" marker-end="url(#vb-ah1)"/><circle cx="400" cy="166" r="4" class="f1"/><circle cx="300" cy="166" r="3" class="f1"/><text x="56" y="208" text-anchor="start">④ post WR</text><text x="56" y="225" text-anchor="start" class="m">send / recv、RDMA write / read</text><path d="M300,214 C340,184 460,184 494,212" class="ln2" marker-end="url(#vb-ah2)"/><circle cx="300" cy="214" r="3" class="f2"/><text x="56" y="256" text-anchor="start">⑤ poll CQ</text><text x="56" y="273" text-anchor="start" class="m">拿完成事件</text><path d="M500,262 C460,232 340,232 306,260" class="ln2" marker-end="url(#vb-ah2)"/><circle cx="500" cy="262" r="3" class="f2"/><path d="M46,50 H41 V186 H46" class="ln"/><text x="34" y="114" text-anchor="end" class="m">一次性</text><text x="34" y="130" text-anchor="end" class="m">准备</text><path d="M46,194 H41 V282 H46" class="ln"/><text x="34" y="234" text-anchor="end" class="m">每条</text><text x="34" y="250" text-anchor="end" class="m">消息</text><text x="275" y="314" text-anchor="middle" class="m">④ ⑤ 每条消息重复，不进 kernel；用完按相反顺序销毁</text></svg>
+<figcaption>图 2：右边三条竖带是 app、kernel（驱动）和网卡，每一行箭头表示这一步要经过谁。①–③ 只在开始做一次，要经过 kernel（橙色箭头穿过 kernel）；之后每条消息只做 ④ ⑤，app 直接往网卡的 QP 里放 work request、从 CQ 里取完成事件，蓝色箭头从 kernel 上方越过，这就是 kernel bypass。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>RDMA lets a NIC read or write a remote host's memory directly. The OS sets up the connection once; after that the application posts work requests straight to the NIC, so the data path bypasses the kernel, makes no intermediate copies, and the remote CPU isn't involved. Memory must be registered first, which pins it and gives the NIC keys. InfiniBand has credit-based flow control built in; RoCE runs the same verbs over Ethernet and relies on PFC to be lossless. GPUDirect RDMA lets the NIC DMA straight to and from GPU memory over PCIe, skipping the host bounce buffer. NCCL uses NVLink inside a node and GPUDirect RDMA over InfiniBand across nodes.</p></div>
+
+<h2>关键流程</h2>
+<div class="deriv">
+  <h3 id="path">数据路径：GPUDirect RDMA 省了什么</h3>
+  <p>没有 GDR：GPU memory → 拷到 host buffer → NIC → 网络 → NIC → host buffer → 拷回 GPU（两端各多一次拷贝）。</p>
+  <p>有 GDR：GPU memory → NIC → 网络 → NIC → GPU memory。前提：GPU 和 NIC 在 PCIe 拓扑上离得近，并加载 <code>nvidia-peermem</code>（或用 DMA-BUF）。</p>
+  <h3 id="verbs">verbs 编程流程（NVIDIA 原题）</h3>
+  <ol>
+    <li>打开设备，分配 protection domain（PD）</li>
+    <li>register memory：pin 页面，拿到 lkey / rkey</li>
+    <li>建 CQ 和 QP；带外交换 QP number、地址、rkey；QP 走 INIT → RTR → RTS</li>
+    <li>post work request：send / recv，或 RDMA write / read</li>
+    <li>poll CQ 拿完成事件；用完按相反顺序销毁</li>
+  </ol>
+</div>
+
+<table>
+  <thead><tr><th>链路（H100 一代）</th><th>每 GPU 带宽</th><th>口径</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">HBM（H100 SXM）</td><td class="nw">3.35 TB/s</td><td>显存本身</td></tr>
+    <tr><td class="nw">NVLink 4 + NVSwitch</td><td class="nw">900 GB/s</td><td>双向合计，机内</td></tr>
+    <tr><td class="nw">PCIe Gen5 x16</td><td class="nw">128 GB/s</td><td>双向合计</td></tr>
+    <tr><td class="nw">ConnectX-7 IB NDR</td><td class="nw">400 Gb/s = 50 GB/s</td><td>单向，跨机；DGX H100 配 8 张，对应 8 GPU</td></tr>
+  </tbody>
+</table>
+
+<h2 id="example">手算例子：TP 为什么不跨机</h2>
+<p>一次 TP all-reduce 的 activation \(b\cdot s\cdot h\cdot 2\) bytes，取 \(b=1, s=4096, h=8192\)：67 MB。\(t=8\) 的 ring 每卡发 \(2\cdot\tfrac78\cdot 67\) ≈ 117 MB。</p>
+<ul>
+  <li>NVLink 单向 450 GB/s：0.26 ms；跨机 NIC 50 GB/s：2.3 ms</li>
+  <li>每层 forward + backward 共 4 次，80 层：<strong>83 ms vs 752 ms</strong> → TP 放机内，跨机放 DP / PP</li>
+</ul>
+
+<h2>必答点</h2>
+<ul>
+  <li>RDMA：kernel bypass + zero copy + 对端 CPU 不参与 → 低 latency、低 CPU 占用</li>
+  <li>先 register memory（pin、lkey / rkey）；QP 建好后 app 直接 post WR、poll CQ</li>
+  <li>IB 链路层自带 credit-based flow control；RoCE = Ethernet + PFC（lossless）；同一套 verbs</li>
+  <li>GPUDirect：RDMA = NIC ↔ GPU memory；P2P = 机内 GPU ↔ GPU；Storage = NVMe ↔ GPU</li>
+  <li>带宽：HBM &gt; NVLink &gt; PCIe ≈ NIC → TP 机内，DP / PP 跨机</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>two-sided 和 one-sided 有什么区别？</summary>
+  <p>send / recv 是 two-sided，对端必须先 post recv buffer；RDMA write / read 是 one-sided，对端 CPU 完全不知情，只需事先给出地址和 rkey（write with immediate 才会通知对端）。</p>
+</details>
+<details>
+  <summary>怎么确认 GPUDirect RDMA 真的生效？</summary>
+  <p><code>NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=NET</code> 看选了哪种 transport（IB 还是 Socket）；查 <code>lsmod | grep nvidia-peermem</code>；<code>NCCL_NET_GDR_LEVEL</code> 决定 GPU 与 NIC 隔多远还用 GDR（PIX / PXB / PHB / SYS）。</p>
+</details>
+<details>
+  <summary>为什么 GPU 和 NIC 要挂在同一个 PCIe switch 下？</summary>
+  <p>GDR 走 PCIe peer-to-peer，绕到 CPU root complex 就慢甚至不支持。PCIe ACS 开着也会把 P2P 流量绕到 CPU，NCCL 文档说可能大幅变慢甚至 hang。</p>
+</details>
+<details>
+  <summary>为什么注册内存要 pin？</summary>
+  <p>网卡按物理地址做 DMA，页面若被 swap 或迁移，网卡就会写错地方。PyTorch DataLoader 的 <code>pin_memory=True</code> 也是同理。pinned host memory 才能异步 DMA 到 GPU。</p>
+</details>
+<details>
+  <summary>没有 IB 时 NCCL 怎么办？</summary>
+  <p>回退到 IP sockets（<code>NCCL_IB_DISABLE=1</code> 可强制），每次收发都经 kernel 和拷贝，带宽低、latency 高，多机训练会明显变慢。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://docs.nvidia.com/rdma-aware-networks-programming-user-manual-1-7.pdf">NVIDIA RDMA Aware Networks Programming User Manual v1.7</a> Introduction（p.10）、§2.1–2.4（pp.15–18）、§3.1（pp.20–21）、§3.3.4（p.22）、§3.4（pp.24–25）· <a href="https://developer.nvidia.com/gpudirect">NVIDIA GPUDirect</a>（Storage、RDMA、P2P）· <a href="https://docs.nvidia.com/cuda/gpudirect-rdma/index.html">GPUDirect RDMA docs</a> §1 · <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html">NCCL Environment Variables</a>（NCCL_NET_GDR_LEVEL、NCCL_IB_DISABLE）、<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/gpu_troubleshooting.html">GPU troubleshooting</a>（GPU-to-NIC、ACS）· <a href="https://www.nvidia.com/en-us/data-center/h100/">H100 specs</a> · <a href="https://www.nvidia.com/en-us/data-center/nvlink/">NVLink specs</a> · <a href="https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html">DGX H100 User Guide</a> Table 1 · <a href="https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html">PyTorch Performance Tuning Guide</a>（pin_memory）</p>
+
+</main>
+</body>
+</html>

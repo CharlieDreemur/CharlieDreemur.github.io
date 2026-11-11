@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoE 与 Expert Parallel 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>MoE 怎么实现？shape 怎么变？<br>capacity、load balancing loss、EP 的 all-to-all 是什么？</h1>
+<p class="meta"><b>英文问法</b><q>Implement an MoE layer and show the dimensions.</q> · <q>What is the capacity factor, and what happens to dropped tokens?</q> · <q>Derive the load-balancing loss.</q> · <q>How do dispatch and combine work under expert parallelism?</q></p>
+<p class="meta"><b>考过</b><strong>NVIDIA SWE</strong>（"Implement MoE and show the dimensions"，Glassdoor RVW105422785，年份未核实；Glassdoor 的另一条摘要里，同一场还问了 CUDA kernel optimization，追问 kernel fusion 和 launch overhead）· 美团（"手撕：用python实现moe"）· 阿里（"ep的dispatch和combine"）· 智谱（手撕 MoE 层的 dispatch）· 牛客（"推导MoE架构的负载均衡损失函数，如何避免专家坍缩"）</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>MoE layer</dt>
+  <dd>把 Transformer 里的 FFN 换成 \(E\) 个 expert FFN，再加一个 router，每个 token 只走其中 \(k\) 个。像医院分诊：每个病人只去最相关的 \(k\) 个科室。参数随 \(E\) 涨，每个 token 的计算只随 \(k\) 涨。<span class="eg">例：Mixtral 8x7B，E = 8、k = 2。</span></dd>
+  <dt>Router 与 top-k gate</dt>
+  <dd>一个 \(h \times E\) 的 linear 给每个 token 打 \(E\) 个分，softmax 后取最大的 \(k\) 个。输出是这 \(k\) 个 expert 输出按 gate 值的加权和。gate 值让 router 能拿到 gradient。</dd>
+  <dt>Capacity factor 与 token dropping</dt>
+  <dd>每个 expert 一个 batch 最多收 \(C\) 个 token，像每个科室限号。超出的 token 被 drop，这一层不算，经 residual 直接传到下一层。没收满的位置 pad。<span class="eg">例：T = 4096、E = 8、k = 2、cf = 1.25 → C = 1280。</span></dd>
+  <dt>Load balancing loss</dt>
+  <dd>router 一开始偏爱某个 expert，它就学得更好、更被偏爱，最后少数 expert 包揽一切（expert collapse），其余白占参数。加一个 aux loss，分配越均匀越小。</dd>
+  <dt>Expert parallel（EP）</dt>
+  <dd>不同 expert 放在不同卡上。dispatch：all-to-all 把每个 token 发到它的 expert 所在的卡；combine：反向 all-to-all 把结果发回原来的卡。</dd>
+</dl>
+
+<h2 id="figs">看图：token 怎么走，capacity 怎么卡</h2>
+<figure class="fig">
+<svg viewBox="0 0 520 422" role="img" aria-label="expert parallel 下一个 MoE 层的数据流：每卡的 token 经 router 选 top-k，按 expert 分桶后 all-to-all 发到 expert 所在的卡，算完再 all-to-all 发回，按 gate 加权求和"><defs><marker id="moe1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="moe1-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="moe1-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><text x="304" y="14" text-anchor="middle" class="m">T = 4096、E = 8、k = 2、cf = 1.25 → C = 1280</text><text x="194" y="38" text-anchor="middle" class="hd">GPU0</text><text x="414" y="38" text-anchor="middle" class="hd">GPU1</text><rect x="96" y="48" width="196" height="32" rx="6" class="box"/><text x="194" y="68.5" text-anchor="middle">x [T, h]：本卡的 token</text><rect x="316" y="48" width="196" height="32" rx="6" class="box"/><text x="414" y="68.5" text-anchor="middle">x [T, h]：本卡的 token</text><path d="M194.0,80 V90" class="ln" marker-end="url(#moe1-a)"/><path d="M414.0,80 V90" class="ln" marker-end="url(#moe1-a)"/><rect x="96" y="92" width="196" height="32" rx="6" class="box"/><text x="194" y="112.5" text-anchor="middle">router + softmax → [T, E]</text><rect x="316" y="92" width="196" height="32" rx="6" class="box"/><text x="414" y="112.5" text-anchor="middle">router + softmax → [T, E]</text><path d="M194.0,124 V134" class="ln" marker-end="url(#moe1-a)"/><path d="M414.0,124 V134" class="ln" marker-end="url(#moe1-a)"/><rect x="96" y="136" width="196" height="32" rx="6" class="box"/><text x="194" y="156.5" text-anchor="middle">top-k：下标、gate [T, k]</text><rect x="316" y="136" width="196" height="32" rx="6" class="box"/><text x="414" y="156.5" text-anchor="middle">top-k：下标、gate [T, k]</text><path d="M194.0,168 V178" class="ln" marker-end="url(#moe1-a)"/><path d="M414.0,168 V178" class="ln" marker-end="url(#moe1-a)"/><rect x="96" y="180" width="196" height="32" rx="6" class="box"/><text x="194" y="200.5" text-anchor="middle">按 expert 分桶 [E, C, h]</text><rect x="316" y="180" width="196" height="32" rx="6" class="box"/><text x="414" y="200.5" text-anchor="middle">按 expert 分桶 [E, C, h]</text><path d="M194.0,214 V279" class="ln1" marker-end="url(#moe1-a1)"/><path d="M414.0,214 V279" class="ln1" marker-end="url(#moe1-a1)"/><path d="M228.0,214 L380.0,279" class="ln1" marker-end="url(#moe1-a1)"/><path d="M380.0,214 L228.0,279" class="ln1" marker-end="url(#moe1-a1)"/><text x="86" y="244" text-anchor="end" class="acc">dispatch</text><text x="86" y="261" text-anchor="end" class="m">all-to-all</text><rect x="96" y="282" width="196" height="32" rx="6" class="f2"/><text x="194" y="302.5" text-anchor="middle" class="c2">expert 0–3 的 FFN</text><rect x="316" y="282" width="196" height="32" rx="6" class="f2"/><text x="414" y="302.5" text-anchor="middle" class="c2">expert 4–7 的 FFN</text><path d="M194.0,316 V381" class="ln1" marker-end="url(#moe1-a1)"/><path d="M414.0,316 V381" class="ln1" marker-end="url(#moe1-a1)"/><path d="M228.0,316 L380.0,381" class="ln1" marker-end="url(#moe1-a1)"/><path d="M380.0,316 L228.0,381" class="ln1" marker-end="url(#moe1-a1)"/><text x="86" y="346" text-anchor="end" class="acc">combine</text><text x="86" y="363" text-anchor="end" class="m">all-to-all</text><rect x="96" y="384" width="196" height="32" rx="6" class="box"/><text x="194" y="404.5" text-anchor="middle">× gate 加权求和 → y [T, h]</text><rect x="316" y="384" width="196" height="32" rx="6" class="box"/><text x="414" y="404.5" text-anchor="middle">× gate 加权求和 → y [T, h]</text></svg>
+<figcaption>图 1：以 2 张卡为例，8 个 expert 每卡放 4 个（蓝色）。每张卡先对自己的 \(T\) 个 token 打分、选 top-\(k\)，按 expert 分桶，每个桶最多 \(C\) 个 token。橙色的 dispatch 是一次 all-to-all：去 expert 0–3 的 token 送到 GPU0，去 4–7 的送到 GPU1，交叉的箭头就是跨卡的那部分。expert 算完，combine 用反向的 all-to-all 把结果送回 token 原来的卡，再按 gate 加权求和。</figcaption>
+</figure>
+<figure class="fig">
+<svg viewBox="0 0 520 222" role="img" aria-label="8 个 expert 的 capacity 示意：每个 expert 最多收 C 等于 1280 个 token，超出的被 drop 走 residual，不足的位置 pad"><defs><marker id="moe2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker><marker id="moe2-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah1c"/></marker><marker id="moe2-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah2c"/></marker></defs><rect x="72" y="14" width="40" height="52" rx="0" class="bwd"/><rect x="72" y="66" width="40" height="130" rx="0" class="f2"/><text x="92" y="213" text-anchor="middle" class="m">0</text><rect x="128" y="66" width="40" height="58.5" rx="0" class="stale"/><rect x="128" y="124.5" width="40" height="71.5" rx="0" class="f2"/><text x="148" y="213" text-anchor="middle" class="m">1</text><rect x="184" y="66" width="40" height="19.5" rx="0" class="stale"/><rect x="184" y="85.5" width="40" height="110.5" rx="0" class="f2"/><text x="204" y="213" text-anchor="middle" class="m">2</text><rect x="240" y="66" width="40" height="32.5" rx="0" class="stale"/><rect x="240" y="98.5" width="40" height="97.5" rx="0" class="f2"/><text x="260" y="213" text-anchor="middle" class="m">3</text><rect x="296" y="66" width="40" height="52" rx="0" class="stale"/><rect x="296" y="118" width="40" height="78" rx="0" class="f2"/><text x="316" y="213" text-anchor="middle" class="m">4</text><rect x="352" y="46.5" width="40" height="19.5" rx="0" class="bwd"/><rect x="352" y="66" width="40" height="130" rx="0" class="f2"/><text x="372" y="213" text-anchor="middle" class="m">5</text><rect x="408" y="66" width="40" height="39" rx="0" class="stale"/><rect x="408" y="105" width="40" height="91" rx="0" class="f2"/><text x="428" y="213" text-anchor="middle" class="m">6</text><rect x="464" y="66" width="40" height="78" rx="0" class="stale"/><rect x="464" y="144" width="40" height="52" rx="0" class="f2"/><text x="484" y="213" text-anchor="middle" class="m">7</text><path d="M66,196 H510" class="axis"/><path d="M66,66 H510" class="ln"/><path d="M66,92.0 H510" class="stale"/><text x="62" y="70" text-anchor="end" class="hd">C = 1280</text><text x="62" y="96" text-anchor="end" class="m">kT/E</text><text x="62" y="213" text-anchor="end" class="m">expert</text><text x="130" y="36" text-anchor="start" class="acc">超出 C：drop</text><text x="130" y="53" text-anchor="start" class="m">直接走 residual</text><text x="484" y="121" text-anchor="middle" class="m">pad</text></svg>
+<figcaption>图 2：每根柱子是一个 expert 这个 batch 收到的 token（高度只是示意）。每个 expert 的 buffer 一样大，最多放 \(C = 1280\) 个 token，是平均负载 \(kT/E\) 的 cf = 1.25 倍。蓝色是收下来算的 token；橙色虚线是超出 \(C\) 被 drop 的，这一层不算，经 residual 直接传到下一层；灰色虚线是没收满、要 pad 的空位。cf 越大 drop 越少，但 pad 的空位也越多，多算多传。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>An MoE layer replaces the FFN with E expert FFNs plus a router. The router applies softmax to x·W_r and picks the top-k experts per token; the output is the gate-weighted sum of their outputs. Each expert takes at most C = capacity factor × kT/E tokens; overflow tokens are dropped and pass through the residual. Left alone, routing collapses onto a few experts, so Switch adds α·E·Σ fᵢPᵢ, minimized by uniform routing. Under expert parallelism, dispatch is an all-to-all sending tokens to their experts' GPUs; combine is the reverse. Parameters grow with E, per-token compute only with k.</p></div>
+
+<h2>推导 / 关键公式</h2>
+<div class="deriv">
+  <h3 id="shape">shape（T 个 token）</h3>
+  <p>\(x\,[T,h] \to\) logits \([T,E] \to\) top-k 下标、gate \([T,k] \to\) dispatch \([E,C,h] \to\) expert FFN \(\to\) combine \(\to y\,[T,h]\)</p>
+  \[ C = \text{cf}\cdot\frac{k\,T}{E} \]
+  <h3 id="aux">load balancing loss（Switch）</h3>
+  \[ \mathcal{L}_{\text{aux}} = \alpha\, E \sum_{i=1}^{E} f_i\, P_i \]
+  <p>\(f_i\)：top-1 分到 expert \(i\) 的 token 比例（argmax，不可导）；\(P_i\)：router 给 \(i\) 的平均概率（可导，gradient 走这里）。均匀时 \(f_i = P_i = 1/E\)，loss \(= \alpha\)；全挤到一个 expert，loss \(= \alpha E\)。Switch 用 \(\alpha = 10^{-2}\)。</p>
+  <h3 id="params">参数 vs active 参数（Mixtral 8x7B）</h3>
+  <p>h = 4096、SwiGLU 中间维 14336、32 层。每个 expert 3 × 4096 × 14336 ≈ 176M，每层 attention（8 个 KV head）≈ 42M，embedding + LM head 0.26B：</p>
+  <ul>
+    <li>total = 32 × (42M + <strong>8</strong> × 176M) + 0.26B ≈ <strong>46.7B</strong></li>
+    <li>active = 32 × (42M + <strong>2</strong> × 176M) + 0.26B ≈ <strong>12.9B</strong></li>
+  </ul>
+  <p>和论文的 47B、13B active 对得上。参数涨了 3.6 倍，每个 token 的计算只相当于 13B 的 dense 模型。</p>
+</div>
+
+<h2 id="code">手撕代码（NumPy）</h2>
+<pre><code>def moe(x, Wr, experts, k=2, cf=1.25):
+    # x: [T, h]; Wr: [h, E]; experts[e]: [n, h] -> [n, h]
+    T, E = x.shape[0], Wr.shape[1]
+    p = softmax(x @ Wr)                         # router  [T, E]
+    idx = np.argsort(-p, axis=1)[:, :k]         # top-k   [T, k]
+    w = np.take_along_axis(p, idx, axis=1)      # gate    [T, k]
+    w = w / w.sum(1, keepdims=True)
+    C = int(cf * k * T / E)                     # capacity
+    y = np.zeros_like(x)                        # [T, h]
+    for e in range(E):
+        t, j = np.nonzero(idx == e)             # tokens -&gt; e
+        t, j = t[:C], j[:C]                     # overflow dropped
+        # dispatch [C, h] -&gt; expert FFN -&gt; combine
+        y[t] += w[t, j, None] * experts[e](x[t])
+    f = np.bincount(idx[:, 0], minlength=E) / T # token fraction
+    aux = E * np.sum(f * p.mean(0))             # Switch aux loss
+    return y, aux</code></pre>
+
+<h2>必答点</h2>
+<ul>
+  <li>router → top-k → dispatch → expert → combine，能写出每步 shape</li>
+  <li>\(C = \text{cf}\cdot kT/E\)：超出 drop（走 residual），不足 pad；cf 大少 drop，但多算多传</li>
+  <li>aux loss \(\alpha E\sum f_iP_i\)，均匀时最小；不加会 expert collapse</li>
+  <li>EP：dispatch、combine 两次 all-to-all，常是瓶颈，要和计算 overlap</li>
+  <li>参数随 \(E\)、计算随 \(k\)：Mixtral 47B 参数、13B active</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>DeepSeek-V3 的 aux-loss-free 怎么做？</summary>
+  <p>每个 expert 一个 bias \(b_i\)，只加在选 top-k 用的分数上，gate 值仍用原分数。每步看 load：过载的 \(b_i\) 减 \(\gamma\)，欠载的加 \(\gamma\)。不经过 loss，不干扰主目标（另留一个很小的 sequence-wise aux loss 防极端情况）。</p>
+</details>
+<details>
+  <summary>k = 1 能训吗？</summary>
+  <p>Shazeer 2017 认为至少要 2 个 expert 才能比较、router 才有有用的 gradient；Switch 证明 top-1 也行，而且 router 计算更少、capacity 至少减半、通信更少。</p>
+</details>
+<details>
+  <summary>router 为什么要 fp32？</summary>
+  <p>Switch 的说法是 bf16 会加剧 router softmax 的数值问题，没给更细的机制。它全 bf16 训练直接发散，只把 router 内部 cast 到 fp32 就稳了，速度几乎不变。Megatron：<code>--moe-router-dtype fp32</code>。</p>
+</details>
+<details>
+  <summary>延伸：kernel 太碎、launch overhead 大怎么办？</summary>
+  <p>这题是自拟的延伸。Glassdoor 的一条摘要里，kernel fusion 和 launch overhead 是 CUDA kernel optimization 的追问，和 implementing MoE 出现在同一场。按 expert 循环会发 \(E\) 个小 GEMM。先按 expert 排序 token（permute），用一个 grouped GEMM 算完所有 expert，再 unpermute；Megatron：<code>--moe-grouped-gemm</code>、<code>--moe-permute-fusion</code>。</p>
+</details>
+<details>
+  <summary>EP 的 all-to-all 怎么藏？</summary>
+  <p>跨机 EP 时通信能和计算差不多一样长（DeepSeek-V3 说约 1:1）。做法：两个 micro-batch 的计算和 all-to-all 交错（DualPipe，见 <a href="pipeline-parallel.html">PP 页</a>）；DeepEP 之类的 dispatcher 去掉跨机重复 token、合并机内机间通信。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2101.03961">Fedus et al. 2021</a>（Switch）§2.1–2.2（pp.5–8，Eq. 1–6）、§2.4、Table 2（pp.8–10）· <a href="https://arxiv.org/abs/2006.16668">Lepikhin et al. 2020</a>（GShard）§2.2（pp.5–6）、§3.3（p.11，AllToAll 分发）· <a href="https://arxiv.org/abs/2401.04088">Jiang et al. 2024</a>（Mixtral）abstract、§2、Table 1（pp.1–3）、<a href="https://huggingface.co/mistralai/Mixtral-8x7B-v0.1/blob/main/config.json">config.json</a> · <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3</a> §2.1.2（pp.8–9）、§3.2.1（p.12）· <a href="https://docs.nvidia.com/megatron-core/developer-guide/0.18.1/user-guide/features/moe.html">Megatron Core: MoE</a></p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM harness 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Search</p>
+<h1>LLM harness 是什么？<br>agent harness 和 eval harness 有什么区别？</h1>
+<p class="meta"><b>英文问法</b><q>What is an LLM harness?</q> · <q>What's the difference between an agent harness and an eval harness?</q> · <q>How do you make agent runs reproducible?</q></p>
+<p class="meta"><b>考过</b>推断，非面经。recruiter 邮件把 "LLM Harness" 列为实习内容，但没有解释具体指什么 · 这个词在业界还没有统一定义，面试时先问清对方指哪一种</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Harness</dt>
+  <dd>模型外面的那层代码，让模型能干活、也能被测。模型像发动机，harness 是车架、方向盘和仪表盘。业界常见的说法是 Agent = Model + Harness。</dd>
+  <dt>Agent harness</dt>
+  <dd>运行时：先组装 context 再调用模型，模型要用 tool 就替它执行，同时控制 loop 和 stop，处理错误并记日志。</dd>
+  <dt>Eval harness</dt>
+  <dd>测试设施：加载一批 task，让 agent 逐个去跑，用 grader 打分，再汇总。</dd>
+  <dt>Grader</dt>
+  <dd>判断一次运行算不算成功的代码或模型，也叫 verifier。<span class="eg">例：比较环境的最终状态和期望状态是否一致。</span></dd>
+  <dt>Trace</dt>
+  <dd>一次运行的完整记录：每一步的输入、输出、tool call、耗时。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>A harness is everything around the model that makes it usable and testable. An agent harness builds the context, calls the model, runs tools, handles errors, and logs each step. An eval harness replays a fixed set of tasks through that agent, grades each run, and aggregates the scores, so two versions can be compared. When you evaluate an agent, you measure the model and the harness together, so both must be versioned. I'd first ask which one the team means.</p></div>
+
+<h2 id="compare">两种 harness</h2>
+<table>
+  <thead><tr><th></th><th>Agent harness</th><th>Eval harness</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">目的</td><td>让模型完成任务</td><td>衡量完成得好不好</td></tr>
+    <tr><td class="nw">输入</td><td>用户请求</td><td>task 集：prompt、环境初始状态、期望结果</td></tr>
+    <tr><td class="nw">部件</td><td>context 组装、tool 执行、loop 和 stop、retry、副作用确认</td><td>task loader、runner、grader、aggregator</td></tr>
+    <tr><td class="nw">输出</td><td>回答或动作</td><td>分数、trace、失败分类</td></tr>
+  </tbody>
+</table>
+
+<h2 id="code">最小的 eval harness</h2>
+<pre><code>def run_eval(tasks, agent, grader, k=3):
+    rows = []
+    for task in tasks:
+        for trial in range(k):
+            env = task.make_env()              # 每次从初始状态开始
+            trace = agent.run(task.prompt, env)
+            rows.append({
+                "task": task.id,
+                "trial": trial,
+                "score": grader(task, env, trace),
+                "steps": len(trace),
+            })
+    return rows</code></pre>
+<p><strong>可复现</strong>：固定 model 版本和 sampling 参数。tool 返回用 mock 或 cache。每次运行都把环境重置到初始状态。prompt、tool schema、grader 全部进版本控制。每题跑 k 次，报方差。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>harness = 模型之外让它能干活、能被测的代码</li>
+  <li>agent harness 是运行时，eval harness 是测试设施</li>
+  <li>评 agent 时测的是 model 加 harness，两者都要有版本</li>
+  <li>可复现：固定版本、mock tool、重置环境、多次运行</li>
+  <li>先问清对方说的是哪一种</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么换一个 harness，同一个模型的分数会变？</summary>
+  <p>context 怎么裁剪、tool 描述怎么写、出错后重试几次，都会改变结果。所以比较模型时要固定 harness，比较 harness 时要固定模型。</p>
+</details>
+<details>
+  <summary>tool 有副作用，怎么评？</summary>
+  <p>放在 sandbox 里跑，比较环境的最终状态和期望状态（state match），不看模型自己说“完成了”。</p>
+</details>
+<details>
+  <summary>grader 用规则还是用 LLM？</summary>
+  <p>能用规则就用规则：state match、exact match。开放式的回答才用 LLM judge，并且要用人工标注校准（见<a href="annotation-judge.html">标注与 LLM judge</a>）。</p>
+</details>
+<details>
+  <summary>trace 里要记什么？</summary>
+  <p>每一步的 input 和 output，tool call 和它的返回，再加 token 数、latency 和错误。有了它才能回答“为什么失败”，并把失败分类统计。</p>
+</details>
+<details>
+  <summary>你做过类似的东西吗？</summary>
+  <p>Excel Copilot 的 RL environment 就是一种 eval harness。它的 task、episode、reward 分别对应这里的 task、一次运行、grader 的分数。只讲简历上公开的层面。</p>
+</details>
+
+<p class="src"><b>来源</b>术语来自业界博客，定义还在变化：<a href="https://arize.com/blog/what-is-an-agent-harness.md">Arize：What is an agent harness?</a> · <a href="https://www.developersdigest.tech/glossary/eval-harness">Eval harness 词条</a> · agent loop 见 <a href="agent-mcp.html">Agent、tool calling 和 MCP</a></p>
+
+</main>
+</body>
+</html>

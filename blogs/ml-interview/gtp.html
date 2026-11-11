@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generalized Tensor Parallelism 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Training Infra</p>
+<h1>Generalized Tensor Parallelism（GTP）是什么？<br>它和 TP、ZeRO-3 差在哪，all-gather 怎么藏？</h1>
+<p class="meta"><b>英文问法</b><q>What is Generalized Tensor Parallelism in Megatron Core?</q> · <q>How does GTP_remat differ from TP, and from ZeRO-3 on the data-parallel axis?</q> · <q>How does GTP hide the weight all-gather behind compute, and what happens to the weight gradient?</q></p>
+<p class="meta"><b>考过</b><strong>推断，非面经</strong>。没有任何面经问过 GTP · 依据是团队自己的 GTP 文档（main 分支 2026-11 的版本，开头标着 experimental，要求 TransformerEngine ≥ 2.19）和 core 0.20.0 release notes · 下面的引文和限制都是这一版文档的说法</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>GTP_remat</dt>
+  <dd>把 TP 切完的那片 weight 再切一次，每卡平时只存一小片。GEMM 之前用 all-gather 拼回完整的 TP slice，算完就释放，像合租时把共用的工具借来用完就还。名字里的 remat 来自 rematerialize。</dd>
+  <dt>GTP = TP × GTP_remat</dt>
+  <dd>文档的公式就是这一行，意思是两刀相乘，原话是 "every rank stores <code>1/(TP × GTP_remat)</code> of each linear weight"。<span class="eg">例：TP = 4、GTP_remat = 8，每卡存每个 weight 的 1/32。</span></dd>
+  <dt>Model-parallel 轴和 data-parallel 轴</dt>
+  <dd>ZeRO-3 和 FSDP 沿 DP 的 rank 切 weight（见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>）。GTP_remat 按文档是 "a sub-axis of the weight-parallel grid that sits on top of TP"，和 TP 叠在一起用，外面还可以再套 DP。</dd>
+  <dt>Prefetch chain</dt>
+  <dd>weight 按 forward 的顺序连成一条链。算当前层时，提前把下一层的 all-gather 发出去。</dd>
+  <dt>Deferred finalize</dt>
+  <dd>weight gradient 的 reduce-scatter 异步发出，结果推迟一步才并进 <code>main_grad</code>。这里的一步是 backward 往前走一层，不是一个 training step。</dd>
+</dl>
+
+<h2 id="figs">看图：all-gather 和上一层的 GEMM 同时跑</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 172" role="img" aria-label="forward 的两条 stream。通信 stream 上第 1 层的 all-gather 露在外面，计算 stream 在等。之后每一层的 all-gather 都和上一层的 GEMM 同时跑">
+  <text class="hd" x="0" y="14">forward：第 i 层的 all-gather 藏在第 i − 1 层的 GEMM 后面</text>
+  <text class="m" x="70" y="47" text-anchor="end">计算 stream</text>
+  <text class="m" x="70" y="79" text-anchor="end">通信 stream</text>
+  <rect class="stale" x="78" y="32" width="70" height="22" rx="3"/>
+  <text class="m" x="113" y="47" text-anchor="middle">等</text>
+  <rect class="f2" x="148" y="32" width="124" height="22" rx="3"/>
+  <text class="c2" x="210" y="47" text-anchor="middle">GEMM 1</text>
+  <rect class="f2" x="272" y="32" width="124" height="22" rx="3"/>
+  <text class="c2" x="334" y="47" text-anchor="middle">GEMM 2</text>
+  <rect class="f2" x="396" y="32" width="124" height="22" rx="3"/>
+  <text class="c2" x="458" y="47" text-anchor="middle">GEMM 3</text>
+  <text class="m" x="526" y="47">…</text>
+  <rect class="f1" x="78" y="64" width="70" height="22" rx="3"/>
+  <text class="acc" x="113" y="79" text-anchor="middle">AG(W1)</text>
+  <rect class="f1" x="152" y="64" width="70" height="22" rx="3"/>
+  <text class="acc" x="187" y="79" text-anchor="middle">AG(W2)</text>
+  <rect class="f1" x="276" y="64" width="70" height="22" rx="3"/>
+  <text class="acc" x="311" y="79" text-anchor="middle">AG(W3)</text>
+  <rect class="f1" x="400" y="64" width="70" height="22" rx="3"/>
+  <text class="acc" x="435" y="79" text-anchor="middle">AG(W4)</text>
+  <text class="m" x="113" y="102" text-anchor="middle">→ GEMM 1</text>
+  <text class="m" x="187" y="102" text-anchor="middle">→ GEMM 2</text>
+  <text class="m" x="311" y="102" text-anchor="middle">→ GEMM 3</text>
+  <text class="m" x="435" y="102" text-anchor="middle">→ GEMM 4</text>
+  <path class="ln1" d="M78,110 V115 H148 V110"/>
+  <path class="ln" d="M152,110 V115 H470 V110"/>
+  <text class="acc" x="78" y="132">链头，露在外面</text>
+  <text class="m" x="311" y="132" text-anchor="middle">其余 L − 1 次被上一层的 GEMM 盖住</text>
+  <path class="axis" d="M78,150 H520"/>
+  <text class="m" x="526" y="154">时间</text>
+</svg>
+<figcaption>图 1：宽度是示意，不代表真实耗时。AG(Wi) 是第 i 层 weight 的 all-gather，箭头后面是用它的 GEMM。这张图按文档的 "L−1 all-gathers are fully hidden behind compute" 画，链头那一次前面没有 GEMM。3.1 节的说法是 communication 只在 "the very first layer of each direction (cold start)" 和几个强制串行点挡住计算。另外第一次 forward 时每个 weight 的 all-gather 都是同步的。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>GTP equals TP times GTP_remat. TP keeps each weight split through the GEMM. GTP_remat splits the TP slice again: each rank keeps one shard, rebuilds the full slice with an asynchronous all-gather right before the GEMM, and frees it afterwards. The doc calls it an implementation of ZeRO-3 that shards along a model-parallel axis, not the data-parallel one, and materializes one weight at a time, not a bucket. Each layer's all-gather is prefetched during the previous layer's GEMM, so in an L-layer model L minus one gathers are hidden. Weight gradients go back through an async reduce-scatter whose finalize is deferred one step. It's still experimental.</p></div>
+
+<h2 id="compare">TP、GTP_remat、DP 轴上的 ZeRO-3 差在哪</h2>
+<table>
+  <thead><tr><th></th><th>TP</th><th>GTP_remat</th><th>DP 轴上的 ZeRO-3</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">沿哪个轴切</td><td>model-parallel</td><td>model-parallel</td><td>data-parallel</td></tr>
+    <tr><td class="nw">每卡平时存</td><td>weight 的 1/TP</td><td>TP slice 的 1/GTP_remat</td><td>weight 的 1/N</td></tr>
+    <tr><td class="nw">GEMM 时</td><td>"stays sharded through the GEMM"</td><td>先 all-gather，"the GEMM sees the full TP slice"，算完释放</td><td>all-gather 出完整 weight，算完释放</td></tr>
+    <tr><td class="nw">通信传什么</td><td>activation（见 <a href="tp-communication.html">TP communication</a>）</td><td>weight 的 all-gather；weight gradient 的 reduce-scatter</td><td>同左</td></tr>
+    <tr><td class="nw">粒度</td><td>不涉及</td><td>一次一个 weight</td><td>一个 bucket</td></tr>
+  </tbody>
+</table>
+<p>文档说 "GTP_remat is an implementation of ZeRO-3"，再列出两点区别。第一点是 "It shards along a model-parallel axis, not the data-parallel one."，第二点是 "It materializes one weight at a time, not a bucket."，所以每个 weight 可以单独 prefetch。“TP 切计算、传 activation，GTP_remat 只切存储、传 weight”是我对着这张表读出来的推断，文档没有这句话。TP 本身怎么切见 <a href="tp-linear.html">TP Linear</a>。</p>
+<p>手算一遍。h = 8192 的方阵 weight 用 bf16 存是 128 MiB。TP = 4 后每卡 32 MiB。再开 GTP_remat = 8，每卡平时只存 4 MiB，GEMM 前 all-gather 回 32 MiB，算完释放。合起来是 1/32，对应文档的 "32× weight-memory reduction"。同一句里的 "128× wire-bandwidth reduction" 文档没有给推导。</p>
+
+<h2 id="overlap">all-gather 和 weight gradient 怎么藏在计算后面</h2>
+<ol>
+  <li><strong>Forward</strong>：算第 i − 1 层的 GEMM 时，提前发第 i 层的 all-gather。文档 1.1 节写 "Layer i's AG overlaps with layer i−1's GEMM."，3.1 节写成 \(\text{AG}(W_{i+1}) \parallel \text{GEMM}(W_i)\)。两处下标错开一位，说的是同一件事，本页统一用前一种</li>
+  <li><strong>链头</strong>：第一层前面没有 GEMM，所以 "For an L-layer model, L−1 all-gathers are fully hidden behind compute."</li>
+  <li><strong>Cold start</strong>："every weight's very first AG is synchronous"，prefetch chain 从第二次 forward 才开始</li>
+  <li><strong>Backward</strong>：反着走，第 i − 1 层的 all-gather 和第 i 层的 dgrad 重叠</li>
+  <li><strong>Weight gradient</strong>：reduce-scatter 异步发出，"Finalization is deferred one step"。backward 走到第 i − 1 层时，先等第 i 层的 reduce-scatter 完成，再把结果加进 <code>main_grad</code>。这样第 i 层的 reduce-scatter 能和第 i − 1 层的 backward GEMM 重叠。链头用同步的 reduce-scatter，"since nothing follows it"</li>
+</ol>
+<p>Overlap 的一般做法和 exposed communication 怎么算见 <a href="overlap.html">overlap</a>。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>GTP = TP × GTP_remat，每卡存每个 linear weight 的 1/(TP × GTP_remat)</li>
+  <li>GTP_remat 是 ZeRO-3 的做法：切开存，用前 all-gather，用完释放，gradient 走 reduce-scatter</li>
+  <li>和 DP 轴上的 ZeRO-3 有两点区别：切在 model-parallel 轴，一次一个 weight</li>
+  <li>第 i 层的 all-gather 和第 i − 1 层的 GEMM 重叠，L 层藏住 L − 1 次</li>
+  <li>Weight gradient 用 async reduce-scatter，finalize 推迟一步</li>
+  <li>状态是 experimental，要求 TransformerEngine ≥ 2.19</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>GTP_remat 里的各个 rank 算的是同一份数据吗？</summary>
+  <p>不是。文档写默认 "all GTP_remat ranks distribute independent samples"。开了 sequence sharding 后，各 rank 算同一个 microbatch 的不同 sequence 分段。</p>
+</details>
+<details>
+  <summary>为什么不直接把 FSDP 的 bucket 缩到一个 weight？</summary>
+  <p>文档的说法是 "FSDP's overlap is bucket-grained by design"，bucket 是为了 "avoid paying NCCL launch latency on tiny params"。GTP_remat 不切小 tensor，文档写 LayerNorm、bias、MoE router 这些 "always stay full"。</p>
+</details>
+<details>
+  <summary>all-gather 出了 NVLink domain 还藏得住吗？</summary>
+  <p>文档写 "One GEMM of runway covers a gather that stays inside the NVLink domain, but not one that leaves it"。MoE 的 routed-expert weight 属于后一种，文档给它们单独的 one-block-ahead chain。</p>
+</details>
+<details>
+  <summary>128× 是怎么算出来的？</summary>
+  <p>文档没有给推导。32× 是 TP × GTP_remat = 4 × 8。128 = 32 × 4 对得上 BF16 的 16 bit 换成 NVFP4 的 4 bit，这是猜测。文档 1.3 节的表里 NVFP4 的 all-gather 是每元素 0.5625 byte，对 BF16 的 2 byte 约 3.6 倍，所以面试里只引 32×。</p>
+</details>
+<details>
+  <summary>怎么打开，有什么限制，规模到多大？</summary>
+  <p><code>--tensor-parallel-num-weight-shards</code> 决定 GTP_remat 的大小，等于 1 时 GTP 不生效。文档写它 "composes orthogonally with TP / SP / EP / DDP / CUDA Graphs"，目前要求 <code>num_distributed_optimizer_instances == 1</code>。文档的例子是约 280B 的 hybrid Mamba-MoE proxy 在 GB200 NVL72 上用 GTP64，到 3072 GPU 时 scaling efficiency 仍 "≥93 %"。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/api-guide/core/generalized_tensor_parallel.md">GTP 文档</a>（开头的 overview 和对照表；1.1 节 prefetch chain、cold start、deferred RS finalize；1.3 节 low precision 的表；1.7 节 scaling；3.1 节 overlap design summary）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（GTP 加了 "configurable batch/sequence partitioning, opt-in latent-projection sharding, and MTP support"）· 题库条目在 ml-八股 06 的“零、团队最近在做什么”</p>
+
+</main>
+</body>
+</html>

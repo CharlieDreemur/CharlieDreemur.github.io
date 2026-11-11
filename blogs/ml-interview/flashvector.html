@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashVector 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<p class="kicker">面试速查 · Agentic Infra</p>
+<h1>Unity Vector 的 FlashVector：<br>agent 怎么优化整个 serving stack？</h1>
+<p class="meta"><b>英文问法</b><q>Walk me through FlashVector. How does the agent optimize the whole serving stack?</q> · <q>How does it know a change is correct and really faster?</q> · <q>How do the agent's changes reach production?</q></p>
+<p class="meta"><b>考过</b><strong>Unity Vector 自己的论文</strong>（<a href="https://arxiv.org/abs/2609.17391">arXiv 2609.17391</a>，2026-09，Unity Vector AI Team 与 Stanford；据 LinkedIn 转发，一作是 2026 年暑期实习生）· 面试官提示会考 "agentic 优化 kernel / CUDA"（2026-10，你转述），很可能指这篇，这是推断 · 没有 Unity 自己的面经原题 · 面试前必读</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Serving stack</dt>
+  <dd>一次广告请求要穿过的四层：feature processing、model server（Triton）、PyTorch graph、GPU kernel。瓶颈分散在各层，每层要不同的专业知识。</dd>
+  <dt>Layer agent</dt>
+  <dd>每层一个 agent，四步的接口相同，工具和知识不同。<span class="eg">GPU kernel 层用 Nsight 做 profile，model server 层用 eBPF。</span></dd>
+  <dt>Verifier</dt>
+  <dd>决定一个改动留不留的固定代码，像阅卷人，考生改不了评分标准。<span class="eg">论文 Figure 2 的图中文字是 "fixed verifier the agent cannot edit"。</span></dd>
+  <dt>Noise floor</dt>
+  <dd>baseline 一行不改重复跑，指标自己的波动。FlashVector 端到端是 ±6%。</dd>
+  <dt>Shadow-traffic canary</dt>
+  <dd>把真实请求复制一份给新版本，结果不返回用户。</dd>
+</dl>
+
+<h2 id="figs">看图：四层 stack，四步循环加 Refine</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 322" role="img" aria-label="FlashVector：serving stack 有四层，每轮随机抽一层跑 Profile、Diagnose、Optimize、Verify 四步，再过 full-stack load test，run 结束后 Refine 写回 knowledge base">
+  <text class="hd" x="85" y="22" text-anchor="middle">serving stack 四层</text>
+  <rect class="box" x="10" y="32" width="150" height="30" rx="4"/>
+  <text x="85" y="52" text-anchor="middle">feature processing</text>
+  <rect class="box" x="10" y="68" width="150" height="30" rx="4"/>
+  <text x="85" y="88" text-anchor="middle">model server</text>
+  <rect class="box" x="10" y="104" width="150" height="30" rx="4"/>
+  <text x="85" y="124" text-anchor="middle">PyTorch graph</text>
+  <rect class="hot" x="10" y="140" width="150" height="30" rx="4"/>
+  <text class="acc" x="85" y="160" text-anchor="middle">GPU kernel</text>
+  <text class="m" x="85" y="190" text-anchor="middle">每轮随机抽一层</text>
+  <text class="m" x="85" y="206" text-anchor="middle">一轮只做一个改动</text>
+  <path class="ln1" d="M160,155 H174 V43 H190"/>
+  <polygon class="ah1c" points="190,39 190,47 198,43"/>
+  <path class="ln2" d="M182,284 V83 H190"/>
+  <polygon class="ah2c" points="190,79 190,87 198,83"/>
+  <rect class="box" x="198" y="28" width="92" height="30" rx="4"/>
+  <text x="244" y="48" text-anchor="middle">Profile</text>
+  <text class="m" x="300" y="48">GPU kernel 用 Nsight，model server 用 eBPF</text>
+  <rect class="box" x="198" y="68" width="92" height="30" rx="4"/>
+  <text x="244" y="88" text-anchor="middle">Diagnose</text>
+  <text class="m" x="300" y="88">对照 knowledge base，给假设排序</text>
+  <rect class="box" x="198" y="108" width="92" height="30" rx="4"/>
+  <text x="244" y="128" text-anchor="middle">Optimize</text>
+  <text class="m" x="300" y="128">改代码或配置</text>
+  <rect class="hot" x="198" y="148" width="92" height="30" rx="4"/>
+  <text class="acc" x="244" y="168" text-anchor="middle">Verify</text>
+  <text class="m" x="300" y="168">先过本层的正确性四档</text>
+  <path class="ln" d="M244,58 V62 M244,98 V102 M244,138 V142 M244,178 V190 M244,226 V238"/>
+  <polygon class="ah" points="240,61 248,61 244,68"/>
+  <polygon class="ah" points="240,101 248,101 244,108"/>
+  <polygon class="ah" points="240,141 248,141 244,148"/>
+  <polygon class="ah" points="240,189 248,189 244,196"/>
+  <polygon class="ah" points="240,237 248,237 244,244"/>
+  <rect class="box" x="198" y="196" width="160" height="30" rx="4"/>
+  <text x="278" y="216" text-anchor="middle">full-stack load test</text>
+  <text class="m" x="368" y="209">replay 生产流量</text>
+  <text class="m" x="368" y="224">固定 latency SLO</text>
+  <rect class="f1" x="198" y="244" width="320" height="30" rx="4"/>
+  <text x="358" y="264" text-anchor="middle">端到端提升超过 noise floor 才留，否则 revert</text>
+  <rect class="f2" x="10" y="284" width="540" height="30" rx="4"/>
+  <text x="280" y="304" text-anchor="middle">Refine：run 结束后，把接受和拒绝的改动写回 knowledge base</text>
+</svg>
+<figcaption>图 1：每轮随机抽一层，被抽中的层跑四步，一轮一个改动。本层 Verify 通过后还要过 full-stack load test。蓝线表示 Diagnose 读 knowledge base，Refine 在 run 结束后写回一次。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>FlashVector takes the kernel-optimization agent idea and applies it to the whole serving stack of Unity's ads models: GPU kernels, the PyTorch graph, the Triton model server and feature processing. Each layer has its own agent running the same four steps: profile, diagnose, optimize, verify. Correctness is tiered by change type, from bit-exact outputs for a deterministic rewrite to a shadow-traffic canary for a config change. Every change is load-tested end to end on replayed production traffic at the latency SLO, and kept only if the gain beats the measurement noise, about six percent. Changes ship as reviewed pull requests. Across six production models, throughput rose 1.1 to 2 times.</p></div>
+
+<h2 id="loop">四步循环加 Refine</h2>
+<table>
+  <thead><tr><th>步骤</th><th>做什么</th><th>要记住的一点</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Profile</td><td>按层用不同的工具，GPU kernel 用 Nsight，model server 用 eBPF</td><td>环境也按层分。GPU kernel 在 local simulated environment，model server 和 feature processing 在 production-like load test</td></tr>
+    <tr><td class="nw">Diagnose</td><td>对照 knowledge base 提假设，按“时间占比 × 预期收益”排序</td><td>预期收益低于 noise floor 的假设直接跳过</td></tr>
+    <tr><td class="nw">Optimize</td><td>改代码或配置</td><td>一轮只做一个改动</td></tr>
+    <tr><td class="nw">Verify</td><td>先过本层的正确性四档，再过 full-stack load test</td><td>提升超过 noise floor 才留</td></tr>
+    <tr><td class="nw">Refine</td><td>run 结束后跑一次，in-place 写回 knowledge base</td><td>接受和拒绝的改动都记</td></tr>
+  </tbody>
+</table>
+
+<h2 id="rules">要记的规则，细节在各页</h2>
+<ul>
+  <li><strong>正确性四档</strong>：deterministic rewrite 要逐元素相等；改变浮点顺序的按 dtype 的容差；有意的近似看 business metrics；配置改动走 shadow-traffic canary（<a href="kernel-correctness.html">kernel 正确性</a>）</li>
+  <li><strong>Noise floor</strong>：端到端 ±6%。落在 2–6% 的提升加样本重测，最多 8 倍，按 \(1/\sqrt{k}\) 收紧到 2.1%（<a href="noise-floor.html">noise floor</a>）</li>
+  <li><strong>Verify globally</strong>：本层通过后还要过 full-stack load test，因为 kernel 快了端到端不一定快（<a href="local-vs-e2e.html">局部和端到端</a>）</li>
+  <li><strong>Knowledge base</strong>：人写的六类文档，加 agent 写回的 per-model card（<a href="agent-knowledge-base.html">knowledge base</a>）</li>
+  <li><strong>进生产</strong>：agent 开 PR，人 review；配置改动的 canary 稳住就采纳，否则丢弃（<a href="agent-to-production.html">进生产</a>）</li>
+  <li><strong>自动触发</strong>：新 release 进 fleet，或者在线模型太久没被分析时，循环自己启动，不用人启动</li>
+</ul>
+
+<h2 id="cases">四个 case 的数字</h2>
+<table>
+  <thead><tr><th>Case</th><th>改了什么</th><th>数字</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">1 model server</td><td>Triton Python backend 的 string 反序列化改写成 C++，已合入 Triton 上游</td><td>函数级 microbenchmark 最高 30×</td></tr>
+    <tr><td class="nw">2 GPU kernel</td><td>attention 的 6 个 kernel 融成 1 个，结果 bit-identical</td><td>attention 996.5 µs → 279.8 µs；连同 embedding bag 的改动，forward latency −30.1%</td></tr>
+    <tr><td class="nw">3 feature processing</td><td>Cython kernel 加 zero-copy</td><td>每个 pod 的 RPS 从 940 到约 1.5k</td></tr>
+    <tr><td class="nw">4 配置</td><td>搜 instance count 和 dynamic batch size，以 PR 交付</td><td>用 shadow-traffic canary 验</td></tr>
+  </tbody>
+</table>
+<p>6 个生产模型的 latency speedup 是 1.30–1.98×，throughput 提升 1.10–2.00×。</p>
+
+<h2 id="gaps">论文没写什么</h2>
+<ul>
+  <li>用哪个 LLM</li>
+  <li>用哪个 agent 框架</li>
+  <li>sandbox 用什么技术。"all candidates run sandboxed" 只出现在 Figure 2 的图里（见 <a href="agent-sandbox.html">sandbox</a>）</li>
+  <li>一次 run 的成本：token、耗时、并行度都没有数字</li>
+</ul>
+<p>这四项不要替论文补答案，适合留到最后当反问。</p>
+<h3 id="caveats">读论文要小心的两处</h3>
+<ul>
+  <li><strong>Case 1 的时间</strong>：论文引用的 Triton issue #8348 开于 2025-08，早于 2026 年暑期项目。不要说成实习生的 agent 在暑期发现的</li>
+  <li><strong>Table 4 的 Model B</strong>：p99 是 271 ms，超过它 250 ms 的 SLO，论文没有解释</li>
+</ul>
+
+<h2>必答点</h2>
+<ul>
+  <li>四层：GPU kernel、PyTorch graph、model server、feature processing</li>
+  <li>每层同样四步：Profile → Diagnose → Optimize → Verify，run 结束后 Refine</li>
+  <li>每轮随机抽一层，一轮一个改动</li>
+  <li>Optimize locally, verify globally：本层通过后还要过 full-stack load test</li>
+  <li>提升超过 noise floor（±6%）才留</li>
+  <li>agent 开 PR，人 review；新 release 进 fleet 时自动触发</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么不让 LLM 一次生成优化方案？</summary>
+  <p>论文说 LLM 会看错自己的 profile，所以要一个 harness 逐步检查。它还需要精确的 kernel trace（nsys、ncu）和准确的 tensor shape，roofline 分析时才少 hallucinate。</p>
+</details>
+<details>
+  <summary>为什么每轮随机抽一层，不先做瓶颈最大的那层？</summary>
+  <p>论文没解释。Algorithm 1 是随机选，没有按各层的时间占比加权，这一点适合当反问。</p>
+</details>
+<details>
+  <summary>它用了什么 search？</summary>
+  <p>单链循环，没有 beam、evolution 或 MCTS。论文的精力放在验证和交付上（几种 search 的对比见 <a href="kernel-search-methods.html">search 方法</a>）。</p>
+</details>
+<details>
+  <summary>Case 1 的 30× 能说成线上快了 30 倍吗？</summary>
+  <p>不能。30× 是 <code>deserialize_bytes_tensor</code> 这个函数的 microbenchmark。结果表里 retrieval model 的 latency speedup 是 1.67×，两个数口径不同。</p>
+</details>
+<details>
+  <summary>这和 Offline Infrastructure 有什么关系？</summary>
+  <p>同一个循环可以搬到 data 和 training pipeline，目标换成 throughput 和 GPU-hour（见 <a href="offline-pipeline-optimization.html">offline pipeline</a>）。这是推断，本岗 JD 没有写 agent 或 kernel。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2609.17391">FlashVector</a>（<a href="https://arxiv.org/html/2609.17391">HTML 全文</a>：§1、§4.1、§4.2、Algorithm 1、§5 的四个 case、Table 1、Table 4、Figure 2）· ml-八股 08 第 0 题 · 调研笔记 Unity 的证据和同类对照 第 0、1 节</p>
+
+</main>
+</body>
+</html>
