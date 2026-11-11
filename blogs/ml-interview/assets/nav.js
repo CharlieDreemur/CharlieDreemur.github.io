@@ -79,7 +79,8 @@
       ["6.31", "gtp", "Generalized Tensor Parallelism（GTP）"],
       ["6.32", "moe-ep-communication", "MoE 的 EP communication：NCCL EP、ShortcutMoE、MegaMoE"],
       ["6.33", "bitwise-determinism", "Bitwise determinism"],
-      ["6.34", "low-precision-cuda-graph", "MXFP8、NVFP4 和 full-iteration CUDA Graph"]
+      ["6.34", "low-precision-cuda-graph", "MXFP8、NVFP4 和 full-iteration CUDA Graph"],
+      ["6.35", "nemotron-3-ultra", "Nemotron 3 Ultra tech report：550B 的 hybrid MoE 怎么训练和 scale"]
     ]},
     { sec: "08 Agentic infra 和 kernel agent（Unity 方向）", items: [
       ["8.1", "flashvector", "FlashVector：agent 怎么优化整个 serving stack"],
@@ -239,6 +240,7 @@
     "moe-ep-communication": {"k": ["分布式训练"], "co": {"NVIDIA": "prep"}},
     "bitwise-determinism": {"k": ["训练系统", "分布式训练"], "co": {"NVIDIA": "prep"}},
     "low-precision-cuda-graph": {"k": ["训练系统", "GPU 与性能"], "co": {"NVIDIA": "prep"}},
+    "nemotron-3-ultra": {"k": ["训练系统", "分布式训练", "LLM 训练"], "co": {"NVIDIA": "prep"}},
     "flashvector": {"k": ["Agent", "GPU 与性能"], "co": {"Unity": "prep"}},
     "kernel-agent-design": {"k": ["Agent", "GPU 与性能"], "co": {"Unity": "prep"}, "more": ["字节", "阿里"]},
     "noise-floor": {"k": ["Evaluation", "GPU 与性能"], "co": {"Unity": "prep"}},

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nemotron 3 Ultra 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<h1>Nemotron 3 Ultra 的 tech report：<br>550B 的 hybrid MoE 怎么训练、怎么 scale？</h1>
+<p class="meta"><b>英文问法</b><q>Walk me through how Nemotron 3 Ultra was trained and scaled.</q> · <q>What went wrong during pretraining, and how was it fixed?</q> · <q>Why a hybrid Mamba-attention MoE, and what does each choice cost?</q></p>
+<p class="meta"><b>考过</b>还没有面经 · <strong>团队自己的 2026 report</strong>（<a href="https://arxiv.org/abs/2606.15007">arXiv 2606.15007</a>，2026-06，65 页），正文点名用了 Megatron-LM、Megatron 的 EP 和 Megatron Core Distributed Optimizer · 你转述面试官会考这篇（2026-11）· 下面每个数字都标了 report 的页码</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Hybrid Mamba-2 + attention</dt>
+  <dd>108 层，按 Figure 2 数是 48 层 Mamba-2、12 层 attention、48 层 LatentMoE。Mamba-2 每条序列只留一份固定大小的 state，像一块写满就擦掉重写的白板。attention 的 KV cache 像流水账，每个 token 记一行（见 <a href="kv-cache.html">KV cache</a>）。<span class="eg">按 Table 1 手算：FP8 的 KV cache 每 token 是 12 × 2 × 2 × 128 = 6,144 byte，1K token 约 6 MB，和 Figure 14 一致（p.45）。</span></dd>
+  <dt>LatentMoE</dt>
+  <dd>expert 不在 8192 维的 model dimension 上算，在 2048 维的 latent 里算。省下的 cost 换成更多 expert，每层 512 个里选 22 个（p.4、p.48）。它的细节在 LatentMoE 论文里，这份 report 没展开。</dd>
+  <dt>MTP（Multi-Token Prediction）</dt>
+  <dd>backbone 后面接的小 head，多预测后面几个 token。Ultra 的两个 head 共享参数，每个是一层 attention 加一层 MoE（p.3）。训练时它是 auxiliary loss，权重 0.1。inference 时它当 speculative decoding 的 drafter。</dd>
+  <dt>NVFP4</dt>
+  <dd>Blackwell 的 4-bit 浮点格式，元素是 E2M1，每个 block 再配一个 scale（格式见 <a href="mixed-precision.html">mixed precision</a> 和 <a href="low-precision-cuda-graph.html">MXFP8 和 NVFP4</a>）。Ultra 的 20T token 都用它训练。</dd>
+  <dt>MOPD</dt>
+  <dd>Multi-teacher On-Policy Distillation。student 自己生成 rollout，对应 domain 的 teacher 给每个 token 打分，像学生自己写作业，各科老师逐字批改。</dd>
+</dl>
+
+<h2 id="figs">看图：20T token 的 pretraining 和两次 divergence</h2>
+<figure class="fig">
+<svg viewBox="0 0 560 212" role="img" aria-label="Nemotron 3 Ultra 的训练时间线：0 到 15T 是 phase 1，15T 到 20T 是 phase 2，之后是 33B token 的 long-context phase。约 8T 和约 16T 各有一次 divergence。learning rate 先 warmup 200B token 到 2.5e-4，保持到 15T，最后 5T 按 minus-sqrt decay 到 2.5e-6">
+  <text class="hd" x="250" y="20" text-anchor="middle">pretraining：20T token，全程 NVFP4</text>
+  <text class="hd" x="518" y="20" text-anchor="middle">LC phase</text>
+  <rect class="box" x="30" y="30" width="330" height="26" rx="4"/>
+  <text x="195" y="48" text-anchor="middle">phase 1：偏 diversity，15T</text>
+  <rect class="f2" x="360" y="30" width="110" height="26" rx="4"/>
+  <text x="415" y="48" text-anchor="middle">phase 2：5T</text>
+  <rect class="f1" x="484" y="30" width="68" height="26" rx="4"/>
+  <text x="518" y="48" text-anchor="middle">33B，1M</text>
+  <path class="axis" d="M30,76 H470 M30,72 V80 M140,72 V80 M250,72 V80 M360,72 V80 M470,72 V80"/>
+  <text class="m" x="30" y="94" text-anchor="middle">0</text>
+  <text class="m" x="140" y="94" text-anchor="middle">5T</text>
+  <text class="m" x="250" y="94" text-anchor="middle">10T</text>
+  <text class="m" x="360" y="94" text-anchor="middle">15T</text>
+  <text class="m" x="470" y="94" text-anchor="middle">20T</text>
+  <circle class="hot" cx="206" cy="76" r="5"/>
+  <circle class="hot" cx="382" cy="76" r="5"/>
+  <text class="acc" x="196" y="114" text-anchor="middle">约 8T：divergence 1</text>
+  <text class="m" x="196" y="130" text-anchor="middle">output layer 的 gradient accumulation</text>
+  <text class="m" x="196" y="146" text-anchor="middle">FP32 降到 BF16，回滚后改回 FP32</text>
+  <text class="acc" x="438" y="114" text-anchor="middle">约 16T：divergence 2</text>
+  <text class="m" x="438" y="130" text-anchor="middle">原因没找到</text>
+  <text class="m" x="438" y="146" text-anchor="middle">回滚到 15T，LR 立刻 decay</text>
+  <path class="ln1" d="M30,200 L34,174 H360 Q385,194 470,198"/>
+  <path class="ln1" d="M484,198 H552"/>
+  <text class="m" x="42" y="196">warmup 200B</text>
+  <text class="m" x="196" y="168" text-anchor="middle">LR peak 2.5e-4</text>
+  <text class="m" x="372" y="168">最后 5T：minus-sqrt decay</text>
+  <text class="m" x="518" y="190" text-anchor="middle">2.5e-6</text>
+</svg>
+<figcaption>图 1：上面是数据的两个 phase 和 long-context phase，下面的红线是 Warmup-Stable-Decay 的 learning rate，形状是示意（pp.8–9）。phase 切换、LR decay 的起点、divergence 2 的回滚点都在 15T。</figcaption>
+</figure>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>Nemotron 3 Ultra is a 550-billion-parameter MoE with 55 billion active, mixing Mamba-2, sparse attention layers and LatentMoE. It was pretrained in NVFP4 on 20 trillion tokens, keeping the last 16 layers and sensitive projections in higher precision; the loss gap to BF16 stayed under 0.4 percent. Training diverged twice. The first time, output-layer gradients were accumulated in BF16, which dropped the small MTP gradients, and FP32 fixed it. The second was never explained, so they decayed the learning rate early and stopped at 20 trillion. A 33-billion-token phase extended context to one million with CP 32, TP 8, EP 128, PP 2. Post-training was SFT, RL and multi-teacher distillation.</p></div>
+
+<h2 id="pretrain">Pretraining：NVFP4 怎么训</h2>
+<ul>
+  <li><strong>Kernel</strong>：Transformer Engine 的 cuBLAS NVFP4 GEMM，fprop、dgrad、wgrad 三个都用（p.3）</li>
+  <li><strong>Recipe</strong>：weight 做 2D block quantization，wgrad 的输入做 Random Hadamard Transform，gradient 用 stochastic rounding（p.3）</li>
+  <li><strong>留高精度的部分</strong>：最后 16 层（15%）、Mamba output projection、latent projection、QKV 和 attention projection、MTP、embedding（pp.3–4）</li>
+  <li><strong>怎么确认没训坏</strong>：在 5T、10T、16T 各分出一支，全部 tensor 换成 BF16 再训 74B token。relative train loss gap 平均低于 0.4%（p.4）</li>
+</ul>
+
+<h2 id="diverge">两次 divergence</h2>
+<table>
+  <thead><tr><th></th><th>Divergence 1，约 8T</th><th>Divergence 2，约 16T</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">现象</td><td>loss 和 wgrad 的 L2 norm 一起涨，MTP-2 的 loss 最先 spike</td><td>loss 和 wgrad 的 L2 norm 一起涨</td></tr>
+    <tr><td class="nw">原因</td><td>为了让 DP 的 gradient reduction 用 BF16 传来提 throughput，output layer 的 local gradient accumulation 从 FP32 降到了 BF16。每个 MTP block 的 loss 权重只有 0.05，BF16 只有 7 个 mantissa bit，MTP 给 shared output layer 的 wgrad 基本丢光</td><td>没找到</td></tr>
+    <tr><td class="nw">修法</td><td>回滚，恢复 FP32 的 gradient reduction</td><td>回滚到 15T 立刻开始 LR annealing，总量砍到 20T</td></tr>
+  </tbody>
+</table>
+<p>两次都在 p.12。Divergence 2 不是 NVFP4 造成的，从 16T 起全部换成 BF16 的那一支同样 diverge（p.5）。report 说没找到确定的原因，只列了两个相关的现象。一个是 expert 失衡，第一层 MoE 的 MaxVio 从 4.8 涨到 12T 时的约 12，上限是 512 / 22 = 23.27（pp.13–14）。另一个是 residual norm 跨层差 4 个数量级，前几层从 7.5T 开始涨，11T 出现大 spike（p.14）。</p>
+
+<h2 id="lc">Long-context phase：扩到 1M</h2>
+<p>33B token 的 continued pretraining，constant LR 2.5e-6，跑在 GB200 上。parallelism 是 CP 32 × TP 8 × EP 128 × PP 2（<a href="context-parallel.html">CP</a>、<a href="parallelism-config.html">怎么选配置</a>）。每个 iteration 固定 25,165,824 token，除一下是 24 条 1M 的序列。92% 的 iteration 用 1M，8% 用 4K 并且只放 math 和 code 的 SFT-style 数据，用来保住短 benchmark。一个 iteration 里不混两种长度。base model 的 RULER 在 1M 是 76.83（p.9、p.10）。</p>
+
+<h2 id="arch">架构选择和代价</h2>
+<table>
+  <thead><tr><th>选择</th><th>换来什么</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr><td>Mamba-2 换掉大部分 attention</td><td>Mamba-2 层 decode 每步的 cost 不随长度变。8K in / 64K out 的 throughput 是 Qwen-3.5 的 1.6×（p.1、p.48）</td><td>state 固定 384 MB（FP32，batch 1），64K 以内比 FP8 的 KV cache 还大（pp.44–45）。speculative decoding 要在每个 draft step 存一份 state 才能回滚（p.48）</td></tr>
+    <tr><td>LatentMoE，512 选 22</td><td>同样的 inference cost 下放更多 expert（p.48）</td><td>active parameter 是 55B，prefill 比 17B active 的 Qwen-3.5 多约 3.2× FLOPs。50K in / 2K out 的 relative throughput 落后，3.9 对 4.6（pp.48–49）</td></tr>
+    <tr><td>MTP，head 共享参数</td><td>single-user decode 在 draft length 6 时快 2.89×（p.50）。RL 的 rollout generation 在 k = 5 时快 1.46×（p.32）</td><td>loss 权重小，引出 divergence 1。large batch 下 verification 吃掉 throughput，常常要调短或关掉（p.48）</td></tr>
+  </tbody>
+</table>
+
+<h2 id="post">Post-training 和 RL infra</h2>
+<ul>
+  <li><strong>顺序</strong>：SFT → RLVR → MOPD warmup → MOPD 两轮 → MTP Boosting（p.15、p.20）</li>
+  <li><strong>RLVR</strong>：asynchronous GRPO，global batch 8192，每个 sample 16 个 rollout（p.20，GRPO 见 <a href="rlhf-dpo-grpo.html">RLHF、DPO、GRPO</a>）</li>
+  <li><strong>MOPD</strong>：10 个以上的 teacher。SWE-Bench Verified 从 RLVR 的 65.8 到 71.7，teacher 是 72.5。HLE 只追回 16.9% 的差距（p.27）</li>
+  <li><strong>EP 对齐 NVLink domain</strong>：一个 NVL72 的 NVLink domain 是 72 张 GPU。EP group 跨 rack 时 all-to-all 走 InfiniBand，对齐后 end-to-end throughput 加 20%（pp.33–34，见 <a href="moe-ep-communication.html">EP communication</a>）</li>
+  <li><strong>Checkpoint</strong>：同步保存每次卡 60 s 左右。NVRx 的 async checkpoint 加 Megatron Core Distributed Optimizer 之后不到 1 s（p.34，见 <a href="dp-zero-fsdp.html">distributed optimizer</a>）</li>
+  <li><strong>启动</strong>：1K GPU 的 cold init 从 38.8 min 降到 0.4 min，靠缓存 JIT 的产物（pp.34–35）</li>
+</ul>
+
+<h2 id="gaps">report 没写什么</h2>
+<ul>
+  <li>20T 主训练的 parallelism 配置、GPU 数、batch size、sequence length、optimizer、throughput 和训练时长</li>
+  <li>long-context phase 的 DP size 和 GPU 总数</li>
+  <li>留在 "higher precision" 的层具体是哪种精度</li>
+  <li>NVFP4 训练比 BF16 快多少</li>
+</ul>
+<p>这几项不要替 report 补答案，适合留到最后当反问。</p>
+<h3 id="caveats">读 report 要小心的两处</h3>
+<ul>
+  <li><strong>5.9×</strong> 只是 8K in / 64K out 这一个 setting。Ultra 用 TRT-LLM 测，对手用 vLLM 测（p.2）。abstract 写约 6×，conclusion 写 5×</li>
+  <li><strong>没有 attention-only 的对照</strong>，Mamba-2 单独贡献多少没有量过</li>
+</ul>
+
+<h2>必答点</h2>
+<ul>
+  <li>550B total、55B active，108 层，每层 512 个 expert 选 22 个</li>
+  <li>NVFP4 pretraining 20T token，最后 16 层和几类 projection 留高精度，loss gap 低于 0.4%</li>
+  <li>Divergence 1：output layer 的 gradient accumulation 降到 BF16，丢了 MTP 的 wgrad，改回 FP32</li>
+  <li>Divergence 2：原因没找到，换 BF16 也不解决，靠提前 decay LR 和砍到 20T 缓解</li>
+  <li>Long-context：33B token，CP 32 × TP 8 × EP 128 × PP 2，92% 的 iteration 是 1M</li>
+  <li>代价要一起说：prefill 比 Qwen-3.5 慢，Mamba state 在短 context 下比 KV cache 大</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>BF16 的 accumulation 为什么会丢掉 MTP 的 gradient？</summary>
+  <p>report 只给了两个事实：每个 MTP block 的 loss 权重是 0.05，BF16 只有 7 个 mantissa bit（p.12）。机制是推断：浮点加法先对齐 exponent，一个比累加值小 256 倍以上的增量落在 mantissa 之外，被舍掉。main loss 和 MTP 的 wgrad 加到同一个 output layer 上，小的那份就没了（累加本身见 <a href="gradient-accumulation.html">gradient accumulation</a>）。</p>
+</details>
+<details>
+  <summary>long-context phase 的四个 parallelism 各切什么？</summary>
+  <p>CP 32 把 1M 的序列切成每个 rank 32,768 token，TP 8 切 weight，EP 128 让每个 rank 放 4 个 expert，PP 2 切层，这几个数是按 Table 1 除出来的。EP 128 比一个 NVL72 的 72 张 GPU 多，所以这一段的 all-to-all 很可能跨了 NVLink domain。这一句是推断，report 没有讨论，也没写这一段用的是不是 NVL72。</p>
+</details>
+<details>
+  <summary>serving 时 wide TP 和 wide EP 怎么选？</summary>
+  <p>small batch 受 weight read 的 memory bandwidth 限制，TP 越宽每个 rank 读的 weight 越少，所以 low latency 用 wide TP。large batch 的瓶颈是 activation 的通信，EP 只在 routed expert 前后各做一次 all-to-all，所以 high throughput 用 wide EP（p.49）。all-to-all 在 prefill-heavy 的 workload 上占 15% 到 20% 的 runtime（p.50）。</p>
+</details>
+<details>
+  <summary>Hopper 没有 FP4 tensor core，为什么还是只发一个 NVFP4 checkpoint？</summary>
+  <p>8 张 H100 一共 640 GiB。FP8 的 checkpoint 约 540 GiB，每张卡只剩约 10 GiB 给 activation 和 cache。NVFP4 约 330 GiB，剩约 40 GiB（pp.45–46）。FP8 那边 batch 上不去，workload 一直是 memory-bandwidth-bound，FP8 tensor core 的算力用不上。</p>
+</details>
+<details>
+  <summary>MOPD 之前为什么要 warmup？为什么 HLE 涨得少？</summary>
+  <p>teacher 和 student 用不同的 SFT 数据训出来，student 的 rollout 对 teacher 是 out-of-distribution，打分不可靠。先用 teacher 的数据做很轻的 SFT，GDPVal 从 35.3 到 46.7（p.27）。HLE 上 teacher 的优势来自 student 没见过的数据，student 很少采样到那些推理路径，所以 warmup 也帮不上（p.28）。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/2606.15007">Nemotron 3 Ultra</a>（arXiv 2606.15007v1：§2.1 和 Table 1、Figure 2，§2.2，§2.4，§2.5，§2.7，§3.2，§3.3 的 Table 4、Table 5，§3.6，§4.4–4.6 和 Figure 14，§5）· ml-八股 06 第零节 · 相关页：<a href="moe-expert-parallel.html">MoE 与 Expert Parallel</a>、<a href="bitwise-determinism.html">bitwise determinism</a>、<a href="megatron-recent.html">Megatron Core 近况</a></p>
+
+</main>
+</body>
+</html>

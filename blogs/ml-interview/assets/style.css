@@ -204,7 +204,7 @@ a.tg:hover { border-color: currentColor; border-style: solid; }
 .track > summary:hover .tt { color: var(--accent); }
 .track[open] { padding-bottom: 1.6rem; }
 .track p, .track li { font-size: 1rem; }
-.part-h { font-size: 1.05rem; margin: 1.8rem 0 .5rem; }
+.part-h { font-size: 1.05rem; margin: 1.8rem 0 .5rem; padding-top: 0; border-top: 0; }
 h4 { font-size: .98rem; font-weight: 600; margin: 1.3rem 0 .4rem; }
 h4 .code { font-family: var(--mono); font-size: .8rem; font-weight: 400; color: var(--muted); margin-right: .55rem; }
 .track + .links { margin-top: .9rem; }

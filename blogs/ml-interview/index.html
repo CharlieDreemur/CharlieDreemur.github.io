@@ -19,11 +19,11 @@
 <details class="track" id="infra-course">
 <summary><span class="tt">Training Infra 速成课</span><span class="td">11 课，从单卡训练一路讲到 Megatron 的 TP × PP × CP × EP × DP</span></summary>
 <p>写给 infra 零基础、要面训练框架岗的人。例子是一次 Qwen3-VL-8B 全参 SFT（32 张 H100，DeepSpeed），从单卡开始，每一版只修上一版的一个问题。</p>
-<h3 class="part-h">一句话心智模型</h3>
+<h2 class="part-h">一句话心智模型</h2>
 <div class="answer"><p>一个 training step 只花三样东西：compute（算 FLOPs）、memory（GPU memory 里放什么）、communication（卡之间搬数据）。每个 infra 技术都是拿一样换另一样。</p></div>
 <p>遇到新名词就问三个问题：它省了什么？花了什么？什么时候不划算？面试官的追问几乎都落在第三个上。</p>
 
-<h3 class="part-h">先记五个数（H100 SXM）</h3>
+<h2 class="part-h">先记五个数（H100 SXM）</h2>
 <ul>
   <li><b>compute</b>：BF16 dense 约 989 TFLOPS</li>
   <li><b>memory</b>：80 GB HBM，bandwidth 3.35 TB/s</li>
@@ -32,7 +32,7 @@
   <li><b>推论</b>：机内比机间快约 9 倍，所以通信最重的切法（TP）留在机内，跨机只放通信轻的（PP、DP）</li>
 </ul>
 
-<h3 class="part-h">主线：一条 version chain</h3>
+<h2 class="part-h">主线：一条 version chain</h2>
 <p>例子用你在 TikTok 做的 Qwen3-VL-8B 全参 SFT。为了好算取 \(\Psi \approx 8\)B。它的 LLM 部分 h = 4096、36 层。从单卡开始，每一版只修上一版的一个问题。v3 大致就是你当时的 setup，v4 以后是 Megatron 为 70B 以上的模型做的事。</p>
 <table>
   <thead><tr><th>版本</th><th>做了什么</th><th>解决了</th><th>新问题</th><th>课</th></tr></thead>
@@ -49,10 +49,10 @@
 </table>
 <p>第 0 课是所有课的地基（算和搬），第 9 课把前面的内容对到 Megatron Core 源码和你的 RL 经历，第 10 课是手写题和项目故事。</p>
 
-<h3 class="part-h">课程</h3>
+<h2 class="part-h">课程</h2>
 <div id="lessons"></div>
 
-<h3 class="part-h">课表</h3>
+<h2 class="part-h">课表</h2>
 <ul>
   <li><b>7 天版</b>（每天约 2 小时）：D1 第 0–1 课 · D2 第 2–3 课 · D3 第 4 课 · D4 第 5 课 · D5 第 6–7 课 · D6 第 8–9 课 · D7 第 10 课</li>
   <li><b>只有 3 天</b>：第 0、1、4、5、8 课。这几课足够回答 NVIDIA 最常问的 “Explain how distributed training works” 和 TP 原题</li>
@@ -84,9 +84,9 @@
   <button type="button" class="chip" id="x-key" aria-pressed="false">只看重点</button>
 </div>
 <section class="part has-key" id="part-1">
-<h3 class="part-h">架构</h3>
+<h2 class="part-h">架构</h2>
 <section class="sub" id="a1">
-<h4><span class="code">A1</span>Attention 的代价</h4>
+<h3><span class="code">A1</span>Attention 的代价</h3>
 <p class="meta"><b>论文</b>Attention Is All You Need, FlashAttention</p>
 <details class="qa" id="a1-1">
   <summary><span class="qn">A1.1</span><span class="qt">Self-attention 的时间复杂度是多少？推导一下。</span><span class="tg tg-asked">Quiz</span></summary>
@@ -139,7 +139,7 @@
 </details>
 </section>
 <section class="sub" id="a2">
-<h4><span class="code">A2</span>缩小 KV cache</h4>
+<h3><span class="code">A2</span>缩小 KV cache</h3>
 <p class="meta"><b>论文</b>GQA, DeepSeek-V2 (MLA)</p>
 <details class="qa" id="a2-1">
   <summary><span class="qn">A2.1</span><span class="qt">MQA / GQA 和 MHA 有什么区别？为什么要用？</span><span class="tg tg-asked">Quiz</span></summary>
@@ -161,7 +161,7 @@
 </details>
 </section>
 <section class="sub" id="a3">
-<h4><span class="code">A3</span>用固定大小状态替代 KV cache</h4>
+<h3><span class="code">A3</span>用固定大小状态替代 KV cache</h3>
 <p class="meta"><b>论文</b>Mamba, Mamba-2, MiniMax-01, Kimi K3</p>
 <details class="qa" id="a3-1">
   <summary><span class="qn">A3.1</span><span class="qt">SSM（如 Mamba）处理长文本相对 Transformer 的主要优势是什么？代价是什么？</span><span class="tg tg-asked">Quiz</span></summary>
@@ -215,7 +215,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a4">
-<h4><span class="code">A4</span>只读一部分 KV cache</h4>
+<h3><span class="code">A4</span>只读一部分 KV cache</h3>
 <p class="meta"><b>论文</b>Native Sparse Attention, DeepSeek-V3.2</p>
 <details class="qa" id="a4-1">
   <summary><span class="qn">A4.1</span><span class="qt">NSA 的主要想法是什么？为什么要在训练时就用稀疏，而不是只在推理时？</span><span class="tg">Review</span></summary>
@@ -246,7 +246,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a5">
-<h4><span class="code">A5</span>Hybrid 架构</h4>
+<h3><span class="code">A5</span>Hybrid 架构</h3>
 <p class="meta"><b>论文</b>Nemotron 3 Ultra, Mamba-2, MiniMax-01, Kimi K3</p>
 <details class="qa key" id="a5-1">
   <summary><span class="qn">A5.1</span><span class="qt">前沿模型为什么混合不同的 sequence-mixing 层？用 Kimi K3 或 Nemotron 3 Ultra 说明各层的分工。</span><span class="tg tg-key">重点</span><span class="tg">Guide / 讨论</span></summary>
@@ -260,7 +260,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a6">
-<h4><span class="code">A6</span>Mixture-of-Experts</h4>
+<h3><span class="code">A6</span>Mixture-of-Experts</h3>
 <p class="meta"><b>论文</b>Switch Transformers, Mixtral, Kimi K3, Nemotron 3 Ultra, MiniMax-01</p>
 <details class="qa key" id="a6-1">
   <summary><span class="qn">A6.1</span><span class="qt">为什么用稀疏模型？routing 怎么工作？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -291,7 +291,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a7">
-<h4><span class="code">A7</span>位置信息</h4>
+<h3><span class="code">A7</span>位置信息</h3>
 <p class="meta"><b>论文</b>RoFormer, Kimi K3, Qwen2.5-VL</p>
 <details class="qa" id="a7-1">
   <summary><span class="qn">A7.1</span><span class="qt">RoPE 怎么工作？为什么能编码相对位置？</span><span class="tg">Lec</span></summary>
@@ -330,7 +330,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a8">
-<h4><span class="code">A8</span>Multi-token prediction</h4>
+<h3><span class="code">A8</span>Multi-token prediction</h3>
 <p class="meta"><b>论文</b>Nemotron 3 Ultra, Kimi K3</p>
 <details class="qa key" id="a8-1">
   <summary><span class="qn">A8.1</span><span class="qt">MTP 是什么？训练和推理时各有什么用？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -343,7 +343,7 @@
 </details>
 </section>
 <section class="sub has-key" id="a9">
-<h4><span class="code">A9</span>多模态</h4>
+<h3><span class="code">A9</span>多模态</h3>
 <p class="meta"><b>论文</b>Qwen2.5-VL, Chameleon, Kimi K3</p>
 <details class="qa key" id="a9-1">
   <summary><span class="qn">A9.1</span><span class="qt">把图像接入 LLM 的 late fusion（Qwen2.5-VL）和 early fusion（Chameleon）各有什么取舍？</span><span class="tg tg-key">重点</span><span class="tg">Guide / 讨论</span></summary>
@@ -375,9 +375,9 @@
 </section>
 </section>
 <section class="part has-key" id="part-2">
-<h3 class="part-h">预训练</h3>
+<h2 class="part-h">预训练</h2>
 <section class="sub has-key" id="b1">
-<h4><span class="code">B1</span>Scaling laws</h4>
+<h3><span class="code">B1</span>Scaling laws</h3>
 <p class="meta"><b>论文</b>Kaplan et al., Chinchilla, Llama 3, GPT-4 Technical Report</p>
 <details class="qa key" id="b1-1">
   <summary><span class="qn">B1.1</span><span class="qt">Kaplan 和 Chinchilla 对"怎么分配计算"的结论有什么不同？为什么现在的模型又常被训练到超过 compute-optimal？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -389,7 +389,7 @@
 </details>
 </section>
 <section class="sub has-key" id="b2">
-<h4><span class="code">B2</span>数据</h4>
+<h3><span class="code">B2</span>数据</h3>
 <p class="meta"><b>论文</b>FineWeb, Llama 3, DataComp-LM, MiniMax-01</p>
 <details class="qa" id="b2-1">
   <summary><span class="qn">B2.1</span><span class="qt">过滤、去重、质量分类器各做什么？</span><span class="tg">Guide</span></summary>
@@ -435,7 +435,7 @@
 </details>
 </section>
 <section class="sub has-key" id="b3">
-<h4><span class="code">B3</span>训练稳定性与精度</h4>
+<h3><span class="code">B3</span>训练稳定性与精度</h3>
 <p class="meta"><b>论文</b>Switch, Nemotron 3 Ultra, Chameleon, MiniMax-01, Muon</p>
 <details class="qa key" id="b3-1">
   <summary><span class="qn">B3.1</span><span class="qt">大规模训练不稳定有哪些来源？normalization、precision、optimizer 三类修法分别针对什么？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -488,7 +488,7 @@
 </details>
 </section>
 <section class="sub has-key" id="b4">
-<h4><span class="code">B4</span>优化器与训练目标</h4>
+<h3><span class="code">B4</span>优化器与训练目标</h3>
 <p class="meta"><b>论文</b>Muon, RLP</p>
 <details class="qa key" id="b4-1">
   <summary><span class="qn">B4.1</span><span class="qt">Muon 的核心想法是什么？解决什么问题？</span><span class="tg tg-key">重点</span><span class="tg">Review</span></summary>
@@ -511,9 +511,9 @@
 </section>
 </section>
 <section class="part has-key" id="part-3">
-<h3 class="part-h">后训练</h3>
+<h2 class="part-h">后训练</h2>
 <section class="sub has-key" id="c1">
-<h4><span class="code">C1</span>从 RLHF 到推理模型</h4>
+<h3><span class="code">C1</span>从 RLHF 到推理模型</h3>
 <p class="meta"><b>论文</b>InstructGPT, DPO, DeepSeek-R1</p>
 <details class="qa" id="c1-1">
   <summary><span class="qn">C1.1</span><span class="qt">后训练 pipeline 有哪些阶段，各做什么？</span><span class="tg">Guide</span></summary>
@@ -536,7 +536,7 @@
 </details>
 </section>
 <section class="sub has-key" id="c2">
-<h4><span class="code">C2</span>Reward 信号</h4>
+<h3><span class="code">C2</span>Reward 信号</h3>
 <p class="meta"><b>论文</b>InstructGPT, DeepSeek-R1, Chasing the Tail, RLP</p>
 <details class="qa key" id="c2-1">
   <summary><span class="qn">C2.1</span><span class="qt">Preference RM、verifier、rubric、teacher：哪个 dense、哪个 sparse？各自怎么被 policy 钻空子？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -549,7 +549,7 @@
 </details>
 </section>
 <section class="sub has-key" id="c3">
-<h4><span class="code">C3</span>On-policy vs off-policy</h4>
+<h3><span class="code">C3</span>On-policy vs off-policy</h3>
 <p class="meta"><b>论文</b>DPO, DeepSeek-V3.2, GKD, OPSD</p>
 <details class="qa key" id="c3-1">
   <summary><span class="qn">C3.1</span><span class="qt">哪些方法 on-policy、哪些 off-policy？off-policy 数据带来什么问题？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -562,7 +562,7 @@
 </details>
 </section>
 <section class="sub has-key" id="c4">
-<h4><span class="code">C4</span>KL 散度的角色</h4>
+<h3><span class="code">C4</span>KL 散度的角色</h3>
 <p class="meta"><b>论文</b>InstructGPT, DPO, GKD, OPSD, Chasing the Tail</p>
 <details class="qa key" id="c4-1">
   <summary><span class="qn">C4.1</span><span class="qt">KL 在 RLHF、DPO、蒸馏里分别控制什么？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -583,7 +583,7 @@
 </details>
 </section>
 <section class="sub has-key" id="c5">
-<h4><span class="code">C5</span>蒸馏</h4>
+<h3><span class="code">C5</span>蒸馏</h3>
 <p class="meta"><b>论文</b>GKD, OPSD, Nemotron 3 Ultra, Kimi K3, DeepSeek-R1</p>
 <details class="qa key" id="c5-1">
   <summary><span class="qn">C5.1</span><span class="qt">为什么用 on-policy 蒸馏？和 SFT、RL 相比各有什么优劣？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -596,7 +596,7 @@
 </details>
 </section>
 <section class="sub has-key" id="c6">
-<h4><span class="code">C6</span>RL 效率（含 Hamish Ivison guest lecture）</h4>
+<h3><span class="code">C6</span>RL 效率（含 Hamish Ivison guest lecture）</h3>
 <p class="meta"><b>论文</b>Async RLHF, Olmo 3, NGU, RLVE</p>
 <details class="qa key" id="c6-1">
   <summary><span class="qn">C6.1</span><span class="qt">LLM RL 的计算花在哪？为什么要让它更快？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
@@ -651,9 +651,9 @@
 </section>
 </section>
 <section class="part has-key" id="part-4">
-<h3 class="part-h">Guest lecture</h3>
+<h2 class="part-h">Guest lecture</h2>
 <section class="sub has-key" id="d1">
-<h4><span class="code">D1</span>Rex Ying：A Geometric Perspective on Foundation Models</h4>
+<h3><span class="code">D1</span>Rex Ying：A Geometric Perspective on Foundation Models</h3>
 <details class="qa key" id="d1-1">
   <summary><span class="qn">D1.1</span><span class="qt">为什么要在基础模型里用双曲几何？</span><span class="tg tg-key">重点</span><span class="tg">Guide</span></summary>
   <ul class="ans" lang="en">
@@ -666,10 +666,10 @@
 </section>
 </section>
 <section class="part" id="part-5">
-<h3 class="part-h">论文复述</h3>
+<h2 class="part-h">论文复述</h2>
 <p class="links">guide 要求每篇主要论文都能说出问题、主要想法、主要结果和局限。一篇论文一道题，闭卷复述；结果和局限各说一句，不背数字。</p>
 <section class="sub" id="p">
-<h4><span class="code">P</span>每篇论文的问题、主要想法、主要结果和局限</h4>
+<h3><span class="code">P</span>每篇论文的问题、主要想法、主要结果和局限</h3>
 <details class="qa" id="p-1">
   <summary><span class="qn">P1</span><span class="qt">Attention Is All You Need：问题、主要想法、主要结果、局限？</span></summary>
   <ul class="ans" lang="en">
@@ -682,10 +682,10 @@
 </section>
 </section>
 <section class="part" id="part-6">
-<h3 class="part-h">补漏</h3>
+<h2 class="part-h">补漏</h2>
 <p class="links">按 guide 的 Scope and format 整理：解释机制、解释或评价设计选择、比较方法。都不是考题原题；guide 只说考题会和 Quiz、paper review 题、课堂讨论相似。</p>
 <section class="sub" id="g1">
-<h4><span class="code">G1</span>guide 点名、还没讲的点</h4>
+<h3><span class="code">G1</span>guide 点名、还没讲的点</h3>
 <details class="qa" id="g1-1">
   <summary><span class="qn">G1.1</span><span class="qt">Kimi K3 的 Attention Residuals 是什么？解决什么问题？</span><span class="tg">Guide：主要想法 / K3 review summary</span></summary>
   <ul class="ans" lang="en">
