@@ -13,7 +13,7 @@
 
 <h1>从零实现 autograd：graph 怎么建？<br>backward 按什么顺序？为什么用 reverse mode？</h1>
 <p class="meta"><b>英文问法</b><q>Implement a minimal reverse-mode autograd engine.</q> · <q>How does backward() decide the order?</q> · <q>Why reverse mode rather than forward mode?</q></p>
-<p class="meta"><b>考过</b>面经：NVIDIA 框架岗 2023（take-home：在一个能 trace computation graph 的 framework 里从零实现 gradient，包括 weight、bias、activation function、softmax；onsite 第 1 轮按 skeleton 实现 graph tracing，第 3 轮在 colab 实现 backprop，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· 其他公司：OpenAI（"Implement a Minimal Reverse-Mode Autograd Engine on PyTorch Tensors"，PracHub）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人 NVIDIA Megatron Core intern 面试（2026-11）</strong>（第二场手写，NumPy：基于 tensor 的 autograd engine。forward 用 <code>_parents</code> 和 <code>_grad_fn</code> 记 graph，matmul 的 backward 是 <code>G @ B.T</code> 和 <code>A.T @ G</code>，backward 用 queue 加 dependency counting 逆着 DAG 走，另有 shared tensor 的 gradient 累加、leaf 和 intermediate 的 gradient、broadcasting 后的 shape）· 面经：NVIDIA 框架岗 2023（take-home：在一个能 trace computation graph 的 framework 里从零实现 gradient，包括 weight、bias、activation function、softmax；onsite 第 1 轮按 skeleton 实现 graph tracing，第 3 轮在 colab 实现 backprop，<a href="https://zhuanlan.zhihu.com/p/658609960">知乎</a>）· 其他公司：OpenAI（"Implement a Minimal Reverse-Mode Autograd Engine on PyTorch Tensors"，PracHub）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -136,7 +136,8 @@ L.backward()                            # x.grad = 4.0, y.grad = 2.0</code></pre
 </details>
 <details>
   <summary>为什么不直接从 loss 递归调 parents 的 backward？</summary>
-  <p>节点没收齐下游 gradient 就往上传，被用 \(k\) 次就传 \(k\) 次，路径一多就指数爆炸，按 topological order 每个 local backward 只跑一次。图很深时递归 DFS 会超 Python recursion limit，改用显式 stack。</p>
+  <p>结果会错。节点没收齐下游 gradient 就往上传，之后又带着累加过的 grad 再传一次。例：\(w = 2x\)、\(L = (w + 1) + 3w\)，正确的 \(\partial L/\partial x = 8\)。直接递归时 \(w\) 先带着 1 传一次，再带着 1 + 3 = 4 传一次，\(x\) 得到 2 + 8 = 10。把增量当参数往上传可以算对，但被用 \(k\) 次就传 \(k\) 次，路径一多就指数爆炸。按 topological order 每个 local backward 只跑一次。图很深时递归 DFS 会超 Python recursion limit，改用显式 stack。</p>
+  <p id="queue"><strong>queue 加 dependency counting 的写法（NVIDIA 2026-11 第二场）。</strong>先从 loss 走一遍 graph，数每个 tensor 被几个下游用到。loss 入队。出队一个就调它的 local backward，把 gradient 加给 parents，再把每个 parent 的计数减 1，减到 0 才入队。计数到 0 表示所有下游的 gradient 都到齐了，和 topological sort 保证的是同一件事，而且不用递归。leaf 的 gradient 留给 optimizer，intermediate 的传完就可以丢。</p>
 </details>
 <details>
   <summary>PyTorch 里实际是怎么做的？</summary>

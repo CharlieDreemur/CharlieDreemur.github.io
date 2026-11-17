@@ -13,14 +13,14 @@
 
 <h1>Megatron Core 最近三个月发布了什么？<br>五条主线各接到哪道基础题？</h1>
 <p class="meta"><b>英文问法</b><q>What has the Megatron Core team shipped in the last few months?</q> · <q>Which recent Megatron Core feature interests you most, and why?</q> · <q>What do you know about our latest release?</q></p>
-<p class="meta"><b>考过</b><strong>推断，非面经</strong>。没有任何面经问过这道题，上面三个问法也是推断 · 依据是团队自己的 core 0.19.0 和 0.20.0 release notes、GTP 文档、determinism tracker #5785、Q4 roadmap #9232 · 面试前先读这一页，再按需要点进五个细节页</p>
+<p class="meta"><b>考过</b><strong>推断，非面经</strong>，题目和问法都是按团队自己的 release notes 和文档推断的</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Megatron Core、Megatron-Bridge、NeMo-RL</dt>
-  <dd>Megatron Core 是训练库。Megatron-Bridge 放各模型在各硬件上的 recipe。NeMo-RL 是 RL post-training 框架，0.8.0 的容器装的是 Megatron-Core 0.20.0 和 Megatron-Bridge 0.7.0。</dd>
+  <dd>Megatron Core 是训练库。Megatron-Bridge 放各模型在各硬件上的 recipe。NeMo-RL 是 RL post-training 框架，容器里装着 Megatron Core 和 Megatron-Bridge。</dd>
   <dt>Experimental</dt>
-  <dd>release notes 和文档里的标注。GTP 文档的原话是 API、配置和行为 "may change in future versions without notice"。</dd>
+  <dd>release notes 和文档里的标注，表示 API、配置和行为以后可能直接改掉，不另行通知。</dd>
   <dt>NVLink domain</dt>
   <dd>一组互相用 NVLink 直连的 GPU，domain 内的通信比跨 domain 快得多。</dd>
   <dt>All-to-all</dt>
@@ -30,7 +30,7 @@
 <h2 id="figs">看图：五条主线各建立在哪个已有概念上</h2>
 <figure class="fig">
 <svg viewBox="0 0 560 262" role="img" aria-label="五条主线和它们的基础概念：MFSDP v2 建立在 ZeRO 上，GTP 建立在 TP 和 ZeRO-3 的 all-gather 上，MoE 的 EP communication 建立在 all-to-all 上，bitwise determinism 建立在 reduction order 上，low precision 和 CUDA Graph 建立在 mixed precision 和 CUDA Graph 上">
-  <text class="m" x="108.5" y="14" text-anchor="middle">最近两个版本的主线</text>
+  <text class="m" x="108.5" y="14" text-anchor="middle">近期的主线</text>
   <text class="m" x="348" y="14" text-anchor="middle">建立在哪个已有概念上</text>
   <text class="m" x="460" y="14">题库 06 的题号</text>
   <rect class="hot" x="1" y="24" width="215" height="40" rx="5"/>
@@ -59,7 +59,7 @@
   <text class="m" x="460" y="145">题 4、20</text>
   <rect class="hot" x="1" y="168" width="215" height="40" rx="5"/>
   <text class="hd" x="108.5" y="185" text-anchor="middle">Bitwise determinism</text>
-  <text class="m" x="108.5" y="201" text-anchor="middle">bit-exact，overhead 目标 &lt; 10%</text>
+  <text class="m" x="108.5" y="201" text-anchor="middle">固定环境下 bit-exact</text>
   <path class="ln" d="M218,188 H237"/>
   <polygon class="ah" points="236,184 236,192 243,188"/>
   <rect class="box" x="244" y="168" width="208" height="40" rx="5"/>
@@ -78,51 +78,39 @@
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>From the core 0.19 and 0.20 release notes, I'd group the work into five threads. Megatron-FSDP v2 adds ZeRO-style sharding that can differ inside and across NVLink domains. Generalized Tensor Parallelism adds ZeRO-3-style weight sharding on the model-parallel axis. For MoE, the NCCL EP backend and ShortcutMoE overlap speed up expert-parallel communication, plus fused MegaMoE kernels on main. Bitwise-deterministic training targets under ten percent overhead. And there's MXFP8 and NVFP4 training with full-iteration CUDA Graphs. Most of this is experimental, so I'd quote any limit with the version I read.</p></div>
-
-<h2 id="timeline">版本时间线</h2>
-<table>
-  <thead><tr><th>仓库</th><th>版本</th><th>发布日期</th><th>有关内容</th></tr></thead>
-  <tbody>
-    <tr><td class="nw">Megatron Core</td><td>0.19.0</td><td class="nw">2026-08-19</td><td>NCCL EP 首次加入；MXFP8 training path；MFSDP v2 还写着 "under development"</td></tr>
-    <tr><td></td><td>0.19.2</td><td class="nw">2026-09-18</td><td>小版本，1F1B A2A overlap 支持 FP4</td></tr>
-    <tr><td></td><td>0.20.0</td><td class="nw">2026-10-29</td><td>MFSDP v2 接入；GTP 加功能；ShortcutMoE；NVFP4 training</td></tr>
-    <tr><td class="nw">Megatron-Bridge</td><td>0.7.0</td><td class="nw">2026-10-30</td><td>GB300 的 MoE recipe 默认换成 NCCL EP</td></tr>
-    <tr><td class="nw">NeMo-RL</td><td>0.8.0</td><td class="nw">2026-11-06</td><td>NCCL reshard refit</td></tr>
-  </tbody>
-</table>
+<div class="answer"><p>Reading the team's recent release notes, I'd group the work into five threads. Megatron-FSDP v2 is Megatron's own fully sharded data parallel, and it can use different ZeRO levels inside and across NVLink domains. Generalized Tensor Parallelism shards each weight ZeRO-3 style along the model-parallel axis and prefetches the all-gather behind compute. For MoE, the work speeds up expert-parallel all-to-all: a new NCCL EP backend, ShortcutMoE overlap, and fused MegaMoE kernels. Bitwise determinism aims for bit-exact training on a fixed setup at low overhead. And there's MXFP8 and NVFP4 training with full-iteration CUDA Graphs. Most of this is experimental, so the limits change quickly.</p></div>
 
 <h2 id="lines">五条主线</h2>
 <table>
-  <thead><tr><th>主线</th><th>是什么</th><th>先会的基础题</th><th>细节页</th></tr></thead>
+  <thead><tr><th>主线</th><th>是什么，为什么做</th><th>先会的基础题</th><th>细节页</th></tr></thead>
   <tbody>
-    <tr><td>MFSDP v2</td><td>Megatron 自己的 FSDP，能切到 ZeRO-1/2/3。NVLink domain 内外可以用不同级别。0.20.0 的 adapter 要求 TP=1</td><td><a href="dp-zero-fsdp.html">ZeRO</a></td><td><a href="megatron-fsdp-v2.html">MFSDP v2</a></td></tr>
-    <tr><td>GTP</td><td>GTP = TP × GTP_remat。GTP_remat 把 weight 切开存，GEMM 前 all-gather 拼回来。文档说它是切在 model-parallel 轴上的 ZeRO-3</td><td><a href="tp-linear.html">TP</a>、<a href="overlap.html">overlap</a></td><td><a href="gtp.html">GTP</a></td></tr>
-    <tr><td>MoE 的 EP communication</td><td>NCCL EP 是新的 dispatcher backend。ShortcutMoE 让 all-to-all 和 attention 重叠。MegaMoE 把 dispatch、expert 计算、combine 融成一个 kernel，它在 main 上，不在 0.20.0 的 highlights 里</td><td><a href="moe-expert-parallel.html">EP</a></td><td><a href="moe-ep-communication.html">EP communication</a></td></tr>
-    <tr><td>Bitwise determinism</td><td>目标是固定环境下 bit-exact，steady-state overhead 低于 10%。0.20.0 把它列为 "multi-release effort"</td><td><a href="allreduce.html">all-reduce</a></td><td><a href="bitwise-determinism.html">determinism</a></td></tr>
-    <tr><td>Low precision 和 CUDA Graph</td><td>MXFP8 和 NVFP4 training，选定的 tensor 留 FP32。MFSDP v2 的 dense 配置支持 full-iteration CUDA Graph</td><td><a href="mixed-precision.html">mixed precision</a>、<a href="cuda-graph.html">CUDA Graph</a></td><td><a href="low-precision-cuda-graph.html">low precision</a></td></tr>
+    <tr><td>MFSDP v2</td><td>Megatron 自己的 FSDP，能切到 ZeRO-1/2/3。NVLink domain 内外可以用不同级别，推断是为了让每层的 parameter all-gather 只走 NVLink。目前要求 TP = 1</td><td><a href="dp-zero-fsdp.html">ZeRO</a></td><td><a href="megatron-fsdp-v2.html">MFSDP v2</a></td></tr>
+    <tr><td>GTP</td><td>GTP = TP × GTP_remat。GTP_remat 把 weight 再切开存，GEMM 前 all-gather 拼回来，省的是 weight 占的 GPU memory。文档说它是切在 model-parallel 轴上的 ZeRO-3</td><td><a href="tp-linear.html">TP</a>、<a href="overlap.html">overlap</a></td><td><a href="gtp.html">GTP</a></td></tr>
+    <tr><td>MoE 的 EP communication</td><td>三项工作都是为了减少 all-to-all 的开销。NCCL EP 是新的 dispatcher backend。ShortcutMoE 让 all-to-all 和 attention 重叠。MegaMoE 把 dispatch、expert 计算、combine 融成一个 kernel</td><td><a href="moe-expert-parallel.html">EP</a></td><td><a href="moe-ep-communication.html">EP communication</a></td></tr>
+    <tr><td>Bitwise determinism</td><td>目标是固定环境下两次训练每一位都相同，同时 overhead 要低。这样 loss spike 能原样重现，一次只换一个组件来 debug</td><td><a href="allreduce.html">all-reduce</a></td><td><a href="bitwise-determinism.html">determinism</a></td></tr>
+    <tr><td>Low precision 和 CUDA Graph</td><td>MXFP8 和 NVFP4 training 用更低的精度算 GEMM，选定的 tensor 留 FP32。Full-iteration CUDA Graph 把整步 capture 下来，省掉 kernel launch 开销。MFSDP v2 的 dense 配置支持它</td><td><a href="mixed-precision.html">mixed precision</a>、<a href="cuda-graph.html">CUDA Graph</a></td><td><a href="low-precision-cuda-graph.html">low precision</a></td></tr>
   </tbody>
 </table>
 
+<p><b>按实际的开发量看，这五条并不全。</b>五条主线取自 release notes。代码里最活跃的还有四个方向，分别是 inference 和 RL 的训推 bitwise parity，<code>HybridModel</code> 取代 <code>GPTModel</code>，training config 从 argparse 迁到 typed config，全局 <code>parallel_state</code> 弃用。这四件事各是什么，见代码精读报告的第二节。</p>
 <h2 id="gaps">题库里还没有的主题</h2>
 <ul>
-  <li><strong>Muon</strong>：0.20.0 加了 layer-sharded 的 distributed Muon（<a href="https://github.com/NVIDIA/Megatron-LM/pull/6683">PR #6683</a>）</li>
-  <li><strong>Sequence packing 和 dynamic CP</strong>：0.20.0 加了 DP-balanced sequence packing。Dynamic CP 在 main 上改用标准的 train 和 eval schedule，旧名字是 hybrid CP（<a href="https://github.com/NVIDIA/Megatron-LM/pull/7047">PR #7047</a>）</li>
-  <li><strong>RL 的 weight refit</strong>：NeMo-RL 0.8.0 的 NCCL reshard refit 把 DeepSeek-V3 671B 在 H100 上的 refit 从 14.9 s 降到 2.6 s（<a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">release notes</a>）</li>
+  <li><strong>Muon</strong>：新加了 layer-sharded 的 distributed Muon</li>
+  <li><strong>Sequence packing 和 dynamic CP</strong>：DP-balanced sequence packing，以及 dynamic CP，后者的旧名字是 hybrid CP</li>
+  <li><strong>RL 的 weight refit</strong>：每步训练完要把新 weight 传给 inference 那一侧。NeMo-RL 新加的 NCCL reshard refit 让这一步快了很多</li>
 </ul>
 
 <h2>必答点</h2>
 <ul>
-  <li>依据是 core 0.19.0（08-19）和 0.20.0（10-29）的 release notes</li>
   <li>五条主线和各自的基础题：MFSDP v2（ZeRO）、GTP（TP）、MoE 的 EP communication（all-to-all）、bitwise determinism（reduction order）、low precision 和 CUDA Graph（mixed precision）</li>
-  <li>多数功能是 experimental，引用限制时带版本。0.20.0 写 MFSDP v2 的 optimizer checkpoint 不含 EP layout，main 上已经修掉了（PR #8230）</li>
-  <li>HybridEP 没有被弃用，Megatron-Bridge 0.7.0 的原话是 "HybridEP deprecation and full migration are deferred."（见 <a href="moe-ep-communication.html#three">EP communication</a>）</li>
+  <li>多数功能还是 experimental，限制变得很快，不要把某条限制说成定论</li>
+  <li>HybridEP 没有被弃用，彻底迁到 NCCL EP 的计划推迟了（见 <a href="moe-ep-communication.html#three">EP communication</a>）</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>接下来一个季度团队要做什么？</summary>
-  <p>Q4 roadmap #9232 的目标版本是 26.12，写着 "scope may change"。和这五条有关的有 "Tune MFSDP v2 for Nemotron and DeepSeek workloads" 和 "Benchmark NCCL EP recipes against DeepEP v2, including on AWS."，determinism 要扩到更多 kernel。</p>
+  <p>roadmap 上和这五条有关的有三件事。MFSDP v2 针对 Nemotron 和 DeepSeek 的 workload 调优，NCCL EP 的 recipe 和 DeepEP 对比，determinism 扩到更多 kernel。roadmap 自己也写着范围会变。</p>
 </details>
 <details>
   <summary>五条里挑哪两条讲透？</summary>
@@ -130,10 +118,10 @@
 </details>
 <details>
   <summary>GPTModel 还能用吗？</summary>
-  <p>0.19.0 的 release notes 有一条 "GPTModel: deprecation announcement"，并把 <code>HybridModel</code> 叫作 "next-gen model class"。0.20.0 里 DeepSeek V4 由 <code>HybridModel</code> 支持。</p>
+  <p>还能用，但已经宣布要弃用。<code>HybridModel</code> 被叫作下一代 model class，DeepSeek V4 就是由它支持的。</p>
 </details>
 
-<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.0">core 0.19.0 release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.2">core 0.19.2</a> · <a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge/releases/tag/v0.7.0">Megatron-Bridge 0.7.0</a> · <a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">NeMo-RL 0.8.0</a> · <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/api-guide/core/generalized_tensor_parallel.md">GTP 文档</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/5785">determinism tracker #5785</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">MegaMoE 状态页 #8427</a> 和 <a href="https://github.com/NVIDIA/Megatron-LM/pull/8210">PR #8210</a> ·<a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap #9232</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/8230">PR #8230</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/7075">PR #7075</a> · 全部链接和原话见 更新笔记第 3 节 · 题库条目是 ml-八股 06 的第 0 题</p>
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">Megatron Core release notes</a> · <a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge/releases/tag/v0.7.0">Megatron-Bridge release notes</a> · <a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">NeMo-RL release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/api-guide/core/generalized_tensor_parallel.md">GTP 文档</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/5785">determinism tracker</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">MegaMoE 状态页</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap</a> · 更新笔记 · ml-八股 06</p>
 
 </main>
 </body>

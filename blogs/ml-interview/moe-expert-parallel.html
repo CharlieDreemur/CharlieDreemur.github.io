@@ -50,6 +50,7 @@
   <h3 id="aux">load balancing loss（Switch）</h3>
   \[ \mathcal{L}_{\text{aux}} = \alpha\, E \sum_{i=1}^{E} f_i\, P_i \]
   <p>\(f_i\)：top-1 分到 expert \(i\) 的 token 比例（argmax，不可导）；\(P_i\)：router 给 \(i\) 的平均概率（可导，gradient 走这里）。均匀时 \(f_i = P_i = 1/E\)，loss \(= \alpha\)；全挤到一个 expert，loss \(= \alpha E\)。Switch 用 \(\alpha = 10^{-2}\)。</p>
+  <p><b>Megatron 的实际路径和上面的教科书写法不同</b>。默认 dropless，没有 \([E,C,h]\) 这个 tensor：token 按 expert 排序成扁平的 \([T\cdot k,\,h]\)，另带一个 <code>tokens_per_expert</code>。probs 在 expert 里、activation 之后乘，不在 combine 时乘。EP 下一次 forward 有 3 次 all-to-all（token、probs、combine）。aux loss 的 \(f_i\) 数全部 k 个 assignment。<code>moe_aux_loss_coeff</code> 默认是 0，也就是默认不做 load balancing。</p>
   <h3 id="params">参数 vs active 参数（Mixtral 8x7B）</h3>
   <p>h = 4096、SwiGLU 中间维 14336、32 层。每个 expert 3 × 4096 × 14336 ≈ 176M，每层 attention（8 个 KV head）≈ 42M，embedding + LM head 0.26B：</p>
   <ul>
@@ -83,7 +84,7 @@
   <li>router → top-k → dispatch → expert → combine，能写出每步 shape</li>
   <li>\(C = \text{cf}\cdot kT/E\)：超出 drop（走 residual），不足 pad；cf 大少 drop，但多算多传</li>
   <li>aux loss \(\alpha E\sum f_iP_i\)，均匀时最小；不加会 expert collapse</li>
-  <li>EP：dispatch、combine 两次 all-to-all，常是瓶颈，要和计算 overlap</li>
+  <li>EP：dispatch、combine 靠 all-to-all（Megatron 默认路径一次 forward 是 3 次），常是瓶颈，要和计算 overlap</li>
   <li>参数随 \(E\)、计算随 \(k\)：Mixtral 47B 参数、13B active</li>
 </ul>
 

@@ -41,6 +41,8 @@
 <div class="answer"><p>Each layer has two TP blocks, attention and MLP. Each needs one all-reduce in forward, after the row-parallel linear, and one in backward, before the column-parallel linear: four per layer per micro-batch. Each all-reduce carries b·s·h elements, 64 MiB in bf16 for b = 1, s = 4096, h = 8192. A ring all-reduce moves 2(t−1)/t of that per GPU, so traffic barely drops as t grows, while compute per GPU falls as 1/t. So bigger TP isn't always faster: communication starts to dominate, and past one node it goes over InfiniBand, an order of magnitude slower. Keep TP within the NVLink node; use PP across nodes.</p></div>
 
 <h2>推导 / 关键公式</h2>
+<p><b>不要把 Column / Row 当成 forward / backward 的名字。</b>Column、Row 描述 weight 的切分方式，每个 linear 都有自己的 forward 和 backward。attention 的 forward 顺序是 QKV column → 本地 attention → output row；backward 则反向经过 output row → 本地 attention → QKV column。基本 TP 下，column forward 的输出是不同的列，无须相加；row forward 才把同形状的输出贡献相加。column backward 合并的是同一个输入的 gradient contribution。</p>
+<p><b>为什么 attention 也有 forward / backward 各一次？</b>基本 TP 按完整 head 切，各卡用完整 X 和自己的 QKV weight shard 算本地 head，head 内的 attention 无须跨卡合并。output projection 是 row parallel：各卡用本地 head 输出 H_i 乘 W_O 的对应行块，得到同形状的部分贡献 H_i W_{O,i}；完整输出是这些贡献的和，因此 forward all-reduce。backward 穿过 output projection 和本地 attention 后，每卡得到本地 QKV 的 gradient；但所有 head 都使用过同一个 X，所以每卡算出的 dX 仅包含本地 QKV 路径的贡献，必须在 column projection 的 backward 用 all-reduce 相加。不是把 head 输出直接相加，也不是对不同 weight shard 的 gradient 求和。</p>
 <div class="deriv">
   \[ \text{次数} = 2_{\,\text{fwd}} + 2_{\,\text{bwd}} = 4\ \text{次 / 层 / micro-batch} \]
   \[ S = b\,s\,h \times 2\ \text{bytes（bf16）} \]

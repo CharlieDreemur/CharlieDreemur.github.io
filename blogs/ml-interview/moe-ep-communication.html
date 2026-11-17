@@ -13,7 +13,7 @@
 
 <h1>EP 的 all-to-all 为什么是瓶颈？<br>NCCL EP、ShortcutMoE、MegaMoE 各做了什么？</h1>
 <p class="meta"><b>英文问法</b><q>Why is the all-to-all the bottleneck in expert parallelism?</q> · <q>How would you hide or shrink expert-parallel communication in MoE training?</q> · <q>What recent MoE work in Megatron Core have you read about?</q></p>
-<p class="meta"><b>考过</b>推断，非面经，没有一条面经问过这页的内容 · 依据是团队自己的材料：<a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（2026-10-29）、<a href="https://github.com/NVIDIA/Megatron-LM/pull/6229">PR #6229</a>（NCCL EP）、<a href="https://github.com/NVIDIA/Megatron-LM/pull/6959">PR #6959</a>（ShortcutMoE）、<a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">issue #8427</a>（MegaMoE 状态页）· 多数功能标着 experimental，下面每条限制都注明版本或 PR</p>
+<p class="meta"><b>考过</b>推断，没有面经问过，依据是团队最近的 release notes 和 PR。</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -22,14 +22,14 @@
   <dt>Critical path</dt>
   <dd>expert FFN 要等 dispatch，下一层要等 combine。通信没完，计算只能等。</dd>
   <dt>Dispatcher backend</dt>
-  <dd>实现 dispatch 和 combine 的那层库，现在有 NCCL EP、DeepEP v2、HybridEP 三个。</dd>
+  <dd>实现 dispatch 和 combine 的那层库。<code>flex</code> dispatcher 下有四个：DeepEP、DeepEP v2、HybridEP、NCCL EP。另一种 dispatcher <code>alltoall</code> 不走这些 backend，它是默认值。</dd>
   <dt>Receive buffer</dt>
   <dd>每张卡接收 token 的 buffer，收到多少由 router 决定，每步都不一样。</dd>
 </dl>
 
 <h2 id="figs">看图：all-to-all 期间 GPU 在干什么</h2>
 <figure class="fig">
-<svg viewBox="0 0 560 196" role="img" aria-label="两条时间线。普通 MoE：attention 40 毫秒，dispatch 20 毫秒期间计算 stream 空等，expert FFN 25 毫秒，combine 20 毫秒期间又空等，一层 105 毫秒。ShortcutMoE：attention 放到 side stream，和 dispatch、combine 两次 all-to-all 同时跑，一层 65 毫秒">
+<svg viewBox="0 0 560 196" role="img" aria-label="两条时间线。普通 MoE：attention 40 毫秒，dispatch 20 毫秒期间计算 stream 空等，expert FFN 25 毫秒，combine 20 毫秒期间又空等，一层 105 毫秒。ShortcutMoE：dispatch、combine 两次 all-to-all 放到 side stream，和主 stream 上的 attention 同时跑，一层 65 毫秒">
   <text class="hd" x="14" y="16">普通 MoE：一层 105 ms，计算 stream 空等 40 ms</text>
   <text class="m" x="14" y="45">计算 stream</text>
   <text class="m" x="14" y="75">通信 stream</text>
@@ -45,13 +45,13 @@
   <text class="acc" x="296" y="75" text-anchor="middle">dispatch</text>
   <rect class="f1" x="436" y="58" width="80" height="24" rx="3"/>
   <text class="acc" x="476" y="75" text-anchor="middle">combine</text>
-  <text class="hd" x="14" y="118">ShortcutMoE：attention 挪到 side stream，一层 65 ms</text>
-  <text class="m" x="14" y="147">主 stream</text>
-  <text class="m" x="14" y="177">side stream</text>
+  <text class="hd" x="14" y="118">ShortcutMoE：all-to-all 挪到 side stream，一层 65 ms</text>
+  <text class="m" x="14" y="147">side stream</text>
+  <text class="m" x="14" y="177">主 stream</text>
   <rect class="f1" x="96" y="130" width="80" height="24" rx="3"/>
   <text class="acc" x="136" y="147" text-anchor="middle">dispatch</text>
-  <rect class="f2" x="176" y="130" width="100" height="24" rx="3"/>
-  <text class="c2" x="226" y="147" text-anchor="middle">expert FFN</text>
+  <rect class="f2" x="176" y="160" width="100" height="24" rx="3"/>
+  <text class="c2" x="226" y="177" text-anchor="middle">expert FFN</text>
   <rect class="f1" x="276" y="130" width="80" height="24" rx="3"/>
   <text class="acc" x="316" y="147" text-anchor="middle">combine</text>
   <rect class="f2" x="96" y="160" width="80" height="24" rx="3"/>
@@ -64,57 +64,51 @@
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>In expert parallelism every MoE layer runs two all-to-alls: dispatch sends tokens to their experts' GPUs, and combine brings the results back. Both sit on the critical path, so the GPU idles while they run. Megatron attacks this three ways. NCCL EP is a new backend whose static mode keeps a fixed receive budget, so it stays CUDA-graph capturable. ShortcutMoE runs attention on a side stream to overlap the all-to-all. MegaMoE fuses dispatch, expert compute and combine into one kernel. Most of this is experimental, and three backends still coexist.</p></div>
+<div class="answer"><p>In expert parallelism every MoE layer runs two all-to-alls: dispatch sends tokens to their experts' GPUs, and combine brings the results back. Both sit on the critical path, so the GPU idles while they run. Megatron attacks this three ways. NCCL EP is a backend whose static mode keeps a fixed receive budget, so it stays CUDA-graph capturable. If a step overflows the budget, it reruns that step once without dropping tokens. ShortcutMoE runs the all-to-alls on a side stream so they overlap attention. MegaMoE fuses dispatch, expert compute and combine into one kernel.</p></div>
 
 <h2 id="three">三个方向各做了什么</h2>
 <table>
-  <thead><tr><th>方向</th><th>做了什么</th><th>限制（出处）</th></tr></thead>
+  <thead><tr><th>方向</th><th>做了什么</th><th>代价或限制</th></tr></thead>
   <tbody>
-    <tr><td class="nw">换 backend<br>NCCL EP</td><td>dispatch 和 combine 做进 NCCL，有 eager 和 static 两种 mode</td><td>0.19.0 首次加入；MXFP8 communication 标 experimental（0.20.0）</td></tr>
-    <tr><td class="nw">Overlap<br>ShortcutMoE</td><td>attention 放到 side stream，和 all-to-all 同时跑</td><td>训练不支持 CUDA Graph（0.20.0）；要改模型结构</td></tr>
-    <tr><td class="nw">融合 kernel<br>MegaMoE</td><td>dispatch、expert 计算、combine 合成一个 megakernel，少停顿，少 launch（见 <a href="kernel-fusion.html">kernel fusion</a>）</td><td>MoK 实现要求 EP group 在一个 NVLink domain 内，TP1/ETP1，EP ∈ {1, 4, 8, 16, 32, 64}（状态页，10-22）</td></tr>
+    <tr><td class="nw">换 backend<br>NCCL EP</td><td>dispatch 和 combine 做进 NCCL，有 eager 和 static 两种 mode</td><td>static 的 budget 不够时，这一步要重跑</td></tr>
+    <tr><td class="nw">Overlap<br>ShortcutMoE</td><td>dispatch 和 combine 的 all-to-all 放到 side stream，和主 stream 上的 attention 同时跑</td><td>要改模型结构。训练时不支持 CUDA Graph</td></tr>
+    <tr><td class="nw">融合 kernel<br>MegaMoE</td><td>dispatch、expert 计算、combine 合成一个 megakernel，少停顿，少 launch（见 <a href="kernel-fusion.html">kernel fusion</a>）</td><td>现有的 MoK 实现要求 EP group 在一个 NVLink domain 内</td></tr>
   </tbody>
 </table>
-<p>0.20.0 新加了 experimental 的 DeepEP v2。Megatron-Bridge 0.7.0 把 GB300 的 MoE perf recipe 默认换成 NCCL EP，同一条写着 HybridEP 的 "deprecation and full migration are deferred"。NeMo-RL 0.8.0 的 MoE perf recipe 则换成了 HybridEP，所以不要说 HybridEP 已被弃用。</p>
 
 <h2 id="nccl">NCCL EP 的 eager 和 static</h2>
 <table>
-  <thead><tr><th>Mode</th><th>怎么选中</th><th>Receive buffer</th><th><a href="cuda-graph.html">CUDA Graph</a></th></tr></thead>
+  <thead><tr><th>Mode</th><th>Receive buffer</th><th><a href="cuda-graph.html">CUDA Graph</a></th></tr></thead>
   <tbody>
-    <tr><td class="nw">eager</td><td>不设 <code>moe_expert_rank_capacity_factor</code></td><td>每步按实际收到的 token 数来定</td><td>PR 没说能 capture</td></tr>
-    <tr><td class="nw">static</td><td>设了它</td><td>固定 budget</td><td><a href="low-precision-cuda-graph.html#graph">能 capture</a></td></tr>
+    <tr><td class="nw">eager</td><td>每步按实际收到的 token 数来定</td><td>大小每步都变，按 CUDA Graph 的限制推断 capture 不了</td></tr>
+    <tr><td class="nw">static</td><td>固定 budget</td><td><a href="low-precision-cuda-graph.html#graph">能 capture</a></td></tr>
   </tbody>
 </table>
-<p>static mode 打开 NCCL EP 的 drop-on-overflow 策略，并在 GPU 上累计超出量和 peak，不溢出就不用 sync。溢出之后把 budget 扩到这个 peak，重建一次 EP context，再重放这一步。release notes 的 eager mode 和 full-iteration graph mode 就是 PR 的 eager 和 static，这是按 PR 描述推断的。</p>
+<p>static mode 让 NCCL EP 在溢出时丢掉多出的 token，同时在 GPU 上累计超出量和 peak，不溢出就不用 sync。溢出的那一步改用 dropless（eager）方式重跑一次。然后重建 EP context，把 budget 扩到刚才观测到的 peak，下一步起回到 static mode。</p>
 
-<h2 id="shortcut">ShortcutMoE 的数字怎么读</h2>
-<p>普通 MoE 里 dispatch 要等本层 attention 算完。ScMoE 论文让 routed expert 经 shortcut 处理前一层的 representation，dispatch 就不用等。Megatron 的 PR 把 attention 放到 side stream 上和 all-to-all 重叠，一般做法见 <a href="overlap.html">overlap</a>。</p>
-<p>PR 自报 overlap efficiency 82%–95%，四个模型是 Nano 94%、Super 93%、Ultra 95%、Nemotron 4 candidate 82%。同一张表里 throughput 的 speedup 是 4.7%–12.1%，比图 1 的上限小得多。PR 没有给 overlap efficiency 的定义，也没写硬件。</p>
+<h2 id="shortcut">ShortcutMoE 为什么能 overlap</h2>
+<p>普通 MoE 里 dispatch 要等本层 attention 算完。ScMoE 论文让 routed expert 经 shortcut 处理前一层的 representation，dispatch 就不用等。Megatron 把 dispatch 和 combine 的 all-to-all 放到 side stream 上，和主 stream 上的 attention 重叠，一般做法见 <a href="overlap.html">overlap</a>。实际 throughput 的提升比图 1 的上限小得多。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>all-to-all 在 critical path 上，一层两次，期间 GPU 空等</li>
-  <li>NCCL EP：eager 每步定 receive buffer；static 固定 budget，能被 CUDA Graph capture，溢出就扩 budget 重放</li>
-  <li>ShortcutMoE：attention 在 side stream 上和 all-to-all 重叠；82%–95% 是 PR 自报</li>
-  <li>MegaMoE：一个 megakernel；MoK 要求 EP group 在一个 NVLink domain 内</li>
-  <li>三个 backend 并存，引用时说版本</li>
+  <li>NCCL EP 的 eager 每步定 receive buffer。static 用固定 budget，能被 CUDA Graph capture，溢出就用 dropless 方式重跑这一步</li>
+  <li>ShortcutMoE：all-to-all 放到 side stream，和 attention 重叠，代价是改模型结构</li>
+  <li>MegaMoE：dispatch、expert 计算、combine 合成一个 megakernel，MoK 实现要求 EP group 在一个 NVLink domain 内</li>
+  <li>flex dispatcher 下四个 backend 并存，还没有定论哪个最好</li>
 </ul>
 
 <h2>追问</h2>
 <details>
-  <summary>MegaMoE 有哪几个实现？</summary>
-  <p>状态页列了两个。MoK（Mixture-of-Kittens）是 Cursor 开源的 CUDA C++ 实现，已集成进 MCore，支持 full-iteration CUDA Graph。NVIDIA 的 CuTeDSL 版经 cuDNN Frontend 和 Transformer Engine 接入，MCore 一侧的 PR 还是 draft。</p>
-</details>
-<details>
-  <summary>MegaMoE 快了多少？</summary>
-  <p>状态页的 DeepSeek V4 Pro 表（256×GB300、MXFP8、THD 4K）是 786.86 → 849.81 TFLOPS/GPU，+8.00%。这一行同时去掉了一部分 recompute 和 offload，也改了 CUDA Graph 的范围，不全是 kernel 融合带来的。</p>
+  <summary>MegaMoE 的提速都来自 kernel 融合吗？</summary>
+  <p>不全是。对比的那次 run 同时去掉了一部分 recompute 和 offload，也改了 CUDA Graph 的范围，所以不能把提速全算在融合上。</p>
 </details>
 <details>
   <summary>NCCL EP、DeepEP v2、HybridEP 怎么选？</summary>
-  <p>没有官方结论。DeepEP v2 的 PR #5153 贴了三者的延迟对比图，但说明结果只供参考。Q4 roadmap 还列着 NCCL EP 对 DeepEP v2 的 benchmark。</p>
+  <p>没有官方结论，团队还在 benchmark。下游的 recipe 也各选各的，有的默认 NCCL EP，有的默认 HybridEP，所以不要说哪个已被弃用。</p>
 </details>
 
-<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（NCCL EP 两种 mode、ShortcutMoE、DeepEP v2）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.19.0">core 0.19.0 release notes</a>（NCCL EP 首次加入、Quantile Balancing）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/6229">PR #6229</a>（eager 和 static、溢出处理）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/6959">PR #6959</a>（overlap efficiency 表）· <a href="https://arxiv.org/abs/2404.05019">ScMoE 论文</a>（shortcut 接到哪）· <a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">MegaMoE 状态页 #8427</a> · <a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge/releases/tag/v0.7.0">Megatron-Bridge 0.7.0</a>（HybridEP 的 deprecation 推迟）· <a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">NeMo-RL 0.8.0</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/5349">PR #5349</a>、<a href="https://github.com/NVIDIA/Megatron-LM/pull/5153">PR #5153</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap #9232</a> · <a href="https://pytorch.org/blog/open-research-tooling-optimization-at-pytorch-conference-north-america-2026/">PyTorch Conference 2026 session 简介</a>（NCCL-EP 把 dispatch 和 combine 做进 NCCL）· ml-八股 06 第零节 · 全部原话见 更新笔记 3.2 节</p>
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">Megatron Core release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/6229">NCCL EP 的 PR</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/6959">ShortcutMoE 的 PR</a> · <a href="https://arxiv.org/abs/2404.05019">ScMoE 论文</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/8427">MegaMoE 状态页</a> · <a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge/releases/tag/v0.7.0">Megatron-Bridge release notes</a> · <a href="https://github.com/NVIDIA-NeMo/RL/releases/tag/v0.8.0">NeMo-RL release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap</a> · ml-八股 06 · 更新笔记</p>
 
 </main>
 </body>

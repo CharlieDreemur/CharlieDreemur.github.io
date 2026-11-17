@@ -13,14 +13,14 @@
 
 <h1>Bit-exact 训练要保证什么？<br>nondeterminism 从哪来，为什么值得付 overhead？</h1>
 <p class="meta"><b>英文问法</b><q>What does bitwise-deterministic training mean, and where does nondeterminism come from?</q> · <q>How would you check that two training runs are bit-exact?</q> · <q>Why pay a step-time overhead for determinism?</q></p>
-<p class="meta"><b>考过</b>推断，非面经，没有一条面经问过这页的内容 · 依据是团队自己的材料：<a href="https://github.com/NVIDIA/Megatron-LM/issues/5785">determinism tracker #5785</a>、<a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（把它列为 multi-release effort，并链接到官方 blog）、<a href="https://developer.nvidia.com/blog/scale-bitwise-deterministic-pretraining-with-nvidia-megatron-core/">官方 blog</a>（2026-10-06）· tracker 还开着，状态会变</p>
+<p class="meta"><b>考过</b>推断，没有面经问过，依据是团队的 determinism tracker 和官方 blog。</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
   <dt>Bitwise determinism</dt>
   <dd>两次 run 每一步的结果每个 bit 都相同，不是 loss 看起来差不多。</dd>
   <dt>Fixed environment</dt>
-  <dd>保证的前提。tracker 要求 model、data、seed、software、hardware class 和 topology 都相同，换了卡数或并行配置就不在保证里。</dd>
+  <dd>保证的前提是 model、data、seed、software、hardware class 和 topology 都相同。换了卡数或并行配置就不在保证里。</dd>
   <dt>Reduction order</dt>
   <dd>很多数相加时先加谁后加谁。浮点加法每一步都要舍入，顺序一变末位就可能变。ring 和 tree 的次序见 <a href="allreduce.html">all-reduce</a>。</dd>
   <dt>Autotuning</dt>
@@ -88,15 +88,15 @@
 </figure>
 
 <h2>30 秒回答</h2>
-<div class="answer"><p>Bitwise determinism means two runs in the same fixed environment, with the same model, data, seed, software, hardware and topology, produce identical bits at every step, and a resumed run matches the uninterrupted one. Nondeterminism comes from floating-point reduction order and from autotuning that picks different kernels. The tracker has three gates: repeatability, baseline equivalence and restart replay. You verify with tensor hashes, not printed loss. It's worth the cost because you can replay a loss spike and change one thing at a time. The target is under ten percent step-time overhead; NVIDIA's blog reports about two percent on Nemotron.</p></div>
+<div class="answer"><p>Bitwise determinism means two runs in the same fixed environment, with the same model, data, seed, software, hardware and topology, produce identical bits at every step, and a resumed run matches the uninterrupted one. Nondeterminism comes from floating-point reduction order and from autotuning that picks different kernels. There are three gates: repeatability, baseline equivalence and restart replay. You verify with tensor hashes, not printed loss. It's worth the cost because you cannot bisect a divergence you cannot reproduce. With determinism you replay a loss spike and change one thing at a time. It does cost step time, and the team keeps driving that cost down.</p></div>
 
 <h2 id="sources">Nondeterminism 从哪来</h2>
 <table>
-  <thead><tr><th>来源</th><th>出处里的例子</th><th>修法</th></tr></thead>
+  <thead><tr><th>来源</th><th>例子</th><th>修法</th></tr></thead>
   <tbody>
-    <tr><td class="nw">Reduction order<br>随 topology 变</td><td>tracker 在 Nemotron-3 Ultra 上找到的第一类：final gradient reduction 的结果依赖 topology</td><td>blog 的通用修法是换成 deterministic reduction；tracker 写这一条的 fix 还在 review</td></tr>
-    <tr><td class="nw">Autotuning</td><td>tracker 的第二类：外部 Mamba kernel 的 Triton autotuning</td><td>把选好的配置 pin 住或 cache 下来（blog）</td></tr>
-    <tr><td class="nw">多个 writer<br>写同一个地址</td><td>blog：grouped-GEMM 的 epilogue 里几个 N-tile 累加到同一个地址，结果取决于谁先到</td><td>每个 writer 一个 private slot，写完按固定顺序合并</td></tr>
+    <tr><td class="nw">Reduction order<br>随 topology 变</td><td>final gradient reduction 的结果依赖 topology</td><td>换成 deterministic reduction</td></tr>
+    <tr><td class="nw">Autotuning</td><td>外部 Mamba kernel 的 Triton autotuning</td><td>把选好的配置 pin 住或 cache 下来</td></tr>
+    <tr><td class="nw">多个 writer<br>写同一个地址</td><td>grouped-GEMM 的 epilogue 里几个 N-tile 累加到同一个地址，结果取决于谁先到</td><td>每个 writer 一个 private slot，写完按固定顺序合并</td></tr>
   </tbody>
 </table>
 
@@ -106,40 +106,40 @@
   <li><strong>Baseline equivalence</strong>：一个优化自己可重复还不够，还要和已有的 deterministic baseline 比</li>
   <li><strong>Restart replay</strong>：从 checkpoint 恢复的 run，要和不中断的 run 从那一步起一致</li>
 </ol>
-<p>打印的 loss 不够灵敏，两次 run 的 loss 一样时 gradient 的低位仍可能不同。blog 的做法是每步给选定的 metric 和 tensor 算 fingerprint，用 <code>torch.hash_tensor</code>，最后逐 byte 比较。</p>
+<p>打印的 loss 不够灵敏，两次 run 的 loss 一样时 gradient 的低位仍可能不同。做法是每步给选定的 metric 和 tensor 算 fingerprint（<code>torch.hash_tensor</code>），最后逐 byte 比较。</p>
 
 <h2 id="why">为什么值得付 overhead</h2>
 <ul>
-  <li><strong>Debug</strong>：loss spike 能在同一步重现，再一次只换一个组件来定位（blog）</li>
-  <li><strong>RL</strong>：training 和 generation 可以用不同的 EP size，这比 fixed environment 的保证更强。PR #8261 在 Nemotron-3-Nano 上量到一层 MoE 在 EP2 和 EP1 之间有 98% 的 token 不同，每个元素差约 1 ulp；EP2 训练、EP1 生成时 sampled token 的 log-prob 最多差 0.89。修法是一个 opt-in 的 flag，让每个 EP size 走同一棵 fp32 reduction tree</li>
+  <li><strong>Debug</strong>：复现不了的 divergence 没法二分定位。loss spike 能在同一步重现，才能一次只换一个组件来查</li>
+  <li><strong>RL</strong>：training 和 generation 可以用不同的 EP size。同一层 MoE 在两种 EP size 下的输出只差末位，但到 sampled token 的 log-prob 上就差得明显。修法是一个 opt-in 的 flag，让每个 EP size 走同一棵 fp32 reduction tree。这比 fixed environment 的保证更强</li>
 </ul>
-<p>tracker 的目标是 "less than 10% steady-state step-time overhead"，stretch 目标约 5%。blog 的实测是 Nemotron 3 Ultra 从约 17% 降到 2%，在 3,072 GPU 上是 1.5%。另一个大规模 Nemotron recipe 在 2,432 GPU 上约 2%，800 步内保持 bitwise 一致。blog 的算例是 100 天、10,000 GPU 的训练，overhead 从 15% 降到 5% 省 10 天，即 100,000 GPU-days。</p>
+<p>deterministic mode 会拖慢 step time，团队一直在把这个 overhead 往下压。</p>
 
 <h2>必答点</h2>
 <ul>
   <li>bit-exact 指每一步每个 bit 相同，前提是 fixed environment，topology 也算在内</li>
   <li>浮点加法不满足结合律，reduction order 一变末位就变</li>
-  <li>tracker 记的两类来源：依赖 topology 的 gradient reduction，Triton autotuning</li>
+  <li>两类来源：reduction order（比如依赖 topology 的 gradient reduction）和 autotuning</li>
   <li>三个 gate：repeatability、baseline equivalence、restart replay</li>
   <li>验证看 tensor 的 hash，不看打印的 loss</li>
-  <li>目标 overhead 低于 10%，stretch 约 5%；blog 在 Nemotron 上报约 2%</li>
+  <li>值得付 overhead，因为复现不了的 divergence 没法二分定位</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>开了 deterministic 为什么会慢？overhead 怎么压下来？</summary>
-  <p>让并发的 writer 串行能恢复 determinism，但丢了并行度，blog 改成 private slot 后 kernel 内部照样并行。tracker 还记了关掉 <code>torch.utils.deterministic.fill_uninitialized_memory</code> 后结果仍然 bit-exact，steady-state 性能在两个模型上提高约 16% 和 18%。</p>
+  <p>让并发的 writer 串行能恢复 determinism，但丢了并行度。改成 private slot 后 kernel 内部照样并行。另一处是 <code>fill_uninitialized_memory</code>，它给未初始化的内存填值。关掉后结果仍然 bit-exact，steady-state 性能明显变好。</p>
 </details>
 <details>
   <summary>小规模没问题，大规模才出现 nondeterminism，怎么查？</summary>
-  <p>blog 给的原因是随规模变的 communication 或 expert-parallel 路径。做法是逐步加规模，trace 选定的 rank，找到第一个随规模变的 operation，PR #7262 的 workflow 按 rank 记录有序的 tensor fingerprint 供离线比较。</p>
+  <p>问题通常出在随规模变的 communication 或 expert-parallel 路径上。做法是逐步加规模，trace 选定的 rank，找到第一个随规模变的 operation。每个 rank 按顺序记下 tensor fingerprint，离线比较。</p>
 </details>
 <details>
   <summary>deterministic mode 下有什么不能用？</summary>
-  <p><code>--deterministic-mode</code> 会设好环境、打开 PyTorch 的 deterministic algorithms，并拒绝没有 deterministic 路径的功能（blog）。tracker 写 <code>--moe-router-fusion</code> 自己可重复，但会改变已有的 deterministic baseline，所以还不算保持 baseline 的优化。</p>
+  <p><code>--deterministic-mode</code> 会设好环境、打开 PyTorch 的 deterministic algorithms，并拒绝没有 deterministic 路径的功能。<code>--moe-router-fusion</code> 自己可重复，但会改变已有的 deterministic baseline，所以还不算保持 baseline 的优化。</p>
 </details>
 
-<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/issues/5785">determinism tracker #5785</a>（目标、三个 gate、两类来源、fill_uninitialized_memory）· <a href="https://developer.nvidia.com/blog/scale-bitwise-deterministic-pretraining-with-nvidia-megatron-core/">NVIDIA blog：Scale Bitwise-Deterministic Pretraining with NVIDIA Megatron Core</a>（两条保证、overhead 实测、Table 2、grouped-GEMM 的例子、fingerprint）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/8261">PR #8261</a> 和重新合入的 <a href="https://github.com/NVIDIA/Megatron-LM/pull/9107">PR #9107</a>（EP-size-invariant expert combine）· <a href="https://github.com/NVIDIA/Megatron-LM/pull/8458">PR #8458</a>（PR 模板的 determinism checklist）· <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap #9232</a> · ml-八股 06 第零节 · 全部原话见 更新笔记 3.2、3.4 节</p>
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/issues/5785">determinism tracker</a> · <a href="https://developer.nvidia.com/blog/scale-bitwise-deterministic-pretraining-with-nvidia-megatron-core/">NVIDIA blog：Scale Bitwise-Deterministic Pretraining with NVIDIA Megatron Core</a> · <a href="https://github.com/NVIDIA/Megatron-LM/pull/8261">EP-size-invariant combine 的 PR</a> 和 <a href="https://github.com/NVIDIA/Megatron-LM/pull/9107">重新合入的 PR</a> · <a href="https://github.com/NVIDIA/Megatron-LM/issues/9232">Q4 roadmap</a> · ml-八股 06 · 更新笔记</p>
 
 </main>
 </body>

@@ -52,9 +52,9 @@
   <li><b>切法</b>：TP 8 → PP 16 → 128 张卡一份，每卡 125 GB 还是放不下 → 剩下 64 份 DP，开 distributed optimizer：7.8B × (6 + 12/64) ≈ 48 GB，余下约 32 GB 给 activation（SP + recompute）</li>
   <li><b>bubble</b>：global batch 4096 条（16M tokens）→ 每条 pipeline m = 64 = 4p，bubble 15/64 ≈ 23%；interleaved v = 4 → 约 6%</li>
   <li><b>时长</b>：6ND = 1.2e25 FLOPs ÷（8192 × 989T × 40%）≈ 43 天，每秒要吃约 54 万 token</li>
-  <li><b>checkpoint</b>：fp32 master weight + m + v 共 12 bytes × 1T = 12 TB，每卡各写自己那片（约 1.5 GB）。异步写，还要能换 TP/PP 重新切分加载（Megatron 的 <code>dist_checkpointing</code>）</li>
+  <li><b>checkpoint</b>：fp32 master weight + m + v 共 12 bytes × 1T = 12 TB，每卡各写自己那片（约 1.5 GB）。异步写。权重要能换 TP/PP 重新切分加载（Megatron 的 <code>dist_checkpointing</code>）。optimizer state 默认只能换 DP，除非存的时候加 <code>--dist-ckpt-optim-fully-reshardable</code></li>
   <li><b>容错</b>：Llama 3 在 16K 卡上 54 天中断 466 次，约 2.8 小时一次，所以要自动换坏节点、从最近的 checkpoint 重启</li>
-  <li><b>data pipeline</b>：提前 tokenize、分片、prefetch，data loader 读到哪也存进 checkpoint</li>
+  <li><b>data pipeline</b>：提前 tokenize、分片、prefetch，读到哪要能续上。Megatron 只存一个 <code>consumed_train_samples</code>，索引由固定 seed 重建</li>
   <li><b>监控</b>：MFU、loss spike、gradient norm、每个 rank 的 step time（找 straggler）</li>
 </ol>
 

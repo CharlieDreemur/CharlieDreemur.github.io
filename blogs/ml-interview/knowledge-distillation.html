@@ -13,7 +13,7 @@
 
 <h1>Knowledge distillation 怎么做？<br>temperature 有什么用？为什么乘 T²？</h1>
 <p class="meta"><b>英文问法</b><q>Explain knowledge distillation.</q> · <q>What does the temperature do?</q> · <q>Why multiply the soft loss by T²?</q> · <q>How would you distill an LLM?</q></p>
-<p class="meta"><b>考过</b>微软 D&amp;AS Bing Ads 2022</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人 Headlands QR 面试（2026-11）</strong>（"distill 的 loss 是什么"；面试官给出 KL 的公式后问 "you can do KL divergence between the student and the teacher, or between the teacher and the student … when would you do either one of those?"）· 微软 D&amp;AS Bing Ads 2022</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -83,6 +83,13 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
 
 <h2>追问</h2>
 <details>
+  <summary id="kl-direction">KL(teacher ‖ student) 和 KL(student ‖ teacher)，什么时候用哪个？（Headlands 原题）</summary>
+  <p>\(\mathrm{KL}(P\,\|\,Q) = \sum_i P_i \log(P_i/Q_i)\) 按 \(P\) 加权，所以 \(P\) 有概率而 \(Q\) 没给的地方罚得最重。</p>
+  <p>KL(teacher ‖ student) 是 forward KL。teacher 有概率的每个类 student 都得盖住，结果偏 mean-seeking。它的 gradient 和 cross-entropy 相同，teacher 的分布提前算好就行，是分类蒸馏的默认选择。</p>
+  <p>KL(student ‖ teacher) 是 reverse KL，按 student 自己的分布加权。student 只要待在 teacher 概率高的地方就不受罚，结果偏 mode-seeking。student 的 capacity 远小于 teacher、盖不住整个分布时用它，比如 LLM 的生成式蒸馏：forward KL 会逼 student 给 teacher 的长尾都分概率，生成出低质量的 token。代价是要从 student 采样，训练更贵。</p>
+  <p>例：teacher = (0.5, 0.5, 0)，student 只能把概率集中在一个类上。forward KL 下 student 只押第 1 类会被重罚，因为漏了第 2 类。reverse KL 下押第 1 类只罚 \(\log 2\)，押第 3 类才是无穷大。</p>
+</details>
+<details>
   <summary>为什么 soft target 比 hard label 好？</summary>
   <p>每个样本带的信息多、gradient variance 小。论文语音实验只用 3% 数据，hard label 训练 44.5%，soft target 57.0%，接近全量数据的 58.9%。</p>
 </details>
@@ -95,7 +102,7 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
   <p>word-level 是在每个 token 上匹配 teacher 的 next-token 分布。sequence-level（Kim &amp; Rush 2016）是 teacher 在训练集上 beam search 生成输出，student 在这些数据上做普通 CE 训练。</p>
 </details>
 
-<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1503.02531">Hinton, Vinyals &amp; Dean 2015</a> §1（p.2）、§2–2.1 eq. 1–4（p.3）、§3（p.4）、§6 Table 5（pp.7–8）· <a href="https://arxiv.org/abs/1606.07947">Kim &amp; Rush 2016</a> §3.1–3.2（pp.3–4）· <a href="https://arxiv.org/abs/1412.6550">Romero et al. 2014, FitNets</a>（abstract）</p>
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1503.02531">Hinton, Vinyals &amp; Dean 2015</a> §1（p.2）、§2–2.1 eq. 1–4（p.3）、§3（p.4）、§6 Table 5（pp.7–8）· <a href="https://arxiv.org/abs/1606.07947">Kim &amp; Rush 2016</a> §3.1–3.2（pp.3–4）· <a href="https://arxiv.org/abs/1412.6550">Romero et al. 2014, FitNets</a>（abstract）· <a href="https://arxiv.org/abs/2306.08543">Gu et al. 2023, MiniLLM</a>（abstract，LLM 蒸馏用 reverse KL）· 压缩的其他办法见 <a href="model-compression.html">model compression</a></p>
 
 </main>
 </body>

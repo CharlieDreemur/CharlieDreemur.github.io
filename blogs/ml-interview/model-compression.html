@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model compression 速查</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/math.js" defer></script>
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<main>
+
+<h1>大模型怎么变小、变快？<br>structured pruning 剪哪个 neuron？</h1>
+<p class="meta"><b>英文问法</b><q>You start with a big model and want to make it faster. What are some things you might try to make it smaller or speed it up?</q> · <q>Suppose you just have an MLP: linear layer, activation, linear layer, activation. How would you start doing structured pruning on a model like that?</q> · <q>Given the activations of each layer, how do you choose which layer to prune?</q> · <q>If you can only prune once, how do you decide which one is best?</q></p>
+<p class="meta"><b>考过</b><strong>★ 作者本人 Headlands QR 面试（2026-11）</strong>。背景是 HFT 要快，模型太小又不够准，所以从大模型出发再压小。开放题，可以自己做假设。追问顺序是 distillation 的 loss、KL 的方向（见 <a href="knowledge-distillation.html#kl-direction">knowledge distillation</a>）、structured pruning。后两个英文问法是按你的中文转述写的。这页的答案是我整理的，面试官的标准答案你没有转述</p>
+
+<h2 id="concepts">先弄清楚：每个概念是什么</h2>
+<dl class="concepts">
+  <dt>Unstructured pruning</dt>
+  <dd>把单个 weight 置 0，matrix 的形状不变。没有 sparse kernel 时乘法照样做，不会变快。</dd>
+  <dt>Structured pruning</dt>
+  <dd>删掉整个 neuron、channel 或 attention head，matrix 真的少一行一列，普通的 dense matmul 直接变快。</dd>
+  <dt>Calibration data</dt>
+  <dd>一小批有代表性的输入，只用来跑 forward，量每个 neuron 的 activation。</dd>
+  <dt>Importance score</dt>
+  <dd>给每个 neuron 打的分，估计删掉它 loss 会涨多少，分最低的先删。</dd>
+  <dt>One-shot pruning</dt>
+  <dd>只剪一次，中间不 fine-tune。迭代的做法是剪一点、fine-tune、再剪。</dd>
+</dl>
+
+<h2>30 秒回答</h2>
+<div class="answer"><p>The target is latency on the real hardware, not parameter count. There are four tools. Distillation trains a small student on the big model's outputs. Structured pruning removes whole neurons, so the matrices actually shrink. Quantization lowers precision. Low-rank factorization splits a matrix into two thin ones. In an MLP, pruning neuron j deletes one row of this layer's weight and one column of the next layer's. I'd score each neuron by its mean squared activation times the norm of its outgoing weights, which is how much the next layer's input changes. With only one shot, I'd estimate the loss change directly, with a Taylor score or by evaluating each candidate on a validation set.</p></div>
+
+<h2 id="methods">四类办法</h2>
+<table>
+  <thead><tr><th></th><th>做什么</th><th>为什么变快</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr><td class="nw">Distillation</td><td>大模型当 teacher，训一个小 student</td><td>student 本身就小</td><td>要重新训练</td></tr>
+    <tr><td class="nw">Structured pruning</td><td>删整个 neuron 或 channel</td><td>matrix 变小</td><td>剪多了 accuracy 掉，常要 fine-tune</td></tr>
+    <tr><td class="nw">Quantization</td><td>FP32 换成 FP16 或 INT8</td><td>每个数更小，memory bandwidth 省了</td><td>要硬件支持，有舍入误差</td></tr>
+    <tr><td class="nw">Low-rank</td><td>\(W \approx UV\)，\(d\times d\) 变成两个 \(d\times r\)</td><td>\(d^2\) 次乘法变成 \(2dr\)</td><td>\(W\) 不是 low-rank 时误差大</td></tr>
+  </tbody>
+</table>
+<p>四类可以叠着用。验收看同一个 test set 上的 accuracy 和 latency，baseline 是直接训一个同样大小的小模型。quantization 的细节见 <a href="quantization-int8.html">INT8 quantization</a>。</p>
+
+<h2 id="prune">Structured pruning：MLP 里剪哪个 neuron</h2>
+<div class="deriv">
+  <h3 id="what">剪一个 neuron 是删什么</h3>
+  <p>第 \(l\) 层 \(a = \phi(W_l x + b_l)\)，下一层的输入是</p>
+  \[ z = W_{l+1}\,a + b_{l+1} = \sum_j a_j\, w_j + b_{l+1},\qquad w_j = W_{l+1}[:, j] \]
+  <p>删 neuron \(j\) 就是删 \(W_l\) 的第 \(j\) 行、\(b_l\) 的第 \(j\) 项和 \(W_{l+1}\) 的第 \(j\) 列。</p>
+  <h3 id="score">用 activation 打分</h3>
+  <p>删掉 \(j\) 之后 \(z\) 少了 \(a_j w_j\) 这一项，在 calibration data 上它的平均大小是</p>
+  \[ s_j = \mathbb{E}\big[\lVert a_j w_j\rVert^2\big] = \mathbb{E}[a_j^2]\;\lVert w_j\rVert^2 \]
+  <p>\(s_j\) 最小的先删。只看 activation 不够，activation 大但 outgoing weight 很小的 neuron 对下一层没什么影响。</p>
+  <p>\(a_j\) 几乎不变时不用硬删，把它换成常数 \(\bar a_j\) 并进 bias，也就是 \(b_{l+1} \leftarrow b_{l+1} + \bar a_j w_j\)。这时的误差只剩 \(\mathrm{Var}(a_j)\,\lVert w_j\rVert^2\)。</p>
+</div>
+
+<h2 id="example">手算例子</h2>
+<table>
+  <thead><tr><th>neuron</th><th>\(\mathbb{E}[a_j^2]\)</th><th>\(\lVert w_j\rVert^2\)</th><th>\(s_j\)</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td>4</td><td>0.01</td><td>0.04</td></tr>
+    <tr><td>B</td><td>0.25</td><td>1</td><td>0.25</td></tr>
+    <tr><td>C</td><td>1</td><td>0.5</td><td>0.5</td></tr>
+  </tbody>
+</table>
+<p>A 的 activation 最大，分数却最低，先剪 A。只按 activation 排会先剪 B，对下一层的改动是剪 A 的 6 倍多。</p>
+
+<h2 id="layer">选哪一层，只能剪一次怎么办</h2>
+<p><strong>选层看 sensitivity。</strong>每一层单独剪掉同样比例的 neuron，其他层不动，在 validation set 上看 loss 涨多少。涨得最少的层最不敏感，先剪它。不同层的 \(s_j\) 量纲不一样，不能直接放在一起排，要先在层内归一化。</p>
+<p><strong>只能剪一次时，要在不 fine-tune 的前提下直接估 loss 的变化。</strong>有两种做法。</p>
+<ul>
+  <li>Taylor score：\(\Delta L_j \approx \big|\,\mathbb{E}[\,a_j\,\partial L/\partial a_j\,]\,\big|\)，把 \(a_j\) 置 0 的一阶近似。一次 backward 就得到所有 neuron 的分数。</li>
+  <li>直接实测：MLP 很小，每个候选只跑 forward。把候选逐个删掉，在 validation set 上算 loss，取涨得最少的。</li>
+</ul>
+<p>\(s_j\) 只看下一层的输入，Taylor score 和实测看的是最终的 loss，所以只有一次机会时后两种更可靠。</p>
+
+<h2>必答点</h2>
+<ul>
+  <li>目标是真实硬件上的 latency，不是 parameter count</li>
+  <li>四类办法：distillation、structured pruning、quantization、low-rank</li>
+  <li>structured 才让 dense matmul 变快，unstructured 只是置 0</li>
+  <li>剪 neuron \(j\) = 删 \(W_l\) 的一行、\(W_{l+1}\) 的一列</li>
+  <li>打分 \(s_j = \mathbb{E}[a_j^2]\,\lVert w_j\rVert^2\)；activation 近似常数的并进 bias</li>
+  <li>选层看 sensitivity；只能剪一次就用 Taylor score 或在 validation set 上实测</li>
+</ul>
+
+<h2>追问</h2>
+<details>
+  <summary>为什么不直接按 weight 的大小剪？</summary>
+  <p>Magnitude pruning 不看数据。一个 neuron 的 weight 很大，但它的输入在真实数据上几乎总是 0，剪掉也没有影响。有 activation 时把两者乘起来用。</p>
+</details>
+<details>
+  <summary>一次要剪 k 个 neuron，按分数取最低的 k 个对吗？</summary>
+  <p>只是近似。分数是一个一个算的，默认各 neuron 的影响互不相干。两个 neuron 高度相关时，删一个没事，两个都删就丢了信息。更稳的做法是 greedy：删一个，重新算分数，再删下一个。</p>
+</details>
+<details>
+  <summary>剪完以后还能做什么把 accuracy 拉回来？</summary>
+  <p>能训练的话 fine-tune 几步，或者拿原来的大模型当 teacher 做 distillation。不能训练时，重新解一次下一层的 weight，让它在 calibration data 上的输出尽量接近剪之前，这是一个 least squares。</p>
+</details>
+<details>
+  <summary>HFT 这个场景下四类办法怎么排？</summary>
+  <p>这是我的判断。latency 预算很紧时，先确定预算内能放多大的模型，再用 distillation 把大模型的效果转给它，因为 student 的结构可以按硬件来选。pruning 和 quantization 用来在现有模型上再挤一点。</p>
+</details>
+
+<p class="src"><b>来源</b><a href="https://arxiv.org/abs/1611.06440">Molchanov et al. 2017</a>（Taylor criterion）· <a href="https://arxiv.org/abs/1607.03250">Hu et al. 2016, Network Trimming</a>（按 activation 剪 neuron）· <a href="https://arxiv.org/abs/1506.02626">Han et al. 2015</a>（magnitude pruning）· <a href="https://arxiv.org/abs/2306.11695">Sun et al. 2023, Wanda</a>（weight 乘 activation norm）· ml-八股 02</p>
+
+</main>
+</body>
+</html>

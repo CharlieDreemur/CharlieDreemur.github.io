@@ -13,7 +13,7 @@
 
 <h1>Generalized Tensor Parallelism（GTP）是什么？<br>它和 TP、ZeRO-3 差在哪，all-gather 怎么藏？</h1>
 <p class="meta"><b>英文问法</b><q>What is Generalized Tensor Parallelism in Megatron Core?</q> · <q>How does GTP_remat differ from TP, and from ZeRO-3 on the data-parallel axis?</q> · <q>How does GTP hide the weight all-gather behind compute, and what happens to the weight gradient?</q></p>
-<p class="meta"><b>考过</b><strong>推断，非面经</strong>。没有任何面经问过 GTP · 依据是团队自己的 GTP 文档（main 分支 2026-11 的版本，开头标着 experimental，要求 TransformerEngine ≥ 2.19）和 core 0.20.0 release notes · 下面的引文和限制都是这一版文档的说法</p>
+<p class="meta"><b>考过</b><strong>推断，非面经</strong>，题目是按团队自己的 GTP 文档和 release notes 推断的</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -59,7 +59,7 @@
   <path class="axis" d="M78,150 H520"/>
   <text class="m" x="526" y="154">时间</text>
 </svg>
-<figcaption>图 1：宽度是示意。AG(Wi) 是第 i 层 weight 的 all-gather，箭头后面是用它的 GEMM。3.1 节的说法是 communication 只在 "the very first layer of each direction (cold start)" 和几个强制串行点挡住计算。</figcaption>
+<figcaption>图 1：宽度是示意。AG(Wi) 是第 i 层 weight 的 all-gather，箭头后面是用它的 GEMM。文档说 communication 只在每个方向的第一层和几个强制串行点挡住计算。</figcaption>
 </figure>
 
 <h2>30 秒回答</h2>
@@ -72,20 +72,20 @@
     <tr><td class="nw">沿哪个轴切</td><td>model-parallel</td><td>model-parallel</td><td>data-parallel</td></tr>
     <tr><td class="nw">每卡平时存</td><td>weight 的 1/TP</td><td>TP slice 的 1/GTP_remat</td><td>weight 的 1/N</td></tr>
     <tr><td class="nw">GEMM 时</td><td>"stays sharded through the GEMM"</td><td>先 all-gather，"the GEMM sees the full TP slice"，算完释放</td><td>all-gather 出完整 weight，算完释放</td></tr>
-    <tr><td class="nw">通信传什么</td><td>activation（见 <a href="tp-communication.html">TP communication</a>）</td><td>weight 的 all-gather；weight gradient 的 reduce-scatter</td><td>同左</td></tr>
+    <tr><td class="nw">通信传什么</td><td>activation（见 <a href="tp-communication.html">TP communication</a>）</td><td>weight 的 all-gather 和 weight gradient 的 reduce-scatter</td><td>同左</td></tr>
     <tr><td class="nw">粒度</td><td>不涉及</td><td>一次一个 weight</td><td>一个 bucket</td></tr>
   </tbody>
 </table>
 <p>文档说 "GTP_remat is an implementation of ZeRO-3"（ZeRO-3 见 <a href="dp-zero-fsdp.html">DP、ZeRO、FSDP</a>），区别是表里“沿哪个轴切”和“粒度”两行，所以每个 weight 可以单独 prefetch。“TP 切计算、传 activation，GTP_remat 只切存储、传 weight”是按这张表推断的。TP 本身怎么切见 <a href="tp-linear.html">TP Linear</a>。</p>
-<p>手算一遍。h = 8192 的方阵 weight 用 bf16 存是 128 MiB。TP = 4 后每卡 32 MiB。再开 GTP_remat = 8，每卡平时只存 4 MiB，GEMM 前 all-gather 回 32 MiB。合起来是 1/32，对应文档的 "32× weight-memory reduction"。同一句里的 "128× wire-bandwidth reduction" 文档没有给推导，面试里只引 32×。</p>
+<p>每卡平时存一个 weight 的 1/(TP × GTP_remat)，GEMM 前临时拼回 1/TP。手算一遍。h = 8192 的方阵 weight 用 bf16 存是 128 MiB。TP = 4 后每卡 32 MiB。再开 GTP_remat = 8，每卡平时只存 4 MiB，GEMM 前 all-gather 回 32 MiB。合起来是 1/32。</p>
 
 <h2 id="overlap">all-gather 和 weight gradient 怎么藏在计算后面</h2>
 <ol>
-  <li><strong>Forward</strong>：文档 1.1 节写 "Layer i's AG overlaps with layer i−1's GEMM."，3.1 节写成 \(\text{AG}(W_{i+1}) \parallel \text{GEMM}(W_i)\)。两处下标错开一位，说的是同一件事</li>
-  <li><strong>链头</strong>：第一层前面没有 GEMM，所以 "For an L-layer model, L−1 all-gathers are fully hidden behind compute."</li>
-  <li><strong>Cold start</strong>："every weight's very first AG is synchronous"，prefetch chain 从第二次 forward 才开始</li>
+  <li><strong>Forward</strong>：第 i 层的 all-gather 和第 i − 1 层的 GEMM 同时跑，写成 \(\text{AG}(W_i) \parallel \text{GEMM}(W_{i-1})\)</li>
+  <li><strong>链头</strong>：第一层前面没有 GEMM 可以盖，所以 L 层里藏住 L − 1 次 all-gather</li>
+  <li><strong>Cold start</strong>：第一次 forward 时每个 weight 的 all-gather 都是同步的，prefetch chain 从第二次 forward 才开始</li>
   <li><strong>Backward</strong>：反着走，第 i − 1 层的 all-gather 和第 i 层的 dgrad 重叠</li>
-  <li><strong>Weight gradient</strong>：reduce-scatter 异步发出，"Finalization is deferred one step"，所以第 i 层的 reduce-scatter 能和第 i − 1 层的 backward GEMM 重叠。链头用同步的 reduce-scatter，"since nothing follows it"</li>
+  <li><strong>Weight gradient</strong>：reduce-scatter 异步发出，finalize 推迟一步，所以第 i 层的 reduce-scatter 能和第 i − 1 层的 backward GEMM 重叠。链头后面没有 GEMM 了，所以用同步的 reduce-scatter</li>
 </ol>
 <p>Overlap 的一般做法和 exposed communication 怎么算见 <a href="overlap.html">overlap</a>。</p>
 
@@ -96,28 +96,27 @@
   <li>和 DP 轴上的 ZeRO-3 有两点区别：切在 model-parallel 轴，一次一个 weight</li>
   <li>第 i 层的 all-gather 和第 i − 1 层的 GEMM 重叠，L 层藏住 L − 1 次</li>
   <li>Weight gradient 用 async reduce-scatter，finalize 推迟一步</li>
-  <li>状态是 experimental，要求 TransformerEngine ≥ 2.19</li>
 </ul>
 
 <h2>追问</h2>
 <details>
   <summary>GTP_remat 里的各个 rank 算的是同一份数据吗？</summary>
-  <p>不是。文档写默认 "all GTP_remat ranks distribute independent samples"，开了 sequence sharding 后各 rank 算同一个 microbatch 的不同 sequence 分段。</p>
+  <p>不是。默认每个 GTP_remat rank 处理不同的 sample。开了 sequence sharding 后，各 rank 算同一个 microbatch 的不同 sequence 分段。</p>
 </details>
 <details>
   <summary>为什么不直接把 FSDP 的 bucket 缩到一个 weight？</summary>
-  <p>文档的说法是 "FSDP's overlap is bucket-grained by design"，bucket 是为了 "avoid paying NCCL launch latency on tiny params"。GTP_remat 不切小 tensor，文档写 LayerNorm、bias、MoE router 这些 "always stay full"。</p>
+  <p>FSDP 的 overlap 本来就是按 bucket 设计的，bucket 是为了不在很小的 parameter 上反复付 NCCL launch latency。GTP_remat 干脆不切小 tensor，LayerNorm、bias、MoE router 这些一直存完整的。</p>
 </details>
 <details>
   <summary>all-gather 出了 NVLink domain 还藏得住吗？</summary>
-  <p>文档写 "One GEMM of runway covers a gather that stays inside the NVLink domain, but not one that leaves it"。MoE 的 routed-expert weight 属于后一种，文档给它们单独的 one-block-ahead chain。</p>
+  <p>只靠一个 GEMM 藏不住。一个 GEMM 的时间够盖住 domain 内的 all-gather，不够盖跨 domain 的。MoE 的 routed-expert weight 属于后一种，所以单独用一条 one-block-ahead chain。</p>
 </details>
 <details>
-  <summary>怎么打开，有什么限制，规模到多大？</summary>
-  <p><code>--tensor-parallel-num-weight-shards</code> 决定 GTP_remat 的大小，等于 1 时 GTP 不生效。文档写它 "composes orthogonally with TP / SP / EP / DDP / CUDA Graphs"，目前要求 <code>num_distributed_optimizer_instances == 1</code>。文档的例子是约 280B 的 hybrid Mamba-MoE proxy 在 GB200 NVL72 上用 GTP64，到 3072 GPU 时 scaling efficiency 仍 "≥93 %"。</p>
+  <summary>怎么打开，能和什么一起用？</summary>
+  <p><code>--tensor-parallel-num-weight-shards</code> 传的是 TP × GTP_remat 的总份数，必须是 TP 的整数倍。上面的例子 TP = 4、GTP_remat = 8，就传 32。它等于 TP 时 GTP_remat = 1，GTP 不生效。它能和 TP、SP、EP、DDP、CUDA Graph 叠加使用。</p>
 </details>
 
-<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/api-guide/core/generalized_tensor_parallel.md">GTP 文档</a>（开头的 overview 和对照表；1.1 节 prefetch chain、cold start、deferred RS finalize；1.3 节 low precision 的表；1.7 节 scaling；3.1 节 overlap design summary）· <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">core 0.20.0 release notes</a>（GTP 加了 "configurable batch/sequence partitioning, opt-in latent-projection sharding, and MTP support"）· 题库条目在 ml-八股 06 的“零、团队最近在做什么”</p>
+<p class="src"><b>来源</b><a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/api-guide/core/generalized_tensor_parallel.md">GTP 文档</a> · <a href="https://github.com/NVIDIA/Megatron-LM/releases/tag/core_v0.20.0">Megatron Core release notes</a> · ml-八股 06</p>
 
 </main>
 </body>

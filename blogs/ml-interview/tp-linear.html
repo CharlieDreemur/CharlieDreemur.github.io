@@ -26,9 +26,10 @@
   <dt>All-reduce</dt>
   <dd>每卡一个同形状 tensor，求和后每卡都拿到总和，详见 <a href="allreduce.html">all-reduce</a>。</dd>
   <dt>All-reduce 与 concatenate 的区别</dt>
+  <dd>拆开理解：reduce 是把多份数据按一个规则合并，本题规则是 sum；all 是所有参与的 GPU 都拿到合并结果。例：GPU 0 持有 [1, 3]，GPU 1 持有 [2, 4]，执行 sum all-reduce 后，两卡都得到 [1+2, 3+4] = [3, 7]，shape 不变。它不只是等待其他卡，而是包含数据通信和计算；也不要求先把全部数据送到某一张主卡。其他 reduce 规则还可以是 max、min 等，本题用 sum。</dd>
   <dd>这里的 all-reduce 做逐元素求和，不是等待所有 GPU 后把结果拼长。例如 column backward 的两份 dX contribution 是 [1, 3] 和 [2, 4]，结果是 [3, 7]，不是 [1, 3, 2, 4]。all-gather 才是收集各卡的块，让每卡拿到完整集合（可沿切分维 concatenate）。基本 TP MLP 中 column forward 的输出保持分块，直接交给 row，无须真的拼起来。这里假设不开 sequence parallelism，row 输入已分块、上游 dY 已在各卡可用；row backward 各卡直接计算自己的 dX_i = dY·A_iᵀ，无须 TP communication。</dd>
   <dt>f / g operator</dt>
-  <dd>Megatron 插在并行区两头的一对通信算子。f 只在 backward all-reduce，g 只在 forward all-reduce，另一个方向原样传。</dd>
+  <dd>Megatron 插在并行区两头的一对通信算子。f 只在 backward all-reduce，g 只在 forward all-reduce，另一个方向原样传。这是论文的写法。现在的代码里 TP &gt; 1 时 <code>ColumnParallelLinear</code> 不单独调 f：backward 的 all-reduce 在 linear 自己的 autograd Function 里异步发出，和 weight gradient 的 GEMM 重叠。</dd>
 </dl>
 
 <h2 id="figs">看图：column / row 怎么切，MLP 怎么接</h2>
@@ -53,6 +54,8 @@
     <tr><td class="nw">输入 → 输出</td><td>完整 \(X\) → 一块列 \(XA_i\)</td><td>一块列 \(Y_i\) → 部分和 \(Y_iB_i\)</td></tr>
     <tr><td class="nw">forward 通信</td><td>无</td><td>all-reduce（g）</td></tr>
     <tr><td class="nw">backward 通信</td><td>dX 是部分和 → all-reduce（f）</td><td>无</td></tr>
+    <tr><td class="nw">优点</td><td>forward 无通信。输出分块留在本卡，GeLU 和按 head 的 attention 接着本地算</td><td>直接接 column 的分块输出。输出每卡一整份，可以接 residual 和 LayerNorm。backward 无通信</td></tr>
+    <tr><td class="nw">缺点</td><td>每卡都要完整的 \(X\)。backward 多 1 次 all-reduce。下游要完整输出时还得 all-gather</td><td>forward 的 all-reduce 在 critical path 上。输出 activation 不省 memory。bias 只能在 reduce 之后加</td></tr>
   </tbody>
 </table>
 <p><b>为什么通信位置正好相反</b>：forward \(Y_j = \sum_k X_k A_{kj}\) 对输入维 \(k\) 求和，backward \(dX_k = \sum_j dY_j A_{kj}\) 对输出维 \(j\) 求和。<b>哪一步的求和维度被切开了，哪一步就要 all-reduce</b>。column 切 \(j\)，backward 的 dX 是 partial sum。row 切 \(k\)，forward 的输出是 partial sum。例：\(X = [1, 2]\)、\(A = [[1, 2], [3, 4]]\)、\(dY = [1, 1]\)，column 下两卡算出 [1, 3] 和 [2, 4]，相加才是 dX = [3, 7]。</p>
@@ -65,6 +68,25 @@
   <h3 id="attention">Attention：按 head 切</h3>
   <p>\(W_Q, W_K, W_V\) 做 column parallel，每卡拿 \(a/t\) 个完整的 head，attention 在本卡算完；\(W_O\) 做 row parallel，最后 1 次 all-reduce。所以 \(a\) 要能被 \(t\) 整除。</p>
 </div>
+
+<h2 id="pseudo">面试时写的 pseudocode（forward）</h2>
+<pre><code>class ColumnParallelLinear:               # 切 output 维
+    def __init__(self, d_in, d_out, t):
+        self.W = Parameter(d_out // t, d_in)    # PyTorch 存 [out, in]
+        self.b = Parameter(d_out // t)          # bias 跟着切
+    def forward(self, x):                       # x: [n, d_in]，每卡一整份
+        x = copy_to_tp_region(x)                # f: forward 原样，backward all-reduce dX
+        return x @ self.W.T + self.b            # [n, d_out/t]，留在本卡
+
+class RowParallelLinear:                  # 切 input 维
+    def __init__(self, d_in, d_out, t):
+        self.W = Parameter(d_out, d_in // t)
+        self.b = Parameter(d_out)               # bias 不切
+    def forward(self, x_i):                     # x_i: [n, d_in/t]，本卡那一块
+        y = x_i @ self.W.T                      # partial sum [n, d_out]
+        y = all_reduce(y, op=SUM)               # g: forward all-reduce，backward 原样
+        return y + self.b                       # reduce 之后加一次</code></pre>
+<p>Megatron 里 f 是 <code>copy_to_tensor_model_parallel_region</code>，g 是 <code>reduce_from_tensor_model_parallel_region</code>。weight 按 PyTorch 的 [out, in] 存，所以 column 在代码里切的是 dim 0，column / row 的叫法跟的是论文 \(Y = XA\) 的写法。MLP 里 column 用 <code>gather_output=False</code>，row 用 <code>input_is_parallel=True</code>，中间不拼。</p>
 
 <h2 id="code">代码（NumPy 模拟 t = 2）</h2>
 <pre><code>rng = np.random.default_rng(0)

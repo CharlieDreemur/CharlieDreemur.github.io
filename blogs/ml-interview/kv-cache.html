@@ -31,6 +31,7 @@
 <div class="answer"><p>With a causal mask, the keys and values of earlier tokens never change, so each layer caches them. Each decoding step computes q, k and v only for the new token, appends k and v, and attends one query over all cached keys: O(n·d) per layer instead of re-running the whole prefix. Prefill fills the cache in parallel and is compute-bound; decode handles one token per step and is memory-bound. The price is memory: 2 × layers × KV heads × head dim × bytes per token, times length and batch, which can exceed the weights. GQA, paging and quantization reduce it.</p></div>
 
 <h2>关键公式与手算</h2>
+<p><b>Memory capacity 与 memory bandwidth 不同：</b>cache 太大放不下，是 GPU memory capacity 问题；small-batch decode 常见的 memory-bandwidth-bound，是每步计算量相对少，却要读取大量 weight 和已有 K、V，时间主要花在搬数据。即使 context 不长，读取 weight 也可能成为瓶颈。Prefill 同时处理多个 token，可复用 weight，通常更偏 compute-bound；两者都不是绝对规律。英文用 compute-bound / memory-bandwidth-bound，不用 bounded。</p>
 <div class="deriv">
   \[ \text{KV cache} = 2 \cdot L \cdot n_{kv} \cdot d_{head} \cdot \text{bytes} \cdot T \cdot B \]
   <p>2 = K 和 V；\(L\) 层，\(n_{kv}\) 个 KV head，context 长度 \(T\)，batch \(B\)。</p>

@@ -13,7 +13,7 @@
 
 <h1>DP、ZeRO-1/2/3、FSDP：每卡显存多少、通信多多少？<br>Megatron distributed optimizer 是哪一级？</h1>
 <p class="meta"><b>英文问法</b><q>How does DDP overlap communication with backward?</q> · <q>What do ZeRO stages 1, 2 and 3 shard, and how much memory per GPU?</q> · <q>How does torch FSDP work?</q> · <q>How much more communication does ZeRO-3 need than DDP?</q></p>
-<p class="meta"><b>考过</b><strong>NVIDIA Research Intern</strong>（"How does torch FSDP work?"，拿到 offer，Glassdoor RVW102358730，年份未核实）· 文心（"deepspeed zero1-3"）· 牛客人才库合并帖（公司未写明，"FSDP2和FSDP1的区别"）· 牛客（"DeepSpeed ZeRO stage1和stage 2的通信量区别，论文和代码实现有没有gap"）· xAI ML/Infra 第一轮补全 DP 和 FSDP 的 distributed matmul（<a href="https://www.1point3acres.com/bbs/thread-1171574-1-1.html">1p3a 1171574</a>）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人 NVIDIA Megatron Core intern 面试（2026-11）</strong>（讨论题：单卡换成 8 卡、global batch size 固定，model 怎么复制、数据怎么切、gradient 怎么用 all-reduce 同步、为什么加速不到 8 倍）· <strong>★ 作者本人 Unity MLE intern 一面（2026-11）</strong>（从简历的 TikTok SFT 追问："in ZeRO-2, are you actually still trading off anything?"、"What's the extra layer of operation in zero2?"）· <strong>NVIDIA Research Intern</strong>（"How does torch FSDP work?"，拿到 offer，Glassdoor RVW102358730，年份未核实）· 文心（"deepspeed zero1-3"）· 牛客人才库合并帖（公司未写明，"FSDP2和FSDP1的区别"）· 牛客（"DeepSpeed ZeRO stage1和stage 2的通信量区别，论文和代码实现有没有gap"）· xAI ML/Infra 第一轮补全 DP 和 FSDP 的 distributed matmul（<a href="https://www.1point3acres.com/bbs/thread-1171574-1-1.html">1p3a 1171574</a>）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -43,6 +43,7 @@
 <div class="answer"><p>In DDP every GPU holds a full replica, and gradients are all-reduced bucket by bucket during backward, overlapping communication with compute. Mixed-precision Adam needs 16 bytes per parameter, replicated on all N ranks. ZeRO shards these model states across the data-parallel ranks: stage 1 shards optimizer states, 4Ψ + 12Ψ/N bytes per GPU; stage 2 adds gradients, 2Ψ + 14Ψ/N; stage 3 adds parameters, 16Ψ/N. Stage 2 communicates 2Ψ, a reduce-scatter plus an all-gather, same as DDP, and the paper says stage 1 adds no communication either; stage 3 gathers parameters again in backward, 3Ψ or 1.5×. FSDP is PyTorch's ZeRO-3; Megatron's distributed optimizer is ZeRO-1-style optimizer-state sharding.</p></div>
 
 <h2>推导 / 关键公式</h2>
+<p><b>ZeRO-2 的概念流程：</b>各卡处理不同样本，但某个 parameter 的更新必须包含所有 DP 卡对它的 gradient contribution。典型描述是 gradient reduce-scatter：先汇总，再让每卡只保留负责部分；每卡用本地 optimizer state 更新自己的 parameter shard，随后 all-gather 更新后的 parameter，让各卡重新拥有完整 weight。不是各卡用未经汇总的独立 gradient 更新，也不是 all-reduce 本身执行 optimizer 更新。具体实现可能采用其他 collective 组合。</p>
 <div class="deriv">
   <h3 id="memory">每卡 model states（bytes）</h3>
   <p>没切的部分每卡一整份，切了的部分 \(\div N\)。以 ZeRO-1 为例（ZeRO-2、3 见下表）：</p>
@@ -65,6 +66,16 @@
 </table>
 <p>Megatron 这行是 bf16 param + fp32 grad（gradient 用 fp32 累加，不切时 18Ψ = 126 GB）：param 2 + grad 4 = 6 bytes 每卡一整份，只切 fp32 main param、m、v 这 12 bytes。表里不含 activation。</p>
 
+<h2 id="scaling">8 卡为什么不到 8 倍</h2>
+<p>这是 NVIDIA 的原题，前提是 global batch size 固定。DDP 下每张卡放一份完整的 model，数据切成 8 份，各卡自己做 forward 和 backward，gradient 用 all-reduce 取平均，然后每张卡做同样的 update。加速不到 8 倍有四个原因。</p>
+<ul>
+  <li>每张卡的 batch 只有原来的 1/8，GPU 填不满，utilization 掉下来</li>
+  <li>每步多了一次 gradient 的 all-reduce</li>
+  <li>data loading、optimizer step 这些每步固定的开销不随卡数缩小</li>
+  <li>每步要等最慢的那张卡</li>
+</ul>
+<p>global batch 固定、卡数增加叫 strong scaling。让每卡的 batch 不变、global batch 跟着卡数涨是 weak scaling，throughput 更接近线性，但 batch 变大有它自己的代价（见 <a href="parallelism-config.html#gbs">global batch size</a>）。</p>
+
 <h2>必答点</h2>
 <ul>
   <li>DDP：bucket + backward hook，all-reduce 和 backward overlap</li>
@@ -78,6 +89,7 @@
 <details>
   <summary>ZeRO-1 和 ZeRO-2 的通信量有区别吗？</summary>
   <p>论文只推导了 ZeRO-2。实现里如果 ZeRO-1 的 gradient 仍用 all-reduce，再 all-gather param，就是 \(3\Psi\)，换成 reduce-scatter 才是 \(2\Psi\)（按论文 §5.1 推算，牛客题问的 gap 指的就是这里）。memory 上 ZeRO-2 不归自己的 gradient 用完就释放，ZeRO-1 要留一整份。</p>
+  <p>Unity 一面问 ZeRO-2 比 ZeRO-1 多了哪一步、还在 trade off 什么。面试官要的答案是各卡更新完自己那份后要 all-gather weights，这一步 ZeRO-1 也有。ZeRO-2 真正多的是 gradient 边 backward 边 reduce-scatter、只留 \(1/N\)。通信量没变，换到的是 memory。代价是每卡没有完整的 gradient，算 global grad norm 要多一次 scalar 的 all-reduce（这句是我整理的，不是面试官的话）。</p>
 </details>
 <details>
   <summary>FSDP 怎么把通信藏起来？</summary>
