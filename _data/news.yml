@@ -1,5 +1,11 @@
 # Emoji convention: Oral acceptances always use the crown 👑.
 
+- date: "2026.11"
+  prefix: "🎉 Our technical report "
+  link_text: "WorldFoundry"
+  suffix: " is out on arXiv, with open-source infrastructure for world-model inference and evaluation! 🌍🛠️"
+  url: "/publication/2026-11-07-worldfoundry"
+
 - date: "2026.08"
   prefix: "🎉 My first-author paper "
   link_text: "CUADebug"
