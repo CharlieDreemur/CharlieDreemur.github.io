@@ -236,7 +236,7 @@
 
   /* KP:BEGIN 公司和分类标签，由脚本生成，不要手改 */
   var CATS = ["Classic ML", "Deep Learning", "训练与优化", "Transformer", "LLM inference", "LLM 训练", "RAG 与 Search", "Agent", "Evaluation", "分布式训练", "训练系统", "GPU 与性能", "C++"];
-  var TARGETS = ["Microsoft", "NVIDIA", "Apple", "Unity", "Headlands"];
+  var TARGETS = ["Microsoft", "NVIDIA", "Apple", "Unity"];
   var KP = {
     "overfit-bias-variance": {"k": ["Classic ML", "训练与优化"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep", "Unity": "asked"}},
     "regularization-l1-l2": {"k": ["Classic ML", "训练与优化"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep"}},
@@ -245,15 +245,15 @@
     "kmeans": {"k": ["Classic ML"], "co": {"Microsoft": "asked", "Apple": "prep"}},
     "pca": {"k": ["Classic ML"], "co": {"Microsoft": "asked"}},
     "euclidean-cosine": {"k": ["Classic ML"], "co": {"Microsoft": "asked", "Apple": "prep"}},
-    "vanishing-gradient": {"k": ["Deep Learning", "训练与优化"], "co": {"Microsoft": "asked", "Unity": "asked"}},
+    "vanishing-gradient": {"k": ["Deep Learning", "训练与优化"], "co": {"Microsoft": "asked"}},
     "activation": {"k": ["Deep Learning"], "co": {"Microsoft": "asked"}},
     "batchnorm-layernorm": {"k": ["Deep Learning", "训练与优化"], "co": {"Microsoft": "asked", "Apple": "prep"}},
     "dropout": {"k": ["Deep Learning", "训练与优化"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep"}},
     "cnn": {"k": ["Deep Learning"], "co": {"Microsoft": "asked", "Unity": "asked"}},
     "optimizer": {"k": ["Deep Learning", "训练与优化"], "co": {"NVIDIA": "asked"}},
-    "knowledge-distillation": {"k": ["Deep Learning", "LLM inference"], "co": {"Microsoft": "asked", "Apple": "prep", "Headlands": "asked"}},
+    "knowledge-distillation": {"k": ["Deep Learning", "LLM inference"], "co": {"Microsoft": "asked", "Apple": "prep"}},
     "gpu-numpy": {"k": ["GPU 与性能"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Unity": "prep"}},
-    "model-compression": {"k": ["Deep Learning", "LLM inference"], "co": {"Headlands": "asked"}},
+    "model-compression": {"k": ["Deep Learning", "LLM inference"], "co": {}},
     "attention-scaling": {"k": ["Transformer"], "co": {"Microsoft": "asked"}},
     "transformer-architecture": {"k": ["Transformer"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep"}},
     "multi-head-attention": {"k": ["Transformer"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "asked"}, "more": ["字节", "Meta"]},
@@ -267,7 +267,7 @@
     "kv-cache": {"k": ["LLM inference"], "co": {"NVIDIA": "asked", "Apple": "prep"}},
     "hallucination": {"k": ["RAG 与 Search", "Evaluation"], "co": {"Microsoft": "asked"}},
     "rag": {"k": ["RAG 与 Search"], "co": {"Microsoft": "asked", "Apple": "prep"}},
-    "finetune-lora": {"k": ["LLM 训练"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep", "Headlands": "asked"}},
+    "finetune-lora": {"k": ["LLM 训练"], "co": {"Microsoft": "asked", "NVIDIA": "asked", "Apple": "prep"}},
     "rlhf-dpo-grpo": {"k": ["LLM 训练"], "co": {"Microsoft": "asked", "Apple": "prep"}},
     "llm-evaluation": {"k": ["Evaluation"], "co": {"Microsoft": "asked", "Apple": "prep"}},
     "agent-mcp": {"k": ["Agent"], "co": {"Microsoft": "asked", "Apple": "prep"}},
@@ -277,7 +277,7 @@
     "sequence-parallel": {"k": ["分布式训练"], "co": {"NVIDIA": "prep"}, "more": ["快手"]},
     "vocab-parallel": {"k": ["分布式训练"], "co": {"Microsoft": "asked", "NVIDIA": "prep"}, "more": ["快手"]},
     "pipeline-parallel": {"k": ["分布式训练"], "co": {"NVIDIA": "asked"}, "more": ["腾讯", "美团", "快手"]},
-    "dp-zero-fsdp": {"k": ["分布式训练"], "co": {"NVIDIA": "asked", "Unity": "asked"}, "more": ["字节", "百度", "xAI"]},
+    "dp-zero-fsdp": {"k": ["分布式训练"], "co": {"NVIDIA": "asked"}, "more": ["百度", "xAI"]},
     "context-parallel": {"k": ["分布式训练"], "co": {"NVIDIA": "prep"}, "more": ["腾讯", "Kimi"]},
     "moe-expert-parallel": {"k": ["分布式训练"], "co": {"NVIDIA": "asked"}, "more": ["阿里", "美团"]},
     "parallelism-config": {"k": ["分布式训练"], "co": {"NVIDIA": "asked"}, "more": ["Meta"]},
@@ -286,7 +286,7 @@
     "allreduce": {"k": ["分布式训练"], "co": {"NVIDIA": "prep"}, "more": ["阿里", "Anthropic"]},
     "rdma-gpudirect": {"k": ["分布式训练", "训练系统"], "co": {"NVIDIA": "asked"}},
     "activation-recompute": {"k": ["训练系统"], "co": {"NVIDIA": "prep"}, "more": ["字节"]},
-    "mixed-precision": {"k": ["训练系统", "GPU 与性能"], "co": {"NVIDIA": "asked", "Unity": "prep"}, "more": ["讯飞"]},
+    "mixed-precision": {"k": ["训练系统", "GPU 与性能"], "co": {"NVIDIA": "prep", "Unity": "prep"}, "more": ["讯飞"]},
     "quantization-int8": {"k": ["LLM inference", "GPU 与性能"], "co": {"NVIDIA": "asked", "Apple": "prep", "Unity": "prep"}},
     "overlap": {"k": ["分布式训练"], "co": {"NVIDIA": "prep"}, "more": ["快手"]},
     "debug-slow-hang": {"k": ["训练系统"], "co": {"NVIDIA": "asked", "Unity": "prep"}, "more": ["快手"]},
@@ -315,7 +315,7 @@
     "agent-sandbox": {"k": ["Agent"], "co": {"NVIDIA": "asked", "Unity": "prep"}, "more": ["字节", "讯飞"]},
     "local-vs-e2e": {"k": ["GPU 与性能", "Evaluation"], "co": {"Unity": "prep"}},
     "reward-hacking": {"k": ["Evaluation", "LLM 训练"], "co": {"Unity": "prep"}},
-    "offline-pipeline-optimization": {"k": ["训练系统", "Agent"], "co": {"Unity": "asked"}},
+    "offline-pipeline-optimization": {"k": ["训练系统", "Agent"], "co": {"Unity": "prep"}},
     "agent-eval-regression": {"k": ["Evaluation", "Agent"], "co": {"Unity": "prep"}, "more": ["字节", "阿里"]},
     "context-compaction": {"k": ["Agent", "LLM inference"], "co": {"Unity": "prep"}, "more": ["字节", "阿里", "讯飞"]},
     "agent-batch-runs": {"k": ["Agent", "Evaluation"], "co": {"Unity": "prep"}, "more": ["字节", "阿里", "小红书"]},
@@ -349,7 +349,7 @@
     "annotation-judge": {"k": ["Evaluation"], "co": {"Apple": "asked"}},
     "agentic-vs-search": {"k": ["Evaluation", "RAG 与 Search"], "co": {"Apple": "prep"}, "more": ["Walmart"]},
     "over-searching": {"k": ["RAG 与 Search", "Evaluation"], "co": {"Apple": "asked"}},
-    "long-document": {"k": ["RAG 与 Search", "Agent"], "co": {"Apple": "asked"}},
+    "long-document": {"k": ["RAG 与 Search", "Agent"], "co": {"Apple": "prep"}},
     "A12": {"k": ["Classic ML", "训练与优化"], "co": {"Apple": "prep"}},
     "A13": {"k": ["训练与优化", "LLM 训练"], "co": {"Apple": "prep"}},
     "A15": {"k": ["LLM inference", "分布式训练"], "co": {"Apple": "prep"}}

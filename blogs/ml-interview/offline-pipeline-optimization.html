@@ -13,7 +13,7 @@
 
 <h1>用 agent 让 distributed training 和 data pipeline 更快：<br>workflow 怎么设计，看哪些 metric？</h1>
 <p class="meta"><b>英文问法</b><q>We train a model on NVIDIA GPUs in a distributed system. If you want to use an AI agent to make it faster and more efficient, how would you design the whole workflow at a high level?</q> · <q>What metrics would you check?</q> · <q>How would you apply this agent loop to offline data processing and training pipelines?</q> · <q>How do you tell whether the GPU is waiting on the data pipeline?</q> · <q>How do you verify an optimization to a data pipeline?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 Unity MLE intern 面试的 system design 题（2026-11）</strong>，英文问法的前两句是原话，追问还有一句 "when do you think would be appropriate"，转写不全，这页按“什么时候接受一个改动”答 · 这页写在面试之前，当时是推断 · 依据一：本岗 JD（JOBREQ-2615965）写了 "Help optimize performance and efficiency across data processing and training systems"（<a href="https://unitytech.wd1.myworkdayjobs.com/Unity/job/Mountain-View-CA-USA/XMLNAME--Req-6087--Software-Developer_JOBREQ-2615965">Workday</a>）· 依据二：一个已关闭的旧版 Offline 岗在要求里列了 "Torch Compilation, Quantization, CUDA, GPU kernel optimization"（<a href="https://hitmarker.net/jobs/unity-staff-senior-machine-learning-engineer-ml-infrastructure-offline-1954884">hitmarker</a>）· 类比用的是 <a href="https://arxiv.org/html/2609.17391">FlashVector</a> 的 Case 3 · 公开材料没写 Offline 组用什么工具，也没写它负责 agentic infra</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> ·  依据一：本岗 JD（JOBREQ-2615965）写了 "Help optimize performance and efficiency across data processing and training systems"（<a href="https://unitytech.wd1.myworkdayjobs.com/Unity/job/Mountain-View-CA-USA/XMLNAME--Req-6087--Software-Developer_JOBREQ-2615965">Workday</a>）· 依据二：一个已关闭的旧版 Offline 岗在要求里列了 "Torch Compilation, Quantization, CUDA, GPU kernel optimization"（<a href="https://hitmarker.net/jobs/unity-staff-senior-machine-learning-engineer-ml-infrastructure-offline-1954884">hitmarker</a>）· 类比用的是 <a href="https://arxiv.org/html/2609.17391">FlashVector</a> 的 Case 3 · 公开材料没写 Offline 组用什么工具，也没写它负责 agentic infra</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -102,12 +102,12 @@
 
 <h2>追问</h2>
 <details>
-  <summary id="metrics">具体看哪些 metric？（Unity 原题）</summary>
+  <summary id="metrics">具体看哪些 metric？（作者面试原题）</summary>
   <p>速度一组：samples/s，step time 按 data loading、forward、backward、communication、optimizer 拆开，GPU utilization，peak memory。communication 占比高说明该调 parallelism 配置，GPU 等数据说明瓶颈在 CPU。</p>
   <p>正确性一组：固定 seed 和数据顺序，loss 曲线和 baseline 的差在容差内。只改 kernel 而不改计算顺序时，要求输出逐元素相等。</p>
 </details>
 <details>
-  <summary id="accept">什么时候接受 agent 的一个改动？（Unity 原题，按这个意思理解）</summary>
+  <summary id="accept">什么时候接受 agent 的一个改动？（作者面试原题，按这个意思理解）</summary>
   <p>两个条件都满足才接受：提升超过 <a href="noise-floor.html">noise floor</a>，正确性那一组也过。先用几百步的短 benchmark 筛，过了再跑长的。短 benchmark 看不到收敛，改了数值行为的改动（比如 precision）还要看最终的 eval metric。</p>
 </details>
 <details>

@@ -13,7 +13,7 @@
 
 <h1>vanishing / exploding gradient 是怎么来的？<br>怎么解决？</h1>
 <p class="meta"><b>英文问法</b><q>What is the vanishing gradient problem?</q> · <q>Why do sigmoid networks suffer from it?</q> · <q>How do you fix vanishing or exploding gradients?</q> · <q>Why do residual connections help?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人微软 AS 电面</strong> · <strong>★ 作者本人 Unity MLE intern 面试（2026-11）</strong>（出现很多 NaN 时 "do we want to increase or decrease the learning rate?"、loss 会 increase 还是 decrease、"which one would benefit the problem more, ReLU or sigmoid?"；录音转写不清，前两句是按上下文读的）·面经：微软 D&amp;AS Bing Ads 2022（LSTM vs RNN、梯度消失）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> · 面经：微软 D&amp;AS Bing Ads 2022（LSTM vs RNN、梯度消失）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -114,7 +114,7 @@
 
 <h2>追问</h2>
 <details>
-  <summary>训练里出现很多 NaN，learning rate 调大还是调小？loss 会怎么走？（Unity 原题）</summary>
+  <summary>训练里出现很多 NaN，learning rate 调大还是调小？loss 会怎么走？（作者面试原题）</summary>
   <p>调小。NaN 多半来自 exploding gradient：一步走得太大，weight 变大，下一步的 gradient 更大。loss 的走法是先震荡、上升，再变成 inf 或 NaN。除了降 learning rate，还要加 gradient clipping 和 warmup。vanishing 的表现相反，loss 停着不动，不会出 NaN。</p>
 </details>
 <details>

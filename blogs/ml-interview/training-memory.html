@@ -13,7 +13,7 @@
 
 <h1>Training memory 由什么构成？怎么估？</h1>
 <p class="meta"><b>英文问法</b><q>What takes GPU memory during training?</q> · <q>How much memory does it take to train a 14B model with Adam?</q> · <q>Why does AdamW need 4× the parameter memory?</q> · <q>How many trainable parameters does LoRA add?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 NVIDIA Megatron Core intern 面试（2026-11）</strong>（讨论题：weights 放得进 GPU 为什么还 OOM；memory 分成 weights、gradients、optimizer states、activations；按 parameter count 和 precision 算 gradient 的 memory；FP16/BF16 和 FP32 各要多少；怎么省）· <strong>NVIDIA Senior MLE 电面 2025-10</strong>（全是计算题：SGD/Adam 各要多少 parameter、每层输出多大、LoRA/QLoRA 的 parameter count 和 initialization，Fail，<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）· NVIDIA DevTech NG 2026（MLP 的维度变化，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· 拼多多（"训练时占用显存的数据有哪些"）· 字节（"14B：FP16 权重大概多大；训练还要加哪些"）· 滴滴（"AdamW 优化器为什么会占用4倍模型参数量显存？"）· Anthropic（"Estimate VRAM and Compare Model Parallelism"，PracHub）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> ·  <strong>NVIDIA Senior MLE 电面 2025-10</strong>（全是计算题：SGD/Adam 各要多少 parameter、每层输出多大、LoRA/QLoRA 的 parameter count 和 initialization，Fail，<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）· NVIDIA DevTech NG 2026（MLP 的维度变化，<a href="https://www.1point3acres.com/bbs/thread-1161658-1-1.html">1p3a 1161658</a>）· 拼多多（"训练时占用显存的数据有哪些"）· 字节（"14B：FP16 权重大概多大；训练还要加哪些"）· 滴滴（"AdamW 优化器为什么会占用4倍模型参数量显存？"）· Anthropic（"Estimate VRAM and Compare Model Parallelism"，PracHub）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -81,7 +81,7 @@
 
 <h2>追问</h2>
 <details>
-  <summary>weights 放得进 GPU，为什么训练还是 OOM？（NVIDIA 原题）</summary>
+  <summary>weights 放得进 GPU，为什么训练还是 OOM？（作者面试原题）</summary>
   <p>训练时 weights 只是四块里的一块。gradient 和 weights 一样大，fp32 是每个参数 4 bytes，fp16 或 bf16 是 2 bytes。optimizer state 再加一到两份，AdamW 存 m 和 v，fp32 共 8 bytes，Muon 只存 momentum，4 bytes。activation 要留到 backward，大小跟 batch size 和 sequence length 成正比，常常是最大的一块。</p>
   <p>例：1B 参数，bf16 的 weights 只有 2 GB，但 mixed precision 的 AdamW 一共要 16 bytes 一个参数，model state 就是 16 GB，还没算 activation。</p>
 </details>

@@ -13,7 +13,7 @@
 
 <h1>给定模型和 cluster，怎么选 parallelism 配置？<br>（含 trillion-parameter training system design）</h1>
 <p class="meta"><b>英文问法</b><q>Given a model and a cluster, how do you choose TP, PP and DP sizes?</q> · <q>Design a distributed training system for a trillion-parameter language model.</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 NVIDIA Megatron Core intern 面试（2026-11）</strong>（global batch size 怎么算、固定 GBS 加 DP 会怎样、大 batch 的缺点；出自你的复盘笔记）· NVIDIA Senior SWE, LLM Applications 2025-09 等（trillion-parameter system design，Aced 用户提交，NVIDIA 问过 3 次）· NVIDIA High Performance LLM Training Engineer（Glassdoor RVW105730158）· NVIDIA DL Engineer 慕尼黑 2026（"how distributed training works"，Glassdoor RVW104512401）· NVIDIA DL Engineer HM 轮（"parallel training methods"，Glassdoor RVW98332074）· Meta（"Design a Scalable MoE Pretraining Pipeline"）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> ·  NVIDIA Senior SWE, LLM Applications 2025-09 等（trillion-parameter system design，Aced 用户提交，NVIDIA 问过 3 次）· NVIDIA High Performance LLM Training Engineer（Glassdoor RVW105730158）· NVIDIA DL Engineer 慕尼黑 2026（"how distributed training works"，Glassdoor RVW104512401）· NVIDIA DL Engineer HM 轮（"parallel training methods"，Glassdoor RVW98332074）· Meta（"Design a Scalable MoE Pretraining Pipeline"）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <p><b>零基础总览：</b>普通 DP 复制完整模型、分不同训练样本，各卡 backward 后同步 gradient，再做一致的更新；TP 切同一层的 matrix；PP 把不同 layer 分给不同 stage；ZeRO/FSDP 分摊保存 optimizer state、gradient、parameter，具体分哪些取决于配置，计算时按需通信；CP 切同一条长 sequence 的 token，并交换 attention 所需信息；EP 把 MoE 的不同 expert 分给不同 GPU，再把 token 路由到对应 expert。这些方法可以组合。Megatron SP 则主要在 TP 配合下切 LayerNorm/dropout 等区域的 sequence activation，不能直接等同于 CP。</p>
@@ -85,7 +85,7 @@
 
 <h2>追问</h2>
 <details>
-  <summary id="gbs">Global batch size 怎么算？batch 越大越好吗？（NVIDIA 2026-11）</summary>
+  <summary id="gbs">Global batch size 怎么算？batch 越大越好吗？（作者面试原题）</summary>
   <p>GBS = micro-batch size × micro-batch 数 × DP，其中 DP = GPU 数 ÷ (TP × PP × CP)。例：64 张卡，TP 4、PP 4，DP 就是 4。micro-batch size 2、每步 8 个 micro-batch 时 GBS = 2 × 8 × 4 = 64。</p>
   <p>GBS 固定时加卡是 strong scaling，每张卡分到的活变少，communication 的占比和 PP 的 bubble 都变大，MFU 下降。</p>
   <p>batch 不是越大越好。超过 critical batch size 之后，每个 token 换来的 loss 下降变少。同样的数据量下 update 的步数也变少，learning rate 要重新调，前期容易不稳，所以常配 warmup 和 batch ramp-up。这是 hardware efficiency 和 learning efficiency 之间的取舍。</p>

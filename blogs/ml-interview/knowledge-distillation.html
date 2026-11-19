@@ -13,7 +13,7 @@
 
 <h1>Knowledge distillation 怎么做？<br>temperature 有什么用？为什么乘 T²？</h1>
 <p class="meta"><b>英文问法</b><q>Explain knowledge distillation.</q> · <q>What does the temperature do?</q> · <q>Why multiply the soft loss by T²?</q> · <q>How would you distill an LLM?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 Headlands QR 面试（2026-11）</strong>（"distill 的 loss 是什么"；面试官给出 KL 的公式后问 "you can do KL divergence between the student and the teacher, or between the teacher and the student … when would you do either one of those?"）· 微软 D&amp;AS Bing Ads 2022</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> ·  微软 D&amp;AS Bing Ads 2022</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -83,7 +83,7 @@ def kd_loss(z_s, z_t, y, T=4.0, alpha=0.5):
 
 <h2>追问</h2>
 <details>
-  <summary id="kl-direction">KL(teacher ‖ student) 和 KL(student ‖ teacher)，什么时候用哪个？（Headlands 原题）</summary>
+  <summary id="kl-direction">KL(teacher ‖ student) 和 KL(student ‖ teacher)，什么时候用哪个？（作者面试原题）</summary>
   <p>\(\mathrm{KL}(P\,\|\,Q) = \sum_i P_i \log(P_i/Q_i)\) 按 \(P\) 加权，所以 \(P\) 有概率而 \(Q\) 没给的地方罚得最重。</p>
   <p>KL(teacher ‖ student) 是 forward KL。teacher 有概率的每个类 student 都得盖住，结果偏 mean-seeking。它的 gradient 和 cross-entropy 相同，teacher 的分布提前算好就行，是分类蒸馏的默认选择。</p>
   <p>KL(student ‖ teacher) 是 reverse KL，按 student 自己的分布加权。student 只要待在 teacher 概率高的地方就不受罚，结果偏 mode-seeking。student 的 capacity 远小于 teacher、盖不住整个分布时用它，比如 LLM 的生成式蒸馏：forward KL 会逼 student 给 teacher 的长尾都分概率，生成出低质量的 token。代价是要从 student 采样，训练更贵。</p>

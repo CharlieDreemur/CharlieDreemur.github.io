@@ -13,7 +13,7 @@
 
 <h1>fine-tuning、prompt engineering、RAG 怎么选？<br>LoRA 怎么做、参数有多少？</h1>
 <p class="meta"><b>英文问法</b><q>When would you fine-tune instead of using RAG or prompting?</q> · <q>What is PEFT? How does LoRA work?</q> · <q>How many trainable parameters does LoRA add, and how is it initialized?</q> · <q>What does QLoRA change?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 Headlands QR 面试（2026-11）</strong>（"讲一下 LoRA"、"如何 init LoRA"，追问 "when you randomly initialize a matrix, like in PyTorch, you need to define the distribution to randomly initialize from"）· 面经：微软 AS 实习电面问 prompt engineering、fine-tuning、PEFT（<a href="https://www.1point3acres.com/bbs/thread-1165076-1-1.html">1p3a 1165076</a>）· 美国 Research Scientist（不是 AS）问 LoRA 原理和防 catastrophic forgetting（知乎摘要）· Interview Query 指南（catastrophic forgetting）· NVIDIA Senior MLE 电面 2025-10 问 LoRA/QLoRA 的 parameter count 和 initialization（<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong> ·  面经：微软 AS 实习电面问 prompt engineering、fine-tuning、PEFT（<a href="https://www.1point3acres.com/bbs/thread-1165076-1-1.html">1p3a 1165076</a>）· 美国 Research Scientist（不是 AS）问 LoRA 原理和防 catastrophic forgetting（知乎摘要）· Interview Query 指南（catastrophic forgetting）· NVIDIA Senior MLE 电面 2025-10 问 LoRA/QLoRA 的 parameter count 和 initialization（<a href="https://www.1point3acres.com/bbs/thread-1152213-1-1.html">1p3a 1152213</a>）</p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -70,7 +70,7 @@
 <details>
   <summary>为什么 B 初始化为 0？A 和 B 都设 0 行不行？A 从什么分布里取？</summary>
   <p>\(B = 0\) 让训练从原模型出发。记 \(g = \partial L/\partial h\)，\(A\) 随机保证 \(\partial L/\partial B = g\,(Ax)^\top \ne 0\)，\(B\) 先动起来，\(A\) 接着动。两个都是 0 时，\(\partial L/\partial B\) 和 \(\partial L/\partial A = B^\top g\, x^\top\) 都是 0，永远学不动。</p>
-  <p id="init-dist"><strong>A 具体从什么分布里取（Headlands 原题）。</strong>论文写的是 Gaussian，\(A \sim \mathcal N(0, \sigma^2)\)。loralib 和 PEFT 的代码用 <code>kaiming_uniform_(A, a=math.sqrt(5))</code>，和 <code>nn.Linear</code> 的默认 init 相同。</p>
+  <p id="init-dist"><strong>A 具体从什么分布里取（作者面试原题）。</strong>论文写的是 Gaussian，\(A \sim \mathcal N(0, \sigma^2)\)。loralib 和 PEFT 的代码用 <code>kaiming_uniform_(A, a=math.sqrt(5))</code>，和 <code>nn.Linear</code> 的默认 init 相同。</p>
   <p>Kaiming uniform 取 \(U(-b, b)\)，\(b = \sqrt{6 / \big((1 + a^2)\,\text{fan\_in}\big)}\)。\(a = \sqrt5\) 时 \(b = 1/\sqrt{\text{fan\_in}}\)，variance 是 \(1/(3\,\text{fan\_in})\)。\(A\) 的 fan_in 是输入维度 \(k\)。例：\(k = 4096\) 时 \(b = 1/64 \approx 0.0156\)。</p>
   <p>variance 按 \(1/\text{fan\_in}\) 缩放，是为了让 \(Ax\) 的大小不随输入维度变。两个都随机不行，\(\Delta W \ne 0\)，一开始就改了原模型的输出。</p>
 </details>

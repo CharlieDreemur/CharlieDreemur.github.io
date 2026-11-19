@@ -13,7 +13,7 @@
 
 <h1>大模型怎么变小、变快？<br>structured pruning 剪哪个 neuron？</h1>
 <p class="meta"><b>英文问法</b><q>You start with a big model and want to make it faster. What are some things you might try to make it smaller or speed it up?</q> · <q>Suppose you just have an MLP: linear layer, activation, linear layer, activation. How would you start doing structured pruning on a model like that?</q> · <q>Given the activations of each layer, how do you choose which layer to prune?</q> · <q>If you can only prune once, how do you decide which one is best?</q></p>
-<p class="meta"><b>考过</b><strong>★ 作者本人 Headlands QR 面试（2026-11）</strong>。背景是 HFT 要快，模型太小又不够准，所以从大模型出发再压小。开放题，可以自己做假设。追问顺序是 distillation 的 loss、KL 的方向（见 <a href="knowledge-distillation.html#kl-direction">knowledge distillation</a>）、structured pruning。后两个英文问法是按你的中文转述写的。这页的答案是我整理的，面试官的标准答案你没有转述</p>
+<p class="meta"><b>考过</b><strong>★ 作者本人面试被问过</strong></p>
 
 <h2 id="concepts">先弄清楚：每个概念是什么</h2>
 <dl class="concepts">
@@ -101,7 +101,7 @@
   <p>能训练的话 fine-tune 几步，或者拿原来的大模型当 teacher 做 distillation。不能训练时，重新解一次下一层的 weight，让它在 calibration data 上的输出尽量接近剪之前，这是一个 least squares。</p>
 </details>
 <details>
-  <summary>HFT 这个场景下四类办法怎么排？</summary>
+  <summary>latency 预算很紧时四类办法怎么排？</summary>
   <p>这是我的判断。latency 预算很紧时，先确定预算内能放多大的模型，再用 distillation 把大模型的效果转给它，因为 student 的结构可以按硬件来选。pruning 和 quantization 用来在现有模型上再挤一点。</p>
 </details>
 
